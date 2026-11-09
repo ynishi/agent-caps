@@ -18,7 +18,7 @@
 //! - A principle is a rule the requirements are derived from.
 //! - A requirement is one thing agent-caps does, or does not do. Its decision and the layer
 //!   that owns it are columns; a condition that goes with the requirement (for example, a
-//!   calibration record before a stopping level) and whether an operation needs an approver,
+//!   calibration record before Force) and whether an operation needs an approver,
 //!   which follows from the principles, are in its text.
 //! - The legend of every value is the documentation of the variants of [`Decision`],
 //!   [`Status`] and [`Layer`]. A cell holds one of those words and nothing else.
@@ -71,18 +71,19 @@
 //! | UC15 | A developer wants a procedure recommended in order, such as test then lint then commit, with only the key step enforced, starting afresh for each task. | active | FR1, FR13 |
 //! | UC16 | A developer running an improvement loop wants the turn held until the last measured score is high enough, and not passed because an earlier score was. | active | FR1 |
 //! | UC17 | A tool that builds hooks and instructions wants the list of policies in effect with their levels, telling off apart from in effect but not matching the current event. | active | FR12 |
-//! | UC18 | An adapter wants to learn from one place in a judgment whether it stops before the action or at the end of the turn. | active | FR12 |
+//! | UC18 | An adapter wants to learn from one place in a judgment whether it stops before the action or at the end of the turn. | withdrawn -> UC24 | |
 //! | UC19 | An agent working on a long task adds a rule of its own from what it has learned, which tightens only, needs no approval, and is gone when the task ends. | active | FR16 |
 //! | UC20 | An agent removes or weakens a rule it added itself, but never ends up looser than the developer's rules. | active | FR18 |
 //! | UC21 | An agent tightens the mode of work on its own, while loosening it stays with the developer. | active | FR11 |
 //! | UC22 | An improvement loop proposes level adjustments from the record of judgments: tightening ones enter on their own and loosening ones are only proposed to the developer. | active | FR24 |
 //! | UC23 | A developer wants a rule that code cannot express, such as a commit message that explains its reason, judged by a classifier whose answers are recorded and replayable. | active | FR26 |
+//! | UC24 | An adapter decides which platform mechanism stops a rule from the rule's level and from the event it judges, an action or the end of a period, and not from a timing the policy carries. | active | FR28, FR31 |
 //!
 //! # Principles
 //!
 //! | ID | Principle | Status |
 //! |---|---|---|
-//! | P1 | A tightening operation needs no approval from anyone, the agent included: leaning to the stopping side costs only a stopped task, which returns to the user. The exception is a rule whose judgment is uncertain, such as a classifier: it becomes a stopping level only with a calibration record of its false stops, because an uncertain rule that keeps stopping keeps returning the task to the user. | active |
+//! | P1 | A tightening operation needs no approval from anyone, the agent included: leaning to the stopping side costs only a stopped task, which returns to the user. The exception is a rule whose judgment is uncertain, such as a classifier: it becomes Force only with a calibration record of its false stops, because an uncertain rule that keeps stopping keeps returning the task to the user. | active |
 //! | P2 | A loosening operation is decided by the origin of what it loosens. What came from the user is loosened only by an approver; the agent loosens only what it added itself, never below the user's rules, and for the user's rules it only proposes. | active |
 //! | P3 | A Meta policy does not change during a run, by any operation. | active |
 //! | P4 | A temporary change always has a period and reverts when it ends. What is meant to last is made with a permanent operation, an override. | active |
@@ -90,6 +91,9 @@
 //! | P6 | The policy store and the approval records cannot be rewritten directly by the agent. The rule that stops the rewriting is itself a Meta policy, which P3 keeps in place. | active |
 //! | P7 | An approval enters only through a door the agent cannot make, such as a command the user runs by hand. An approval written in the agent's transcript is not one. | active |
 //! | P8 | When one operation both tightens and loosens, as a mode switch, a swap of a set, an import or a cancellation does, the domain judges by the difference before and after, and one loosening difference makes the whole a loosening operation. | active |
+//! | P9 | How much the agent is trusted with a rule is called Trust, and is expressed by a level (Force, Advise, Inform). When a check happens is not a value of the policy: it follows from the event the policy judges, an action itself or the end of a period. Which mechanism stops it is the adapter's to choose. | active |
+//! | P10 | What changes Trust is called an adjustment. A permanent one is an override in the catalog; a temporary one is an adjustment in the evidence (an exemption, a level change with a period). Both are judged by the difference before and after as tightening or loosening (P8), a loosening one by P2, a temporary one reverting with its period (P4). A Meta policy is the target of no adjustment (P3). | active |
+//! | P11 | A period that restarts at an opening event (a turn, an agent, a task, a session, a mode) is one vocabulary, the scope, shared by the period a rule speaks of and the lifetime of a temporary adjustment (as long as that scope lasts). The end of a scope is derived from the sequence of events. The next judgment and until a time belong to lifetimes only, and cannot be the scope of a rule. | active |
 //!
 //! # Requirements
 //!
@@ -99,13 +103,13 @@
 //! | FR2 | Check a policy against examples before it is used: an accepted policy has shown what it stops and what it lets through. | supported | Domain | #11 |
 //! | FR3 | Use policies as a set, such as a safety set: put it in and take it out. Putting it in needs no approval. Taking it out is a loosening under P2: an approver for the user's set, nobody for the agent's. | supported | Domain | #16 |
 //! | FR4 | Combine sets, for example a shared set with the set of this repository. P8 applies: an approver is needed when the repository side weakens the shared side. | supported | Application, Domain | #7 |
-//! | FR5 | Change the level of a policy permanently. Raising it needs no approval; lowering it is a loosening under P2. | supported | Domain, Application | #14 |
-//! | FR6 | Turn a policy off permanently, and turn it on again. Turning it off is a loosening under P2; turning it on needs no approval. | supported | Domain, Application | #14 |
+//! | FR5 | Change the level of a policy permanently, as a permanent adjustment (an override in the catalog, P10). Raising it needs no approval; lowering it is a loosening under P2. | supported | Domain, Application | #14 |
+//! | FR6 | Turn a policy off permanently, and turn it on again, as a permanent adjustment (an override in the catalog, P10). Turning it off is a loosening under P2; turning it on needs no approval. | supported | Domain, Application | #14 |
 //! | FR7 | Delete a policy. This is a loosening under P2. A Meta policy cannot be deleted, by P3. | supported | Application, Domain | #14 |
-//! | FR8 | Lower a level for a bounded time, for example NetAccess to a warning for this task only. A loosening under P2, with a period under P4. | supported | Domain | #15 |
+//! | FR8 | Lower a level for a bounded time, for example NetAccess to a warning for this task only. A loosening under P2, with a period under P4. | withdrawn -> FR30 | Domain | #15 |
 //! | FR9 | Switch a policy off once or for a bounded time, as an exemption. Only one that comes from the user takes effect, under P2 and P4. | supported | Domain | |
-//! | FR10 | Raise a level for a bounded time, for example NetAccess to Force for this task only. The tightening counterpart of lowering for a bounded time, under P1 and P4. | supported | Domain | #15 |
-//! | FR11 | Switch by the kind of work, as a mode. A switch is judged by the difference it makes (P8): an approver is needed when any difference loosens. | supported | Domain | #17 |
+//! | FR10 | Raise a level for a bounded time, for example NetAccess to Force for this task only. The tightening counterpart of lowering for a bounded time, under P1 and P4. | withdrawn -> FR30 | Domain | #15 |
+//! | FR11 | Switch by the kind of work, as a mode. A mode switch selects a layer of overrides, and is judged by the difference it makes (P8): an approver is needed when any difference loosens. | supported | Domain | #17 |
 //! | FR12 | See which policies are in effect and at which level, off told apart from in effect but not matching. | supported | Domain | #6 |
 //! | FR13 | Write a recommendation that does not stop anything. It neither tightens nor loosens, and it stays within the guard that binds it. | supported | Domain | |
 //! | FR14 | Place a policy that cannot be changed, as a Meta policy. Only the user can place one (P3). | supported | Domain | |
@@ -115,15 +119,18 @@
 //! | FR18 | The agent removes or weakens a policy or a set that it added itself. This holds only for what came from the agent (P2). | supported | Domain | #14 |
 //! | FR19 | The agent creates an exemption (P2). | not supported | ? | |
 //! | FR20 | When something cannot be seen, fall back to the stopping side: not being able to read never loosens a rule. | supported | Domain | |
-//! | FR21 | See and cancel temporary changes and exemptions. Cancelling is judged by its result (P8): no approval when it tightens, a loosening under P2 when it loosens, as when the user's raise is cancelled. | supported | Domain, Application | #14, #15 |
+//! | FR21 | See and cancel temporary changes and exemptions. Cancelling is judged by its result (P8): no approval when it tightens, a loosening under P2 when it loosens, as when the user's raise is cancelled. | withdrawn -> FR32 | Domain, Application | #14, #15 |
 //! | FR22 | See who changed a policy and when. | supported | Application, Domain | #19 |
 //! | FR23 | See and count the records of judgments, for example which policy stopped most often. | supported | Application | #19 |
 //! | FR24 | Propose a level adjustment from the records. A tightening proposal enters without approval; a loosening one is a loosening under P2. | supported | Application | #19 |
 //! | FR25 | Share policies with others by exporting and importing them. An import follows P8, as combining sets does. | supported | Adapter, Application | #19 |
-//! | FR26 | Judge with a classifier a rule that code cannot express. Raising such a rule to a stopping level needs a calibration record first (the exception of P1). | supported | Domain, Application, Adapter | #1 |
+//! | FR26 | Judge with a classifier a rule that code cannot express. Raising such a rule to Force needs a calibration record first (the exception of P1). | supported | Domain, Application, Adapter | #1 |
 //! | FR27 | Protect the policy store and the approval records from direct rewriting by the agent (P6), always. | supported | Domain, Adapter | #18 |
 //! | FR28 | Cap levels by what a platform can carry (Support): given, per event kind, the highest level a platform can enforce, a policy above it is lowered to it and reported as degraded, and a reward bound to a lowered guard follows. The cap is a core domain value supplied by the adapter. | supported | Domain, Adapter | #8 |
 //! | FR29 | When several guards judge one event, the strongest result decides (deny over warn over allow), whatever the order of the policies; recommendations are each reported and never combined. | supported | Domain | |
+//! | FR30 | Change the level of a policy for a bounded time, up or down: a temporary adjustment (P10), given as evidence with its origin and its period, that reverts when the period ends (P4). Tightening is open to anyone (P1); loosening is a loosening under P2. Raising to Force needs the policy's fixtures (FR2). A Meta policy is out of reach (P3). | supported | Domain | #15 |
+//! | FR31 | Write a period of work in a rule: the scope of a temporal operator (P11), and the end of a period as the event a policy judges (a turn, a task, a session), which says when the check happens (P9). The end of a period is derived from the sequence of events. Only an end the platform can hold, the end of a turn, can stop; a rule that would stop at another end is lowered by Support (FR28) and reported as degraded. | supported | Domain, Adapter | #10 |
+//! | FR32 | See which temporary adjustments are in effect (exemptions and level changes with a period, P10), and cancel them. Cancelling is judged by its result (P8): no approval when it tightens, a loosening under P2 when it loosens, as when the user's raise is cancelled. | supported | Domain, Application | #15 |
 
 use std::fmt;
 use std::str::FromStr;

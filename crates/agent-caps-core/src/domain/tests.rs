@@ -167,7 +167,7 @@ fn verdict(catalog: &Catalog, events: &[Event]) -> Verdict {
 /// the task.
 #[test]
 fn a_stopping_guard_denies_until_its_condition_is_seen() {
-    let catalog = catalog(vec![test_guard(Level::Require)], vec![]);
+    let catalog = catalog(vec![test_guard(Level::Force)], vec![]);
     let start = agent(Body::TaskStart);
     let stop = agent(Body::Stop);
     assert_eq!(
@@ -206,7 +206,7 @@ fn a_stopping_guard_denies_until_its_condition_is_seen() {
 /// stays seen.
 #[test]
 fn an_unreadable_record_makes_an_unseen_once_unknown_but_not_a_seen_one() {
-    let catalog = catalog(vec![test_guard(Level::Require)], vec![]);
+    let catalog = catalog(vec![test_guard(Level::Force)], vec![]);
     let start = agent(Body::TaskStart);
     let stop = agent(Body::Stop);
     let lost = unreadable(Source::Transcript);
@@ -257,7 +257,7 @@ fn an_advising_guard_warns_where_a_stopping_one_denies() {
 #[test]
 fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     // The judgment is not part of the state; the evidence of it is, and a count reads it.
-    let mut guard = test_guard(Level::Require);
+    let mut guard = test_guard(Level::Force);
     guard.when = Some(Pred::Count {
         event: EventFilter {
             kind: EventKind::Judged,
@@ -294,7 +294,7 @@ fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
 #[test]
 #[ignore = "TODO(#3): waits for the application layer (#19)"]
 fn a_judgment_record_the_agent_wrote_does_not_count() {
-    let mut guard = test_guard(Level::Require);
+    let mut guard = test_guard(Level::Force);
     guard.when = Some(Pred::Count {
         event: EventFilter {
             kind: EventKind::Judged,
@@ -327,7 +327,7 @@ fn a_judgment_record_the_agent_wrote_does_not_count() {
 /// agent is nothing.
 #[test]
 fn a_users_exemption_covers_its_target_for_its_lifetime() {
-    let mut guard = test_guard(Level::Require);
+    let mut guard = test_guard(Level::Force);
     guard.subject = EventKind::ToolUse;
     // No edit under `src/` before the tests pass.
     guard.when = Some(Pred::Now(Cond::Glob(
@@ -481,7 +481,7 @@ fn no_exemption_covers_a_meta_guard() {
 fn a_mode_overrides_the_level_and_only_the_user_or_caps_switch_it() {
     let modeling = "modeling".parse().unwrap();
     let catalog = catalog(
-        vec![test_guard(Level::Require)],
+        vec![test_guard(Level::Force)],
         vec![Override {
             layer: OverrideLayer::Mode(modeling),
             policy: id(GUARD),
@@ -525,10 +525,7 @@ fn a_mode_overrides_the_level_and_only_the_user_or_caps_switch_it() {
 #[test]
 fn the_project_turns_a_policy_off_and_its_reward_goes_with_it() {
     let catalog = catalog(
-        vec![
-            test_guard(Level::Require),
-            clippy_reward(RewardLevel::Advise),
-        ],
+        vec![test_guard(Level::Force), clippy_reward(RewardLevel::Advise)],
         vec![Override {
             layer: OverrideLayer::Project,
             policy: id(GUARD),
@@ -645,10 +642,7 @@ fn the_effective_policies_are_listed_per_mode() {
 #[test]
 fn a_reward_is_kept_within_its_guard_and_is_never_a_failure() {
     let catalog = catalog(
-        vec![
-            test_guard(Level::Require),
-            clippy_reward(RewardLevel::Advise),
-        ],
+        vec![test_guard(Level::Force), clippy_reward(RewardLevel::Advise)],
         vec![Override {
             layer: OverrideLayer::Project,
             policy: id(GUARD),
@@ -700,7 +694,7 @@ fn the_verdict_takes_the_strongest_and_ignores_the_order() {
     let mut warn = test_guard(Level::Advise);
     warn.id = id(OTHER);
     warn.name = "advice".parse().unwrap();
-    let deny = test_guard(Level::Require);
+    let deny = test_guard(Level::Force);
     let events = [agent(Body::TaskStart), agent(Body::Stop)];
     let one = catalog(vec![warn.clone(), deny.clone()], vec![]);
     let other = catalog(vec![deny, warn], vec![]);
@@ -718,7 +712,6 @@ fn an_override_that_makes_a_guard_stop_needs_its_fixtures() {
     bare.fixtures.clear();
     let bugfix: Mode = "bugfix".parse().unwrap();
     let raises = [
-        (OverrideLayer::Project, Level::Require),
         (OverrideLayer::Project, Level::Force),
         (OverrideLayer::Mode(bugfix), Level::Force),
     ];
@@ -766,7 +759,7 @@ fn an_override_that_makes_a_guard_stop_needs_its_fixtures() {
     catalog(vec![test_guard(Level::Advise)], vec![raise.clone()]);
 
     // Stopping as defined and raised again: one error, not two.
-    let mut stopping = test_guard(Level::Require);
+    let mut stopping = test_guard(Level::Force);
     stopping.fixtures.clear();
     assert_eq!(
         rejected(vec![stopping], vec![raise]),
@@ -793,7 +786,7 @@ fn accept_reports_every_broken_invariant() {
         vec![Override {
             layer: OverrideLayer::Project,
             policy: id(REWARD),
-            change: Change::Level(Level::Require),
+            change: Change::Level(Level::Force),
         }],
     );
     assert!(errors.contains(&AcceptError::MissingFixtures(id(GUARD))));
@@ -804,7 +797,7 @@ fn accept_reports_every_broken_invariant() {
     );
     assert!(errors.contains(&AcceptError::RewardOverrideLevel {
         policy: id(REWARD),
-        level: Level::Require
+        level: Level::Force
     }));
 
     // A reward stronger than its guard, or bound by nothing.
@@ -848,7 +841,7 @@ fn accept_reports_every_broken_invariant() {
 /// FR2, UC12: a fixture that fails rejects the catalog.
 #[test]
 fn a_fixture_that_fails_rejects_the_catalog_unless_it_is_a_known_gap() {
-    let mut guard = test_guard(Level::Require);
+    let mut guard = test_guard(Level::Force);
     // Wrong on purpose: a lost line makes the guard unknown, not satisfied.
     let wrong = || {
         fixture(

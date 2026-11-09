@@ -50,7 +50,7 @@
 //!     subject: EventKind::Stop,
 //!     when: None,
 //!     rule: Rule::Structural(tested),
-//!     polarity: Polarity::Guard { level: Level::Require },
+//!     polarity: Polarity::Guard { level: Level::Force },
 //!     enabled: true,
 //!     fixtures: vec![
 //!         fixture("untested", vec![event(Body::TaskStart), event(Body::Stop)], Expect::Violated),
