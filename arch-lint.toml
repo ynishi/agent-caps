@@ -32,3 +32,22 @@ deny = [
     "chrono::Utc::now", "chrono::Local::now",
 ]
 message = "domain is pure: take I/O, time and randomness as values; the umbrella crate's adapters read them."
+
+[[scopes]]
+name = "authority"
+paths = ["crates/agent-caps-core/src/domain/authority.rs"]
+
+[[restrict-use]]
+name = "authority-is-lowest"
+scope = "authority"
+deny = [
+    "super::policy", "super::policy::**", "crate::domain::policy", "crate::domain::policy::**",
+    "super::catalog", "super::catalog::**", "crate::domain::catalog", "crate::domain::catalog::**",
+    "super::change", "super::change::**", "crate::domain::change", "crate::domain::change::**",
+    "super::event", "super::event::**", "crate::domain::event", "crate::domain::event::**",
+    "super::state", "super::state::**", "crate::domain::state", "crate::domain::state::**",
+    "super::predicate", "super::predicate::**", "crate::domain::predicate", "crate::domain::predicate::**",
+    "super::exempt", "super::exempt::**", "crate::domain::exempt", "crate::domain::exempt::**",
+    "super::judge", "super::judge::**", "crate::domain::judge", "crate::domain::judge::**",
+]
+message = "authority is the lowest layer of the domain: it knows nothing of policies, catalogs, changes, events, exemptions, judgments, state or predicates, so who may loosen whose work can change without them."

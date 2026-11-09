@@ -22,9 +22,13 @@
 //! - A reward is bound by one guard: the guard is the line not to cross, the reward the way to
 //!   go within it. A reward cannot be stronger than its guard, and cannot be Force
 //!   ([`RewardLevel`] has no such value).
+//! - A policy and an override each have an author, a [`Principal`]. What may refer to what, and
+//!   who may change whose, follows the [`Authority`] the catalog keeps (see
+//!   [`super::catalog`] and [`super::change`]).
 //! - A [`Policy`] is made only by [`super::catalog::Catalog::accept`], which checks the graph as a
 //!   whole (see there). The [`PolicyDef`] it is made from is plain data with no rule of its own.
 
+use super::authority::{Authority, Principal};
 use super::event::Event;
 use super::name::{Mode, PolicyId, PolicyName};
 use super::predicate::{Pred, Truth};
@@ -152,6 +156,10 @@ pub struct PolicyDef {
     pub enabled: bool,
     /// Its examples.
     pub fixtures: Vec<Fixture>,
+    /// Who wrote it. The graph is trusted as written; the catalog checks that the author is a
+    /// principal of its [`Authority`], that a meta policy's author is a root, and that the
+    /// policy refers only to policies of its own author or of one above.
+    pub author: Principal,
 }
 
 /// The layer an override belongs to. A mode's overrides apply over the project's.
@@ -183,6 +191,8 @@ pub struct Override {
     pub policy: PolicyId,
     /// The change.
     pub change: Change,
+    /// Who wrote it. It may target only a policy whose author is its own or above it.
+    pub author: Principal,
 }
 
 /// What a catalog is accepted from: the policies, and the overrides of the layers above them.
@@ -192,6 +202,33 @@ pub struct PolicyGraph {
     pub policies: Vec<PolicyDef>,
     /// The overrides.
     pub overrides: Vec<Override>,
+}
+
+impl PolicyGraph {
+    /// The graph narrowed to what `by` does not cover: the policies and overrides whose author
+    /// is neither `by` nor below it. It is what the graph would be had `by` and those below it
+    /// written nothing, so a catalog's rules without their work can be compared with its rules
+    /// with it.
+    ///
+    /// A graph a catalog accepts narrows to one it would accept again: an item refers only to
+    /// items of its own author or above, so when the target of a reference is dropped, being
+    /// covered by `by`, its referrer is covered by `by` too and is dropped with it.
+    pub fn not_covered_by(&self, authority: &Authority, by: &Principal) -> Self {
+        Self {
+            policies: self
+                .policies
+                .iter()
+                .filter(|def| !authority.covers(by, &def.author))
+                .cloned()
+                .collect(),
+            overrides: self
+                .overrides
+                .iter()
+                .filter(|o| !authority.covers(by, &o.author))
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 /// What a policy found on one event.
@@ -218,9 +255,18 @@ impl Policy {
         Self(def)
     }
 
+    pub(super) fn def(&self) -> &PolicyDef {
+        &self.0
+    }
+
     /// Its id.
     pub fn id(&self) -> PolicyId {
         self.0.id
+    }
+
+    /// Who wrote it.
+    pub fn author(&self) -> &Principal {
+        &self.0.author
     }
 
     /// Its name.

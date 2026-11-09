@@ -13,6 +13,7 @@
 //! A guard that stops the end of a turn until `cargo test` has passed within the task:
 //!
 //! ```
+//! use agent_caps::domain::authority::{Authority, Principal};
 //! use agent_caps::domain::catalog::Catalog;
 //! use agent_caps::domain::event::{Body, Event};
 //! use agent_caps::domain::judge::{judge, Verdict};
@@ -43,6 +44,7 @@
 //! let fixture = |name: &str, events, expect| Fixture {
 //!     name: name.to_owned(), events, expect, known_gap: false,
 //! };
+//! let user = Principal::new("user");
 //! let guard = PolicyDef {
 //!     id: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".parse().unwrap(),
 //!     name: "test-before-stop".parse().unwrap(),
@@ -56,8 +58,10 @@
 //!         fixture("untested", vec![event(Body::TaskStart), event(Body::Stop)], Expect::Violated),
 //!         fixture("tested", vec![event(Body::TaskStart), test_run(true), event(Body::Stop)], Expect::Satisfied),
 //!     ],
+//!     author: user.clone(),
 //! };
-//! let catalog = Catalog::accept(PolicyGraph { policies: vec![guard], overrides: vec![] }).unwrap();
+//! let policies = PolicyGraph { policies: vec![guard], overrides: vec![] };
+//! let catalog = Catalog::accept(policies, Authority::single(user)).unwrap();
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];
 //! let state = catalog.fold(&history);
@@ -68,6 +72,8 @@
 //! # Map
 //!
 //! - [`domain::catalog`]: the accepted policies, their layers and invariants.
+//! - [`domain::authority`]: the hierarchy of who writes policies, and who may loosen whose.
+//! - [`domain::change`]: whether one who changes a catalog may, judged by the difference.
 //! - [`domain::predicate`]: the structural rule language.
 //! - [`domain::event`] and [`domain::schema`]: what happened, and the fields a rule can read.
 //! - [`domain::state`]: the fold of the events a judgment reads.
