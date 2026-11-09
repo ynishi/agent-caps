@@ -19,9 +19,17 @@ and this project adheres to
   what `judge` reads, so a platform adapter and a judgment see the same list
   (#6).
 
+### Changed
+
+- Breaking, before 1.0: `Level::Require` is removed, and `Level` is now
+  `Inform < Advise < Force`. A guard that stops is `Level::Force`. A level says
+  how much the agent is trusted with a rule, not when the check happens: that
+  follows from the event the policy judges, and which mechanism of a platform
+  stops it is the adapter's (#5).
+
 ### Fixed
 
-- `Catalog::accept` now rejects an override that raises a guard to Require or
-  Force when the guard lacks a fixture it fails on and one it holds on
+- `Catalog::accept` now rejects an override that raises a guard to Force when
+  the guard lacks a fixture it fails on and one it holds on
   (`AcceptError::RaisedWithoutFixtures`); before, only the level a guard was
   defined with was checked (#11).
