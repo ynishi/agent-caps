@@ -4,7 +4,7 @@ use super::catalog::{AcceptError, Catalog, Degraded};
 use super::event::{Body, Event};
 use super::exempt::{Exempt, Lifetime};
 use super::judge::{Cause, Recognition, Verdict, judge};
-use super::name::{CommandWords, GlobPattern, PolicyId};
+use super::name::{CommandWords, GlobPattern, Mode, PolicyId};
 use super::policy::{
     Change, DefLayer, Expect, Fixture, Level, Override, OverrideLayer, Polarity, PolicyDef,
     PolicyGraph, RewardLevel, Rule,
@@ -578,6 +578,71 @@ fn the_verdict_takes_the_strongest_and_ignores_the_order() {
     let expected = Verdict::Deny(vec![Cause::Violated(id(GUARD))]);
     assert_eq!(verdict(&one, &events), expected);
     assert_eq!(verdict(&other, &events), expected);
+}
+
+/// FR2, UC12: an override that raises a guard to a stopping level needs the guard's fixtures, in
+/// every layer; a guard that has them may be raised, and one already stopping as defined is
+/// reported once, as missing its fixtures.
+#[test]
+fn an_override_that_makes_a_guard_stop_needs_its_fixtures() {
+    let mut bare = test_guard(Level::Advise);
+    bare.fixtures.clear();
+    let bugfix: Mode = "bugfix".parse().unwrap();
+    let raises = [
+        (OverrideLayer::Project, Level::Require),
+        (OverrideLayer::Project, Level::Force),
+        (OverrideLayer::Mode(bugfix), Level::Force),
+    ];
+    for (layer, level) in raises {
+        let errors = rejected(
+            vec![bare.clone()],
+            vec![Override {
+                layer: layer.clone(),
+                policy: id(GUARD),
+                change: Change::Level(level),
+            }],
+        );
+        assert_eq!(
+            errors,
+            vec![AcceptError::RaisedWithoutFixtures {
+                policy: id(GUARD),
+                layer,
+                level,
+            }]
+        );
+    }
+
+    // Lowering, or raising only to Advise, needs no fixture.
+    let not_stopping = Override {
+        layer: OverrideLayer::Project,
+        policy: id(GUARD),
+        change: Change::Level(Level::Inform),
+    };
+    catalog(vec![bare.clone()], vec![not_stopping]);
+    let mut informs = test_guard(Level::Inform);
+    informs.fixtures.clear();
+    let to_advise = Override {
+        layer: OverrideLayer::Project,
+        policy: id(GUARD),
+        change: Change::Level(Level::Advise),
+    };
+    catalog(vec![informs], vec![to_advise]);
+
+    // A guard with its fixtures may be raised.
+    let raise = Override {
+        layer: OverrideLayer::Project,
+        policy: id(GUARD),
+        change: Change::Level(Level::Force),
+    };
+    catalog(vec![test_guard(Level::Advise)], vec![raise.clone()]);
+
+    // Stopping as defined and raised again: one error, not two.
+    let mut stopping = test_guard(Level::Require);
+    stopping.fixtures.clear();
+    assert_eq!(
+        rejected(vec![stopping], vec![raise]),
+        vec![AcceptError::MissingFixtures(id(GUARD))]
+    );
 }
 
 /// FR2, UC12: a stopping guard without fixtures is not accepted. FR14: a Meta policy takes no
