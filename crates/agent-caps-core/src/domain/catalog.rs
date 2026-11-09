@@ -28,7 +28,9 @@
 //!   whose guard is off is off; both are reported as [`Degraded`], never done silently.
 //! - Every predicate reads each field from its own kind of event, with an operand of its type.
 //! - No override reaches a meta policy, and no override gives a reward Force or Require.
-//! - A Force or Require guard has at least one fixture it fails on and one it holds on.
+//! - A guard that is Force or Require, as defined or through any override of any layer, has at
+//!   least one fixture it fails on and one it holds on: an override cannot make a stopping guard
+//!   that was never checked on an example.
 //! - Every fixture of a structural policy gives the finding it expects, except those marked as
 //!   known gaps.
 //!
@@ -43,7 +45,7 @@ use std::fmt;
 use super::event::Event;
 use super::name::{Mode, PolicyId, PolicyName};
 use super::policy::{
-    Change, DefLayer, Expect, Finding, Level, Override, OverrideLayer, Polarity, Policy,
+    Change, DefLayer, Expect, Finding, Level, Override, OverrideLayer, Polarity, Policy, PolicyDef,
     PolicyGraph, Rule,
 };
 use super::predicate::PredError;
@@ -86,6 +88,16 @@ pub enum AcceptError {
     },
     /// The Force or Require guard lacks a fixture it fails on, or one it holds on.
     MissingFixtures(PolicyId),
+    /// The override raises the guard to Force or Require, and the guard lacks a fixture it fails
+    /// on, or one it holds on.
+    RaisedWithoutFixtures {
+        /// The guard.
+        policy: PolicyId,
+        /// The layer of the override that raises it.
+        layer: OverrideLayer,
+        /// The level it is raised to.
+        level: Level,
+    },
     /// The fixture has no event to judge.
     EmptyFixture {
         /// The policy.
@@ -144,6 +156,21 @@ impl fmt::Display for AcceptError {
                 f,
                 "guard {id} stops events but lacks a fixture it fails on or one it holds on"
             ),
+            Self::RaisedWithoutFixtures {
+                policy,
+                layer,
+                level,
+            } => {
+                let layer = match layer {
+                    OverrideLayer::Project => "the project".to_owned(),
+                    OverrideLayer::Mode(mode) => format!("mode {mode}"),
+                };
+                write!(
+                    f,
+                    "an override of {layer} raises guard {policy} to {level:?}, but the guard \
+                     lacks a fixture it fails on or one it holds on"
+                )
+            }
             Self::EmptyFixture { policy, fixture } => {
                 write!(f, "fixture `{fixture}` of {policy} has no event")
             }
@@ -457,10 +484,7 @@ fn check_policies(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
                 }
             }
             Polarity::Guard { level } if level.stops() => {
-                let real = || def.fixtures.iter().filter(|f| !f.known_gap);
-                let fails = real().any(|f| f.expect == Expect::Violated);
-                let holds = real().any(|f| f.expect == Expect::Satisfied);
-                if !(fails && holds) {
+                if !has_stopping_fixtures(def) {
                     errors.push(AcceptError::MissingFixtures(def.id));
                 }
             }
@@ -482,13 +506,37 @@ fn check_overrides(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
         if def.layer == DefLayer::Meta {
             errors.push(AcceptError::MetaOverride(o.policy));
         }
-        if let (Polarity::Reward { .. }, Change::Level(level)) = (&def.polarity, o.change)
-            && level.stops()
-        {
-            errors.push(AcceptError::RewardOverrideLevel {
-                policy: o.policy,
-                level,
-            });
+        match (&def.polarity, o.change) {
+            (Polarity::Reward { .. }, Change::Level(level)) if level.stops() => {
+                errors.push(AcceptError::RewardOverrideLevel {
+                    policy: o.policy,
+                    level,
+                });
+            }
+            // A guard that already stops as defined is reported once, by `check_policies`; an
+            // override of a meta policy never applies, and is reported as `MetaOverride`.
+            (Polarity::Guard { level: defined }, Change::Level(level))
+                if def.layer == DefLayer::Base
+                    && level.stops()
+                    && !defined.stops()
+                    && !has_stopping_fixtures(def) =>
+            {
+                errors.push(AcceptError::RaisedWithoutFixtures {
+                    policy: o.policy,
+                    layer: o.layer.clone(),
+                    level,
+                });
+            }
+            _ => {}
         }
     }
+}
+
+/// Whether the guard has, besides its known gaps, a fixture it fails on and one it holds on: what
+/// a stopping guard needs, whichever layer makes it stop.
+fn has_stopping_fixtures(def: &PolicyDef) -> bool {
+    let real = || def.fixtures.iter().filter(|f| !f.known_gap);
+    let fails = real().any(|f| f.expect == Expect::Violated);
+    let holds = real().any(|f| f.expect == Expect::Satisfied);
+    fails && holds
 }
