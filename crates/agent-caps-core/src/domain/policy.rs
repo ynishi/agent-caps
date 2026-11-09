@@ -4,19 +4,24 @@
 //! reward), and how strongly ([`Level`]). Knowledge, procedures and roles are not parts of their
 //! own: each is a set of policies seen another way.
 //!
+//! A level is how much the agent is trusted with a rule, not when the rule is checked:
+//!
 //! ```text
 //! Level       Guard (must not)          Reward (should)
-//! Force       stop before the event     -  (a reward cannot have it)
-//! Require     stop after the event      -  (a reward cannot have it)
+//! Force       stop (unknown stops too)  -  (a reward cannot have it)
 //! Advise      warn                      recommend
 //! Inform      tell                      tell
 //! ```
 //!
+//! When a check happens follows from the event the policy judges (its `subject`): a tool use is
+//! judged as it comes, the end of a turn when the turn ends. Which mechanism of a platform stops
+//! it is the adapter's to choose; the policy holds no such value.
+//!
 //! # Invariants
 //!
 //! - A reward is bound by one guard: the guard is the line not to cross, the reward the way to
-//!   go within it. A reward cannot be stronger than its guard, and cannot be Force or Require
-//!   ([`RewardLevel`] has no such values).
+//!   go within it. A reward cannot be stronger than its guard, and cannot be Force
+//!   ([`RewardLevel`] has no such value).
 //! - A [`Policy`] is made only by [`super::catalog::Catalog::accept`], which checks the graph as a
 //!   whole (see there). The [`PolicyDef`] it is made from is plain data with no rule of its own.
 
@@ -26,23 +31,23 @@ use super::predicate::{Pred, Truth};
 use super::schema::EventKind;
 use super::state::{SlotTable, State};
 
-/// How strongly a policy holds, weakest first.
+/// How much the agent is trusted with a rule, least first. The level says what a failure
+/// costs the agent; it does not say when the check happens, which follows from the event the
+/// policy judges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
     /// Only tells.
     Inform,
-    /// Warns or recommends; the agent may decide otherwise.
+    /// A guard warns, a reward recommends; the agent may decide otherwise.
     Advise,
-    /// Stops after the event (at the end of a turn).
-    Require,
-    /// Stops before the event.
+    /// A violation is stopped, and so is a finding that is unknown.
     Force,
 }
 
 impl Level {
-    /// Whether a guard of this level stops the event it fails on.
+    /// Whether a guard of this level stops the event it fails on: Force only.
     pub fn stops(self) -> bool {
-        matches!(self, Self::Require | Self::Force)
+        matches!(self, Self::Force)
     }
 }
 

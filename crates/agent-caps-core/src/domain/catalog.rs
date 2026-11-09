@@ -28,8 +28,8 @@
 //!   overrides, a reward stronger than its guard is lowered to the guard's level, and a reward
 //!   whose guard is off is off; both are reported as [`Degraded`], never done silently.
 //! - Every predicate reads each field from its own kind of event, with an operand of its type.
-//! - No override reaches a meta policy, and no override gives a reward Force or Require.
-//! - A guard that is Force or Require, as defined or through any override of any layer, has at
+//! - No override reaches a meta policy, and no override gives a reward Force.
+//! - A guard that is Force, as defined or through any override of any layer, has at
 //!   least one fixture it fails on and one it holds on: an override cannot make a stopping guard
 //!   that was never checked on an example.
 //! - Every fixture of a structural policy gives the finding it expects, except those marked as
@@ -87,9 +87,9 @@ pub enum AcceptError {
         /// Its guard.
         guard: PolicyId,
     },
-    /// The Force or Require guard lacks a fixture it fails on, or one it holds on.
+    /// The Force guard lacks a fixture it fails on, or one it holds on.
     MissingFixtures(PolicyId),
-    /// The override raises the guard to Force or Require, and the guard lacks a fixture it fails
+    /// The override raises the guard to Force, and the guard lacks a fixture it fails
     /// on, or one it holds on.
     RaisedWithoutFixtures {
         /// The guard.

@@ -11,7 +11,7 @@
 //! # Invariants
 //!
 //! - The verdict does not depend on the order of the policies.
-//! - A guard that cannot tell (its finding is unknown) counts as failing: Force and Require deny,
+//! - A guard that cannot tell (its finding is unknown) counts as failing: Force denies,
 //!   Advise and Inform warn. Not seeing something never lets an event through a stopping guard.
 //! - An exempted guard is left out of the verdict, and recorded as exempted so a one-time
 //!   exemption is used up.
