@@ -1,0 +1,235 @@
+//! The requirements ledger: the use cases, the principles and the functional requirements of
+//! agent-caps, in one place.
+//!
+//! This module is for reading. Its items are outside semver and may change in any release; do
+//! not depend on them. The leading underscore says so, as it does for a tutorial module.
+//!
+//! ```text
+//! use cases ──cite──▶ requirements ◀──cite── principles (in the requirement text)
+//!                          ▲
+//!                          │ cited by `UC<n>` and `FR<n>` in the doc comments of tests and code
+//!                     tests/requirements.rs checks the ledger and every citation
+//! ```
+//!
+//! # How to read this ledger
+//!
+//! - A use case says who wants what, in one or two sentences, and lists the requirements it
+//!   needs. A use case cites only requirements that are supported or still undecided.
+//! - A principle is a rule the requirements are derived from.
+//! - A requirement is one thing agent-caps does, or does not do. Its decision and the layer
+//!   that owns it are columns; a condition that goes with the requirement (for example, a
+//!   calibration record before a stopping level) and whether an operation needs an approver,
+//!   which follows from the principles, are in its text.
+//! - The legend of every value is the documentation of the variants of [`Decision`],
+//!   [`Status`] and [`Layer`]. A cell holds one of those words and nothing else.
+//!   A withdrawn row may name its successor after the word, written `-> <ID>`.
+//! - `Issues` lists the issues related to a requirement, as plain references such as `#12`
+//!   separated by `,`, and may be empty. They say where to read more; they say nothing about
+//!   whether any work is done or open.
+//! - Every test of the core's behavior cites at least one use case or requirement in its doc
+//!   comment, and `cargo test` fails otherwise.
+//!
+//! # How to change this ledger
+//!
+//! - A row is never deleted. A row that no longer holds is withdrawn, and points at its
+//!   successor when there is one. This holds for use cases, requirements and principles alike.
+//! - The same row may be changed for wording, and for its decision, layer and issues.
+//!   When the meaning of a requirement changes, withdraw the old row with
+//!   `withdrawn -> FR<new>` and add a new row: a test or a piece of code that cites the old
+//!   requirement is then pointed to the new one, where silently changing the meaning would
+//!   leave the citation standing on a different requirement.
+//! - Tests and code cite `UC<n>` and `FR<n>` in their doc comments and never `P<n>`: the
+//!   principles are reached through the requirements. The doc comment of the `#[test]` function
+//!   that checks a requirement is the place to cite it; listing citations in a module doc leaves
+//!   no way to tell which test checks which requirement.
+//! - An id is never changed and never reused. Use cases, requirements and principles are each
+//!   numbered from 1 without gaps.
+//! - A branch that adds rows takes the numbers after the last one on `main`, and renumbers its
+//!   own additions just before it lands (never a number already on `main`), fixing its own
+//!   citations in the same commit. Do not cite a number from another branch before it has
+//!   landed.
+//! - A table cell holds no square bracket, which rustdoc would read as a link.
+//!
+//! # Use cases
+//!
+//! | ID | Use case | Status | Requirements |
+//! |---|---|---|---|
+//! | UC1 | A developer lets an agent implement a change and wants no untested change committed; a test result that has not arrived does not count as a pass. | active | FR1, FR20 |
+//! | UC2 | A developer wants the agent stopped once when it tries to end a turn without running the tests, but let through when it insists, so that it is never held forever. | active | FR1 |
+//! | UC3 | A developer whose transcript gets cut or unreadable wants every rule to fall back to the stopping side, with the reason shown as unknown, and a fact already seen to stay seen. | active | FR20 |
+//! | UC4 | A developer wants nothing the agent writes in its transcript to loosen the rules: a mode switch or an exemption takes effect only from the developer or from caps itself. | active | FR9, FR11 |
+//! | UC5 | A developer wants a hard line, such as never creating a public repository, stopped before the tool runs, and not removable by any layer, mode or exemption. | active | FR1, FR14 |
+//! | UC6 | A developer wants to lift one guard for a bounded time on a given target, such as one file for one task, with a reason, and to have it return afterwards. | active | FR9 |
+//! | UC7 | A developer with many repositories keeps shared best practices as a set and changes only the level or the on and off state of a policy per project. | active | FR4, FR5, FR6 |
+//! | UC8 | A developer wants a stronger rule while fixing a bug and a weaker one while exploring, by switching the kind of work, from the next judgment on. | active | FR11 |
+//! | UC9 | A developer wants a recommendation to stay within the guard that binds it: it is never stronger than that guard, goes when the guard is off, and not following it is not a failure. | active | FR13 |
+//! | UC10 | A developer wants a policy that nothing can change during a run, whatever the layer, mode or exemption. | active | FR14 |
+//! | UC11 | A developer who uses several platforms wants a rule that a platform cannot enforce to be lowered to what it can do, and to see what was lowered. | active | FR28 |
+//! | UC12 | A developer wants a stopping rule never to take effect without examples of what it stops and what it lets through, all checked when the rule is accepted. | active | FR2 |
+//! | UC13 | A developer wants the agent advised to read a design document before editing an area, and not stopped if it does not, with following the advice recorded. | active | FR1, FR13 |
+//! | UC14 | A developer wants a rule that holds only inside one role, such as a reviewer sub agent that must not edit, and that stops when the role is unknown. | active | FR1 |
+//! | UC15 | A developer wants a procedure recommended in order, such as test then lint then commit, with only the key step enforced, starting afresh for each task. | active | FR1, FR13 |
+//! | UC16 | A developer running an improvement loop wants the turn held until the last measured score is high enough, and not passed because an earlier score was. | active | FR1 |
+//! | UC17 | A tool that builds hooks and instructions wants the list of policies in effect with their levels, telling off apart from in effect but not matching the current event. | active | FR12 |
+//! | UC18 | An adapter wants to learn from one place in a judgment whether it stops before the action or at the end of the turn. | active | FR12 |
+//! | UC19 | An agent working on a long task adds a rule of its own from what it has learned, which tightens only, needs no approval, and is gone when the task ends. | active | FR16 |
+//! | UC20 | An agent removes or weakens a rule it added itself, but never ends up looser than the developer's rules. | active | FR18 |
+//! | UC21 | An agent tightens the mode of work on its own, while loosening it stays with the developer. | active | FR11 |
+//! | UC22 | An improvement loop proposes level adjustments from the record of judgments: tightening ones enter on their own and loosening ones are only proposed to the developer. | active | FR24 |
+//! | UC23 | A developer wants a rule that code cannot express, such as a commit message that explains its reason, judged by a classifier whose answers are recorded and replayable. | active | FR26 |
+//!
+//! # Principles
+//!
+//! | ID | Principle | Status |
+//! |---|---|---|
+//! | P1 | A tightening operation needs no approval from anyone, the agent included: leaning to the stopping side costs only a stopped task, which returns to the user. The exception is a rule whose judgment is uncertain, such as a classifier: it becomes a stopping level only with a calibration record of its false stops, because an uncertain rule that keeps stopping keeps returning the task to the user. | active |
+//! | P2 | A loosening operation is decided by the origin of what it loosens. What came from the user is loosened only by an approver; the agent loosens only what it added itself, never below the user's rules, and for the user's rules it only proposes. | active |
+//! | P3 | A Meta policy does not change during a run, by any operation. | active |
+//! | P4 | A temporary change always has a period and reverts when it ends. What is meant to last is made with a permanent operation, an override. | active |
+//! | P5 | The domain holds the rules, their judgment, and whether an operation tightens or loosens, read from the difference before and after. Storage, history, import, the approval procedure and records belong to the application; reading a platform belongs to an adapter. | active |
+//! | P6 | The policy store and the approval records cannot be rewritten directly by the agent. The rule that stops the rewriting is itself a Meta policy, which P3 keeps in place. | active |
+//! | P7 | An approval enters only through a door the agent cannot make, such as a command the user runs by hand. An approval written in the agent's transcript is not one. | active |
+//! | P8 | When one operation both tightens and loosens, as a mode switch, a swap of a set, an import or a cancellation does, the domain judges by the difference before and after, and one loosening difference makes the whole a loosening operation. | active |
+//!
+//! # Requirements
+//!
+//! | ID | Requirement | Decision | Layer | Issues |
+//! |---|---|---|---|---|
+//! | FR1 | Write one policy and put it into effect, for example NetAccess, which stops outgoing network use. | supported | Domain, Adapter | |
+//! | FR2 | Check a policy against examples before it is used: an accepted policy has shown what it stops and what it lets through. | supported | Domain | #11 |
+//! | FR3 | Use policies as a set, such as a safety set: put it in and take it out. Putting it in needs no approval. Taking it out is a loosening under P2: an approver for the user's set, nobody for the agent's. | supported | Domain | #16 |
+//! | FR4 | Combine sets, for example a shared set with the set of this repository. P8 applies: an approver is needed when the repository side weakens the shared side. | supported | Application, Domain | #7 |
+//! | FR5 | Change the level of a policy permanently. Raising it needs no approval; lowering it is a loosening under P2. | supported | Domain, Application | #14 |
+//! | FR6 | Turn a policy off permanently, and turn it on again. Turning it off is a loosening under P2; turning it on needs no approval. | supported | Domain, Application | #14 |
+//! | FR7 | Delete a policy. This is a loosening under P2. A Meta policy cannot be deleted, by P3. | supported | Application, Domain | #14 |
+//! | FR8 | Lower a level for a bounded time, for example NetAccess to a warning for this task only. A loosening under P2, with a period under P4. | supported | Domain | #15 |
+//! | FR9 | Switch a policy off once or for a bounded time, as an exemption. Only one that comes from the user takes effect, under P2 and P4. | supported | Domain | |
+//! | FR10 | Raise a level for a bounded time, for example NetAccess to Force for this task only. The tightening counterpart of lowering for a bounded time, under P1 and P4. | supported | Domain | #15 |
+//! | FR11 | Switch by the kind of work, as a mode. A switch is judged by the difference it makes (P8): an approver is needed when any difference loosens. | supported | Domain | #17 |
+//! | FR12 | See which policies are in effect and at which level, off told apart from in effect but not matching. | supported | Domain | #6 |
+//! | FR13 | Write a recommendation that does not stop anything. It neither tightens nor loosens, and it stays within the guard that binds it. | supported | Domain | |
+//! | FR14 | Place a policy that cannot be changed, as a Meta policy. Only the user can place one (P3). | supported | Domain | |
+//! | FR15 | Change a Meta policy during a run. A Meta policy changes only as a change to the code of the repository (P3). | not supported | ? | |
+//! | FR16 | The agent adds a policy for itself during a task. Only a policy that is not Meta and that tightens may be added, never a Meta policy or an exemption, and it is removed when the task ends (P1). | supported | Domain, Application | #14 |
+//! | FR17 | The agent loosens a policy of the user. The agent only proposes; an approver makes the change as an ordinary operation (P2). | not supported | Application | #14 |
+//! | FR18 | The agent removes or weakens a policy or a set that it added itself. This holds only for what came from the agent (P2). | supported | Domain | #14 |
+//! | FR19 | The agent creates an exemption (P2). | not supported | ? | |
+//! | FR20 | When something cannot be seen, fall back to the stopping side: not being able to read never loosens a rule. | supported | Domain | |
+//! | FR21 | See and cancel temporary changes and exemptions. Cancelling is judged by its result (P8): no approval when it tightens, a loosening under P2 when it loosens, as when the user's raise is cancelled. | supported | Domain, Application | #14, #15 |
+//! | FR22 | See who changed a policy and when. | supported | Application, Domain | #19 |
+//! | FR23 | See and count the records of judgments, for example which policy stopped most often. | supported | Application | #19 |
+//! | FR24 | Propose a level adjustment from the records. A tightening proposal enters without approval; a loosening one is a loosening under P2. | supported | Application | #19 |
+//! | FR25 | Share policies with others by exporting and importing them. An import follows P8, as combining sets does. | supported | Adapter, Application | #19 |
+//! | FR26 | Judge with a classifier a rule that code cannot express. Raising such a rule to a stopping level needs a calibration record first (the exception of P1). | supported | Domain, Application, Adapter | #1 |
+//! | FR27 | Protect the policy store and the approval records from direct rewriting by the agent (P6), always. | supported | Domain, Adapter | #18 |
+//! | FR28 | Cap levels by what a platform can carry (Support): given, per event kind, the highest level a platform can enforce, a policy above it is lowered to it and reported as degraded, and a reward bound to a lowered guard follows. The cap is a core domain value supplied by the adapter. | supported | Domain, Adapter | #8 |
+//! | FR29 | When several guards judge one event, the strongest result decides (deny over warn over allow), whatever the order of the policies; recommendations are each reported and never combined. | supported | Domain | |
+
+use std::fmt;
+use std::str::FromStr;
+
+/// A word that is not one of the values of the enum it was read as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownWord {
+    /// The kind of value that was expected.
+    pub expected: &'static str,
+    /// The text that was read.
+    pub found: String,
+}
+
+impl fmt::Display for UnknownWord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "`{}` is not a {}", self.found, self.expected)
+    }
+}
+
+impl std::error::Error for UnknownWord {}
+
+/// What the project decided about a requirement. Parsed from the whole word; a successor of a
+/// withdrawn row, written `-> <ID>` after the word, is not part of this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Decision {
+    /// `supported`: agent-caps is to do this. This is a decision, not a statement that it is
+    /// built.
+    Supported,
+    /// `not supported`: agent-caps does not do this, and the row says why.
+    NotSupported,
+    /// `?`: not decided yet. The cell is not filled by guessing.
+    Undecided,
+    /// `withdrawn`: the row no longer holds. It stays, and may name its successor as
+    /// `-> <ID>`.
+    Withdrawn,
+}
+
+impl FromStr for Decision {
+    type Err = UnknownWord;
+
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        match word {
+            "supported" => Ok(Self::Supported),
+            "not supported" => Ok(Self::NotSupported),
+            "?" => Ok(Self::Undecided),
+            "withdrawn" => Ok(Self::Withdrawn),
+            other => Err(UnknownWord {
+                expected: "decision",
+                found: other.to_owned(),
+            }),
+        }
+    }
+}
+
+/// Whether a use case or a principle still holds. Parsed from the whole word; a successor of a
+/// withdrawn row, written `-> <ID>` after the word, is not part of this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// `active`: the row holds.
+    Active,
+    /// `withdrawn`: the row no longer holds. It stays, and may name its successor as
+    /// `-> <ID>`.
+    Withdrawn,
+}
+
+impl FromStr for Status {
+    type Err = UnknownWord;
+
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        match word {
+            "active" => Ok(Self::Active),
+            "withdrawn" => Ok(Self::Withdrawn),
+            other => Err(UnknownWord {
+                expected: "status",
+                found: other.to_owned(),
+            }),
+        }
+    }
+}
+
+/// The layer that owns a requirement. A requirement may be owned by several, listed with `,`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    /// `Domain`: the pure model, which holds the rules and their judgment.
+    Domain,
+    /// `Application`: storage, history, records and the procedures around the model.
+    Application,
+    /// `Adapter`: reading and talking to a platform.
+    Adapter,
+    /// `?`: not decided yet, or no layer applies.
+    Unknown,
+}
+
+impl FromStr for Layer {
+    type Err = UnknownWord;
+
+    fn from_str(word: &str) -> Result<Self, Self::Err> {
+        match word {
+            "Domain" => Ok(Self::Domain),
+            "Application" => Ok(Self::Application),
+            "Adapter" => Ok(Self::Adapter),
+            "?" => Ok(Self::Unknown),
+            other => Err(UnknownWord {
+                expected: "layer",
+                found: other.to_owned(),
+            }),
+        }
+    }
+}

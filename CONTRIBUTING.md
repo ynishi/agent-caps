@@ -80,6 +80,14 @@ What goes where:
   diagram of the flow through it (the write path and the read path when they
   differ), the invariants it keeps, and what each of its errors means and how
   to fix it.
+- **Requirements ledger** (the module doc of
+  `crates/agent-caps/src/_requirements.rs`): the use cases, principles and
+  functional requirements, and the rules for changing them. A test cites the
+  requirement it checks as `FR<n>` (and the use case as `UC<n>`) in the doc
+  comment of the `#[test]` function; `cargo test` fails on a citation that
+  points at nothing or at a withdrawn row, and on a test of the core that cites
+  neither. The rules live in that module doc only; "Requirements in the change
+  loop" below says when to apply them.
 - **Command line** (a section of the umbrella crate's doc): the commands with
   an example each, the output format, and the exit codes and what each one
   promises. The command is the umbrella package's own binary (`src/main.rs`,
@@ -158,7 +166,8 @@ takes it.
 If you develop here with a coding agent, the loop that works is:
 
 ```text
-issue -> just worktree-new -> implement -> just check
+issue -> just worktree-new -> ledger rows (UC / FR) -> implement, tests cite them
+      -> just check
       -> review locally
       -> commit
       -> git fetch origin -> just pre-push
@@ -171,6 +180,25 @@ what its issue asked, may everything in it be published
 ([PUBLIC_DEVELOPMENT.md](PUBLIC_DEVELOPMENT.md#agent-publication-check)), and
 are the comments beside the code still true. Say in the PR body who or what
 reviewed it, or that nobody did.
+
+### Requirements in the change loop
+
+The rules are in the ledger's module doc (`crates/agent-caps/src/_requirements.rs`,
+"How to read" and "How to change"); these steps say when to apply them.
+
+- **Before implementing**: find the use case and the requirements the change
+  serves in the ledger. If none fits, add or change rows first, in the same
+  branch, by the ledger's rules (rows are withdrawn, never deleted; a change of
+  meaning is a new row; new ids follow the last one on `main`).
+- **While writing tests**: every `#[test]` of the core cites, in its `///` doc,
+  the `UC<n>` or `FR<n>` it really checks. Cite only what the test checks; when
+  nothing in the ledger fits, add the requirement instead of borrowing a nearby
+  id.
+- **In review**: `just check` runs the ledger's checks; the review also asks
+  whether each citation is true of the test it sits on.
+- Issues may name the requirements they concern, and the ledger may list
+  related issues. Both are plain references; the ledger is the only source of
+  what a requirement says.
 
 Releases and publishes (crates, the repository's own settings) are performed by
 a human hand.
