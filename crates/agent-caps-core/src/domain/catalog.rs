@@ -19,6 +19,7 @@
 //! mode's applied over it. The order of the overrides within a layer never matters: a layer
 //! holds at most one override per policy. When the mode is unknown, every mode's overrides are
 //! tried and the strictest result is taken, so not knowing the mode never loosens a rule.
+//! [`Catalog::effective`] gives that result for every policy, off ones included.
 //!
 //! # Invariants
 //!
@@ -233,11 +234,44 @@ pub enum Degraded {
     },
 }
 
-/// A policy in effect, with the level it has after the overrides.
+/// Whether a policy takes effect under a mode, after the overrides and the binding of rewards to
+/// their guards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Effect {
+    /// It takes effect, at this level.
+    On(Level),
+    /// It does not take effect: turned off by a layer, or a reward whose guard is off.
+    Off,
+}
+
+/// One policy and its effect under a mode.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct InEffect<'a> {
-    pub(super) policy: &'a Policy,
-    pub(super) level: Level,
+pub struct PolicyEffect<'a> {
+    /// The policy.
+    pub policy: &'a Policy,
+    /// Its effect.
+    pub effect: Effect,
+}
+
+/// What the catalog comes to under one mode: every policy with its effect, and what the layers
+/// could not keep as written. This is what a platform adapter turns into hooks, instructions and
+/// text; [`super::judge::judge`] reads the same value, so the two never disagree.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Effective<'a> {
+    /// Every policy of the catalog, in the catalog's order, with its effect.
+    pub policies: Vec<PolicyEffect<'a>>,
+    /// What had to be degraded.
+    pub degraded: Vec<Degraded>,
+}
+
+impl<'a> Effective<'a> {
+    /// The policies that take effect, each with its level.
+    pub fn on(&self) -> impl Iterator<Item = (&'a Policy, Level)> + '_ {
+        self.policies.iter().filter_map(|p| match p.effect {
+            Effect::On(level) => Some((p.policy, level)),
+            Effect::Off => None,
+        })
+    }
 }
 
 /// The accepted rules.
@@ -303,11 +337,11 @@ impl Catalog {
         &self.slots
     }
 
-    /// The policies in effect under `mode`, with their levels, and what had to be degraded.
-    pub(super) fn in_effect(
-        &self,
-        mode: &Known<Option<Mode>>,
-    ) -> (Vec<InEffect<'_>>, Vec<Degraded>) {
+    /// What the catalog comes to under `mode`: every policy with its effect, and what had to be
+    /// degraded. When the mode is unknown, every mode is tried and each policy takes the strictest
+    /// of its results, before the rewards are bound to their guards; the list may then be one no
+    /// single mode gives. No event is judged; this is the catalog alone.
+    pub fn effective(&self, mode: &Known<Option<Mode>>) -> Effective<'_> {
         let modes: Vec<Option<&Mode>> = match mode {
             Known::Known(mode) => vec![mode.as_ref()],
             Known::Unknown => std::iter::once(None)
@@ -327,11 +361,14 @@ impl Catalog {
             })
             .collect();
         let degraded = self.bind_rewards(&mut in_effect);
-        let entries = in_effect
+        let policies = in_effect
             .into_iter()
-            .filter_map(|(policy, level)| level.map(|level| InEffect { policy, level }))
+            .map(|(policy, level)| PolicyEffect {
+                policy,
+                effect: level.map_or(Effect::Off, Effect::On),
+            })
             .collect();
-        (entries, degraded)
+        Effective { policies, degraded }
     }
 
     /// Every mode an override names.
