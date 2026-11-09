@@ -163,6 +163,8 @@ fn verdict(catalog: &Catalog, events: &[Event]) -> Verdict {
     judge(catalog, &state, events.last().unwrap()).verdict
 }
 
+/// FR1, UC1: a written guard stops the end of a turn until a passing test run has been seen in
+/// the task.
 #[test]
 fn a_stopping_guard_denies_until_its_condition_is_seen() {
     let catalog = catalog(vec![test_guard(Level::Require)], vec![]);
@@ -200,6 +202,8 @@ fn a_stopping_guard_denies_until_its_condition_is_seen() {
     );
 }
 
+/// FR20, UC3: a lost line makes an unseen fact unknown and a stopping guard denies; a seen fact
+/// stays seen.
 #[test]
 fn an_unreadable_record_makes_an_unseen_once_unknown_but_not_a_seen_one() {
     let catalog = catalog(vec![test_guard(Level::Require)], vec![]);
@@ -234,6 +238,7 @@ fn an_unreadable_record_makes_an_unseen_once_unknown_but_not_a_seen_one() {
     );
 }
 
+/// FR20, UC3: when a fact cannot be seen, an advising guard warns where a stopping one denies.
 #[test]
 fn an_advising_guard_warns_where_a_stopping_one_denies() {
     let catalog = catalog(vec![test_guard(Level::Advise)], vec![]);
@@ -248,6 +253,7 @@ fn an_advising_guard_warns_where_a_stopping_one_denies() {
     );
 }
 
+/// FR1, UC2: the guard stops the first end of a turn and lets the second one through.
 #[test]
 fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     // The judgment is not part of the state; the evidence of it is, and a count reads it.
@@ -279,6 +285,8 @@ fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     assert_eq!(verdict(&catalog, &events), Verdict::Allow);
 }
 
+/// FR9, UC6: an exemption from the user covers its target for its lifetime. UC4: one from the
+/// agent is nothing.
 #[test]
 fn a_users_exemption_covers_its_target_for_its_lifetime() {
     let mut guard = test_guard(Level::Require);
@@ -408,6 +416,7 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
     ));
 }
 
+/// FR14, UC10: no exemption covers a Meta guard.
 #[test]
 fn no_exemption_covers_a_meta_guard() {
     let mut guard = test_guard(Level::Force);
@@ -428,6 +437,8 @@ fn no_exemption_covers_a_meta_guard() {
     ));
 }
 
+/// UC8: a mode changes the level of a policy. UC4: a loosening switch from the agent is
+/// nothing; only the user or caps make it. FR20: a lost record puts the strictest mode in force.
 #[test]
 fn a_mode_overrides_the_level_and_only_the_user_or_caps_switch_it() {
     let modeling = "modeling".parse().unwrap();
@@ -472,6 +483,7 @@ fn a_mode_overrides_the_level_and_only_the_user_or_caps_switch_it() {
     ));
 }
 
+/// FR6: a project turns a policy off. FR13, UC9: the reward bound by it goes with it.
 #[test]
 fn the_project_turns_a_policy_off_and_its_reward_goes_with_it() {
     let catalog = catalog(
@@ -499,6 +511,8 @@ fn the_project_turns_a_policy_off_and_its_reward_goes_with_it() {
     );
 }
 
+/// FR5: a project override lowers the level of a guard. FR13, UC9: its reward is lowered with it,
+/// and not following a reward is no failure.
 #[test]
 fn a_reward_is_kept_within_its_guard_and_is_never_a_failure() {
     let catalog = catalog(
@@ -550,6 +564,8 @@ fn a_reward_is_kept_within_its_guard_and_is_never_a_failure() {
     )));
 }
 
+/// FR29: with several policies in effect on one event, the strongest decides, whatever their
+/// order.
 #[test]
 fn the_verdict_takes_the_strongest_and_ignores_the_order() {
     let mut warn = test_guard(Level::Advise);
@@ -564,6 +580,8 @@ fn the_verdict_takes_the_strongest_and_ignores_the_order() {
     assert_eq!(verdict(&other, &events), expected);
 }
 
+/// FR2, UC12: a stopping guard without fixtures is not accepted. FR14: a Meta policy takes no
+/// override.
 #[test]
 fn accept_reports_every_broken_invariant() {
     let mut bad_pred = test_guard(Level::Advise);
@@ -633,6 +651,7 @@ fn accept_reports_every_broken_invariant() {
     assert_eq!(errors, vec![AcceptError::MetaOverride(id(GUARD))]);
 }
 
+/// FR2, UC12: a fixture that fails rejects the catalog.
 #[test]
 fn a_fixture_that_fails_rejects_the_catalog_unless_it_is_a_known_gap() {
     let mut guard = test_guard(Level::Require);
@@ -672,6 +691,8 @@ fn a_fixture_that_fails_rejects_the_catalog_unless_it_is_a_known_gap() {
     );
 }
 
+/// FR20: a lost line makes the last value unknown, so an advising guard warns with an unknown
+/// cause.
 #[test]
 fn a_last_value_is_false_when_unseen_and_unknown_when_lost() {
     let mut guard = test_guard(Level::Advise);

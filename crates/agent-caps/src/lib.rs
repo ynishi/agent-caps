@@ -72,6 +72,7 @@
 //! - [`domain::event`] and [`domain::schema`]: what happened, and the fields a rule can read.
 //! - [`domain::state`]: the fold of the events a judgment reads.
 //! - [`domain::judge`]: the verdict of one event.
+//! - [`_requirements`]: the ledger of use cases, principles and functional requirements.
 //!
 //! # Layers
 //!
@@ -92,12 +93,15 @@
 //!
 //! Before 1.0, any release may change the model. [`domain::event::Body`],
 //! [`domain::schema::EventKind`] and [`domain::schema::Field`] are non-exhaustive: new kinds of
-//! event and new fields are added without a major version.
+//! event and new fields are added without a major version. The items of [`_requirements`] are
+//! outside semver and may change in any release.
 //!
 //! # Limitations
 //!
 //! - Only structural rules: a rule answered by a classifier is not part of the model yet.
 //! - Temporal operators do not nest, and there is no regex.
 #![warn(missing_docs)]
+
+pub mod _requirements;
 
 pub use agent_caps_core::*;

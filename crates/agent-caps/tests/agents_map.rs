@@ -7,18 +7,12 @@
 //! root (a `*.md` file, the `Justfile`, `arch-lint.toml`) is not linked from the map. It checks
 //! where links lead, not how the documents are written.
 
+mod support;
+
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
 
-/// The workspace root: two levels above this crate's manifest.
-fn root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .expect("the crate sits at crates/<name> under the workspace root")
-        .to_path_buf()
-}
+use support::{read, root};
 
 /// The targets of the Markdown links `[text](target)` in `text`, without their `#anchor`.
 fn link_targets(text: &str) -> Vec<String> {
@@ -45,7 +39,7 @@ fn is_local(target: &str) -> bool {
 #[test]
 fn every_link_of_the_map_points_at_a_file_that_exists() {
     let root = root();
-    let map = fs::read_to_string(root.join("AGENTS.md")).expect("AGENTS.md is readable");
+    let map = read(&root.join("AGENTS.md"));
     let broken: Vec<String> = link_targets(&map)
         .into_iter()
         .filter(|t| is_local(t))
@@ -60,7 +54,7 @@ fn every_link_of_the_map_points_at_a_file_that_exists() {
 #[test]
 fn every_root_document_is_on_the_map() {
     let root = root();
-    let map = fs::read_to_string(root.join("AGENTS.md")).expect("AGENTS.md is readable");
+    let map = read(&root.join("AGENTS.md"));
     let linked: BTreeSet<String> = link_targets(&map)
         .into_iter()
         .filter(|t| is_local(t))

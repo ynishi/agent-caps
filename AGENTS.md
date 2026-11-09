@@ -16,6 +16,11 @@
   umbrella crate's doc, [crates/agent-caps/src/lib.rs](crates/agent-caps/src/lib.rs),
   then the model in
   [crates/agent-caps-core/src/domain/mod.rs](crates/agent-caps-core/src/domain/mod.rs).
+- The requirements ledger (use cases, principles, functional requirements, and
+  the rules for changing it) is the module doc of
+  [crates/agent-caps/src/_requirements.rs](crates/agent-caps/src/_requirements.rs);
+  `cargo test` checks it and every `UC<n>` / `FR<n>` cited in a doc comment
+  ([crates/agent-caps/tests/requirements.rs](crates/agent-caps/tests/requirements.rs)).
 - The recipes, `just check` among them: [Justfile](Justfile)
 - The layer rules `cargo test` enforces: [arch-lint.toml](arch-lint.toml)
 - This map is checked: `cargo test` fails when a link here points nowhere, or
