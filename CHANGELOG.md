@@ -14,6 +14,10 @@ and this project adheres to
   functional requirements in one module doc, outside semver. `cargo test`
   checks its tables and every `UC<n>` / `FR<n>` cited in a doc comment, and
   fails on a test of the core that cites neither (#13).
+- `Catalog::effective(mode)`: every policy with its `Effect` (`On(level)` or
+  `Off`) under a mode, and what was degraded, without judging an event. It is
+  what `judge` reads, so a platform adapter and a judgment see the same list
+  (#6).
 
 ### Fixed
 
