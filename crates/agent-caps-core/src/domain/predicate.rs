@@ -7,6 +7,7 @@
 //! Cond := field == lit | field in {lit…} | glob(field, pattern) | words(field, words)
 //!       | num(field) cmp n | All[Cond…] | Any[Cond…] | Not Cond
 //! filter := kind [where Cond]
+//! scope  := Session | Agent | Mode | Task | Since(filter)
 //! ```
 //!
 //! # Invariants
@@ -25,7 +26,7 @@
 //!   checks this ([`Pred::check`]) before it accepts a policy.
 
 use super::name::{CommandWords, GlobPattern, Mode};
-use super::schema::{EventKind, Field, FieldType, Scope};
+use super::schema::{EventKind, Field, FieldType};
 
 /// A truth value of Kleene's three-valued logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -149,6 +150,62 @@ pub struct EventFilter {
     pub cond: Option<Cond>,
 }
 
+/// The span a temporal operator counts within, and that an exemption may last for. Each starts
+/// again at its own boundary; a new session starts all of them again.
+///
+/// A scope has two boundaries, both read from the event being folded: the event before which it
+/// starts again, and the event on which it closes (the closing event belongs to the interval it
+/// closes, and the interval starts again before the next event). The state folds both in one
+/// place, so every scope, the four fixed ones and [`Scope::Since`], is handled by one rule.
+///
+/// The first four assume their start events are not lost to an unreadable record (a known gap:
+/// a lost start leaves the scope looking as if it had not started again). [`Scope::Since`] does
+/// not: when it cannot tell whether it closed, its slots become unknown.
+///
+/// # `Since`
+///
+/// `Since(filter)` is the span after the last event that matches the filter. The matching event
+/// belongs to the interval it closes, so an event is judged with the interval before it, and the
+/// interval starts again before the next event. It starts again too at
+/// [`EventKind::SessionStart`], and not at [`EventKind::TaskStart`]. A filter whose condition is
+/// unknown on an event (`ok` of a tool call whose result is not back) leaves it unknown whether
+/// the interval closed: the slots of the scope become unknown before the next event, and an
+/// exemption that lasts within the scope ends. A record that could not be read closes the scope
+/// as unknown only when an event of the filter's kind may have been lost from the unreadable
+/// record's [`Source`](super::schema::Source) ([`EventKind::may_be_lost_in`]): a mode switch or
+/// an exemption from either source, since the agent's own are read from the transcript.
+///
+/// - `once(test passed, Since(commit))` asks whether a test passed since the last commit. It is
+///   judged on the commit itself with the interval before it, so a second commit with no new
+///   test in between is stopped.
+/// - `once(commit, Since(commit))` is true only on a commit, and `count(commit, Since(commit))`
+///   is at most 1.
+/// - Closing an interval tightens a rule on `once` (what was seen before is forgotten) and
+///   loosens a limit on `count` (the count starts over). The filter has no condition on who the
+///   event comes from, so the agent's own acts can start a `count` over: with
+///   `count(edit, Since(commit)) <= 3`, an agent that commits after every third edit never
+///   reaches the limit. Write such a limit on a scope an act of the agent cannot close, or
+///   accept it.
+/// - To let only a call that succeeded close the interval, restrict the filter to
+///   `ok == true`. A call that failed, or that was stopped and never ran, does not match, and
+///   the interval it belongs to goes on.
+/// - `Lifetime::Within(Since(g))` (see [`super::exempt::Lifetime`]) ends an exemption after the
+///   next `g`. Until the next event after `g`, the exemption still shows as in effect, so `g`
+///   itself is judged with it.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Scope {
+    /// From [`EventKind::SessionStart`].
+    Session,
+    /// From [`EventKind::AgentStart`].
+    Agent,
+    /// From the last mode switch that took effect.
+    Mode,
+    /// From [`EventKind::TaskStart`].
+    Task,
+    /// After the last event that matches the filter.
+    Since(EventFilter),
+}
+
 /// A predicate on the judged event and the events before it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pred {
@@ -202,9 +259,9 @@ pub(super) enum Temporal {
 }
 
 impl Temporal {
-    pub(super) fn scope(&self) -> Scope {
+    pub(super) fn scope(&self) -> &Scope {
         match self {
-            Self::Once(_, scope) | Self::Count(_, scope) | Self::Last(_, scope) => *scope,
+            Self::Once(_, scope) | Self::Count(_, scope) | Self::Last(_, scope) => scope,
         }
     }
 }
@@ -302,9 +359,26 @@ impl Cond {
 }
 
 impl EventFilter {
+    /// What is wrong with the filter: its condition is read from an event of its own kind.
+    pub fn check(&self) -> Vec<PredError> {
+        let mut errors = Vec::new();
+        self.check_into(&mut errors);
+        errors
+    }
+
     fn check_into(&self, errors: &mut Vec<PredError>) {
         if let Some(cond) = &self.cond {
             cond.check_into(self.kind, errors);
+        }
+    }
+}
+
+impl Scope {
+    /// What is wrong with the scope: the filter of a `Since` is checked like the filter of a
+    /// `once`.
+    fn check_into(&self, errors: &mut Vec<PredError>) {
+        if let Self::Since(filter) = self {
+            filter.check_into(errors);
         }
     }
 }
@@ -321,9 +395,17 @@ impl Pred {
         match self {
             Self::Now(cond) => cond.check_into(subject, errors),
             Self::ModeIs(_) => {}
-            Self::Once { event, .. } | Self::Count { event, .. } => event.check_into(errors),
-            Self::Last { field, value, .. } => {
+            Self::Once { event, scope } | Self::Count { event, scope, .. } => {
+                event.check_into(errors);
+                scope.check_into(errors);
+            }
+            Self::Last {
+                field,
+                scope,
+                value,
+            } => {
                 check_field(*field, field.kind(), lit_type(value), errors);
+                scope.check_into(errors);
             }
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
@@ -344,9 +426,9 @@ impl Pred {
     fn temporals_into(&self, out: &mut Vec<Temporal>) {
         let found = match self {
             Self::Now(_) | Self::ModeIs(_) => None,
-            Self::Once { event, scope } => Some(Temporal::Once(event.clone(), *scope)),
-            Self::Count { event, scope, .. } => Some(Temporal::Count(event.clone(), *scope)),
-            Self::Last { field, scope, .. } => Some(Temporal::Last(*field, *scope)),
+            Self::Once { event, scope } => Some(Temporal::Once(event.clone(), scope.clone())),
+            Self::Count { event, scope, .. } => Some(Temporal::Count(event.clone(), scope.clone())),
+            Self::Last { field, scope, .. } => Some(Temporal::Last(*field, scope.clone())),
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
                     pred.temporals_into(out);
