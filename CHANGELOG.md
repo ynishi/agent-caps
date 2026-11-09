@@ -18,9 +18,23 @@ and this project adheres to
   `Off`) under a mode, and what was degraded, without judging an event. It is
   what `judge` reads, so a platform adapter and a judgment see the same list
   (#6).
+- `Scope::Since(EventFilter)`: a period that lasts from the last event that
+  matches the filter. The matching event belongs to the interval it closes, so
+  `once(test, Since(commit))` stops a second commit with no new test in between.
+  Usable as the scope of `once`, `count` and `last`, and as the lifetime of an
+  exemption (`Within(Since(..))`). When it cannot be told whether the interval
+  closed (a condition not known yet, a record that could not be read), the
+  scope's facts become unknown. The filters of `Since` are type-checked when a
+  catalog is accepted, and an exemption that arrives as an event takes effect
+  only if its target and filter type-check against the guard it names (#10).
+- `EventKind::source`: where events of a kind are recorded (caps's evidence or
+  the transcript), `EventKind::may_be_lost_in`, and `EventFilter::check`.
 
 ### Changed
 
+- Breaking, before 1.0: `Scope` is no longer `Copy`, `Eq` or `Hash`, since it
+  can hold a filter, and it moved from `domain::schema` to `domain::predicate`
+  (#10).
 - Breaking, before 1.0: `Level::Require` is removed, and `Level` is now
   `Inform < Advise < Force`. A guard that stops is `Level::Force`. A level says
   how much the agent is trusted with a rule, not when the check happens: that
