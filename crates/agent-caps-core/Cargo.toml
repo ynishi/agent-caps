@@ -1,0 +1,16 @@
+[package]
+name = "agent-caps-core"
+description = "Core (SDK) of agent-caps: Policy catalog and judge for AI coding agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+readme.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+arch-lint.workspace = true
