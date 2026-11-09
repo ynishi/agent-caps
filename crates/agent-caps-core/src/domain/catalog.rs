@@ -3,7 +3,14 @@
 //!
 //! The catalog is accepted whole, every time: [`Catalog::accept`] is the only way to make one,
 //! and a catalog that exists keeps every invariant below. There is no operation that changes one
-//! policy of an accepted catalog.
+//! policy of an accepted catalog; a changed graph is accepted again, and
+//! [`Catalog::change`] (see [`super::change`]) accepts it and judges whether the one who made
+//! the change may.
+//!
+//! The catalog keeps the [`Authority`] it was accepted with, and so the hierarchy one change is
+//! judged by is always the catalog's own. To change the hierarchy, accept the graph again with
+//! the new one; whether that loosens anything is a question for whoever keeps the hierarchy,
+//! not one this module judges.
 //!
 //! # Layers
 //!
@@ -18,12 +25,21 @@
 //! The effective level of a policy is its base level with the project's override and then the
 //! mode's applied over it. The order of the overrides within a layer never matters: a layer
 //! holds at most one override per policy. When the mode is unknown, every mode's overrides are
-//! tried and the strictest result is taken, so not knowing the mode never loosens a rule.
+//! tried to the end and each policy takes the strictest effect any mode gives, so not knowing
+//! the mode never loosens a rule, and never gives a value no mode gives.
 //! [`Catalog::effective`] gives that result for every policy, off ones included.
 //!
 //! # Invariants
 //!
 //! - Ids and names are unique.
+//! - Every author of a policy and of an override is a principal of the catalog's [`Authority`]
+//!   ([`AcceptError::UnknownAuthor`]), so [`Authority::covers`] is total on the authors.
+//! - The author of a meta policy is a root of the hierarchy ([`AcceptError::MetaAuthorNotRoot`]):
+//!   only the top places what nothing changes.
+//! - An item refers only to items whose author is its own or above it
+//!   ([`AcceptError::ReferencesBelow`]): a reward's `bound_by`, and the policy an override
+//!   targets. What is above never depends on what is below, so taking away one principal's work
+//!   and everyone's below it leaves a graph that is still accepted.
 //! - A reward is bound by a guard that exists, and is not stronger than it as defined. After the
 //!   overrides, a reward stronger than its guard is lowered to the guard's level, and a reward
 //!   whose guard is off is off; both are reported as [`Degraded`], never done silently.
@@ -47,6 +63,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
+use super::authority::{Authority, Principal};
 use super::event::Event;
 use super::name::{Mode, PolicyId, PolicyName};
 use super::policy::{
@@ -56,9 +73,54 @@ use super::policy::{
 use super::predicate::PredError;
 use super::state::{Known, SlotTable, State};
 
+/// One item of a policy graph: a policy, or the override of a layer on a policy.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Target {
+    /// The policy.
+    Policy(PolicyId),
+    /// The override of the layer on the policy.
+    Override(OverrideLayer, PolicyId),
+}
+
+impl fmt::Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Policy(id) => write!(f, "policy {id}"),
+            Self::Override(OverrideLayer::Project, id) => {
+                write!(f, "the project's override of {id}")
+            }
+            Self::Override(OverrideLayer::Mode(mode), id) => {
+                write!(f, "mode {mode}'s override of {id}")
+            }
+        }
+    }
+}
+
 /// One reason a policy graph was not accepted.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcceptError {
+    /// The author of the item is not a principal of the hierarchy.
+    UnknownAuthor {
+        /// The item.
+        item: Target,
+        /// The author it names.
+        author: Principal,
+    },
+    /// The author of the meta policy is not a root of the hierarchy.
+    MetaAuthorNotRoot {
+        /// The meta policy.
+        policy: PolicyId,
+        /// Its author.
+        author: Principal,
+    },
+    /// The item refers to a policy whose author is below its own, or beside it: a reward bound
+    /// by it, or an override that targets it.
+    ReferencesBelow {
+        /// The item.
+        item: Target,
+        /// The policy it refers to.
+        referenced: PolicyId,
+    },
     /// Two policies have the id.
     DuplicateId(PolicyId),
     /// Two policies have the name.
@@ -139,6 +201,17 @@ pub enum AcceptError {
 impl fmt::Display for AcceptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::UnknownAuthor { item, author } => {
+                write!(f, "{item} is by {author}, who is not in the hierarchy")
+            }
+            Self::MetaAuthorNotRoot { policy, author } => write!(
+                f,
+                "meta policy {policy} is by {author}, who is not a root of the hierarchy"
+            ),
+            Self::ReferencesBelow { item, referenced } => write!(
+                f,
+                "{item} refers to {referenced}, whose author is not its own or above it"
+            ),
             Self::DuplicateId(id) => write!(f, "two policies have the id {id}"),
             Self::DuplicateName(name) => write!(f, "two policies have the name {name}"),
             Self::Predicate { policy, error } => write!(f, "policy {policy}: {error}"),
@@ -240,12 +313,15 @@ pub enum Degraded {
 
 /// Whether a policy takes effect under a mode, after the overrides and the binding of rewards to
 /// their guards.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// Ordered by how much it holds, least first: `Off < On(Inform) < On(Advise) < On(Force)`. This
+/// order is the one comparison of effects: what is "at least as strict" anywhere is `>=` here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Effect {
-    /// It takes effect, at this level.
-    On(Level),
     /// It does not take effect: turned off by a layer, or a reward whose guard is off.
     Off,
+    /// It takes effect, at this level.
+    On(Level),
 }
 
 /// One policy and its effect under a mode.
@@ -284,12 +360,15 @@ pub struct Catalog {
     policies: Vec<Policy>,
     overrides: Vec<Override>,
     slots: SlotTable,
+    authority: Authority,
 }
 
 impl Catalog {
-    /// The catalog of `graph`, when it keeps every invariant (see the module doc).
-    pub fn accept(graph: PolicyGraph) -> Result<Self, Rejected> {
+    /// The catalog of `graph` under the hierarchy `authority`, when it keeps every invariant (see
+    /// the module doc). The catalog keeps the hierarchy.
+    pub fn accept(graph: PolicyGraph, authority: Authority) -> Result<Self, Rejected> {
         let mut errors = Vec::new();
+        check_authors(&graph, &authority, &mut errors);
         check_policies(&graph, &mut errors);
         check_overrides(&graph, &mut errors);
         let policies: Vec<Policy> = graph.policies.into_iter().map(Policy::new).collect();
@@ -298,6 +377,7 @@ impl Catalog {
             policies,
             overrides: graph.overrides,
             slots,
+            authority,
         };
         // Fixtures are run only on a graph whose predicates type-check.
         if errors.is_empty() {
@@ -308,6 +388,24 @@ impl Catalog {
         } else {
             Err(Rejected(errors))
         }
+    }
+
+    /// The hierarchy the catalog was accepted with.
+    pub fn authority(&self) -> &Authority {
+        &self.authority
+    }
+
+    /// The graph the catalog was accepted from.
+    pub fn graph(&self) -> PolicyGraph {
+        PolicyGraph {
+            policies: self.policies.iter().map(|p| p.def().clone()).collect(),
+            overrides: self.overrides.clone(),
+        }
+    }
+
+    /// The overrides, in the order they were given.
+    pub(super) fn overrides(&self) -> &[Override] {
+        &self.overrides
     }
 
     /// The policies, as defined.
@@ -349,114 +447,17 @@ impl Catalog {
     }
 
     /// What the catalog comes to under `mode`: every policy with its effect, and what had to be
-    /// degraded. When the mode is unknown, every mode is tried and each policy takes the strictest
-    /// of its results, before the rewards are bound to their guards; the list may then be one no
-    /// single mode gives. No event is judged; this is the catalog alone.
+    /// degraded. When the mode is unknown, every mode is computed to the end (rewards bound to
+    /// their guards) and each policy takes the strictest effect any of them gives; what was
+    /// degraded is what a mode degraded and the strictest effect still shows. No event is
+    /// judged; this is the catalog alone.
     pub fn effective(&self, mode: &Known<Option<Mode>>) -> Effective<'_> {
-        let modes: Vec<Option<&Mode>> = match mode {
-            Known::Known(mode) => vec![mode.as_ref()],
-            Known::Unknown => std::iter::once(None)
-                .chain(self.modes().into_iter().map(Some))
-                .collect(),
-        };
-        let mut in_effect: Vec<(&Policy, Option<Level>)> = self
-            .policies
-            .iter()
-            .map(|policy| {
-                // The strictest of the candidates: on if any turns it on, at the highest level.
-                let level = modes
-                    .iter()
-                    .filter_map(|mode| self.level_under(policy, *mode))
-                    .max();
-                (policy, level)
-            })
-            .collect();
-        let degraded = self.bind_rewards(&mut in_effect);
-        let policies = in_effect
-            .into_iter()
-            .map(|(policy, level)| PolicyEffect {
-                policy,
-                effect: level.map_or(Effect::Off, Effect::On),
-            })
-            .collect();
-        Effective { policies, degraded }
+        effective_in(&self.policies, &self.overrides, mode)
     }
 
     /// Every mode an override names.
-    fn modes(&self) -> Vec<&Mode> {
-        let mut modes: Vec<&Mode> = Vec::new();
-        for o in &self.overrides {
-            if let OverrideLayer::Mode(mode) = &o.layer
-                && !modes.contains(&mode)
-            {
-                modes.push(mode);
-            }
-        }
-        modes
-    }
-
-    /// The level of `policy` under `mode`, or `None` when it is off.
-    fn level_under(&self, policy: &Policy, mode: Option<&Mode>) -> Option<Level> {
-        let mut enabled = policy.enabled();
-        let mut level = policy.base_level();
-        if policy.layer() == DefLayer::Base {
-            let project = self.override_of(policy.id(), &OverrideLayer::Project);
-            let by_mode =
-                mode.and_then(|m| self.override_of(policy.id(), &OverrideLayer::Mode(m.clone())));
-            for change in project.into_iter().chain(by_mode) {
-                match change {
-                    Change::Level(new) => level = new,
-                    Change::Off => enabled = false,
-                    Change::On => enabled = true,
-                }
-            }
-        }
-        enabled.then_some(level)
-    }
-
-    fn override_of(&self, policy: PolicyId, layer: &OverrideLayer) -> Option<Change> {
-        self.overrides
-            .iter()
-            .find(|o| o.policy == policy && o.layer == *layer)
-            .map(|o| o.change)
-    }
-
-    /// Keeps each reward within its guard: off when the guard is off, no stronger than it.
-    fn bind_rewards(&self, in_effect: &mut [(&Policy, Option<Level>)]) -> Vec<Degraded> {
-        let guard_levels: Vec<(PolicyId, Option<Level>)> = in_effect
-            .iter()
-            .map(|(policy, level)| (policy.id(), *level))
-            .collect();
-        let mut degraded = Vec::new();
-        for (policy, level) in in_effect.iter_mut() {
-            let (Polarity::Reward { bound_by, .. }, Some(current)) = (policy.polarity(), *level)
-            else {
-                continue;
-            };
-            let guard_level = guard_levels
-                .iter()
-                .find(|(id, _)| id == bound_by)
-                .and_then(|(_, level)| *level);
-            match guard_level {
-                None => {
-                    *level = None;
-                    degraded.push(Degraded::RewardWithoutGuard {
-                        reward: policy.id(),
-                        guard: *bound_by,
-                    });
-                }
-                Some(guard) if current > guard => {
-                    *level = Some(guard);
-                    degraded.push(Degraded::RewardLowered {
-                        reward: policy.id(),
-                        guard: *bound_by,
-                        to: guard,
-                    });
-                }
-                Some(_) => {}
-            }
-        }
-        degraded
+    pub(super) fn modes(&self) -> Vec<&Mode> {
+        modes_of(&self.overrides)
     }
 
     fn check_fixtures(&self, errors: &mut Vec<AcceptError>) {
@@ -485,6 +486,212 @@ impl Catalog {
                     });
                 }
             }
+        }
+    }
+}
+
+/// What `policies` come to under `mode` with `overrides` over them: the one implementation of
+/// the layering, of the modes and of the binding of rewards to guards. [`Catalog::effective`]
+/// reads it for the catalog, and a change reads it for a graph narrowed to what one does not
+/// cover, which is never made a catalog.
+pub(super) fn effective_in<'a>(
+    policies: &'a [Policy],
+    overrides: &[Override],
+    mode: &Known<Option<Mode>>,
+) -> Effective<'a> {
+    match mode {
+        Known::Known(mode) => effective_under(policies, overrides, mode.as_ref()),
+        Known::Unknown => {
+            // Each candidate mode is computed to the end, rewards bound; then each policy takes
+            // the strictest effect any of them gives. Not knowing the mode is never a value of
+            // its own: it is the strictest of the modes it may be.
+            let mut strictest = effective_under(policies, overrides, None);
+            for mode in modes_of(overrides) {
+                let candidate = effective_under(policies, overrides, Some(mode));
+                // Both list every policy in the order of `policies`.
+                for (kept, other) in strictest.policies.iter_mut().zip(candidate.policies) {
+                    kept.effect = kept.effect.max(other.effect);
+                }
+                for d in candidate.degraded {
+                    if !strictest.degraded.contains(&d) {
+                        strictest.degraded.push(d);
+                    }
+                }
+            }
+            // Of what the modes degraded, only what the strictest effect still shows: a reward
+            // lowered or turned off under one mode may stand under another.
+            let effect_of = |id: PolicyId| {
+                strictest
+                    .policies
+                    .iter()
+                    .find(|p| p.policy.id() == id)
+                    .map(|p| p.effect)
+            };
+            let degraded = strictest
+                .degraded
+                .iter()
+                .filter(|d| match d {
+                    Degraded::RewardLowered { reward, to, .. } => {
+                        effect_of(*reward) == Some(Effect::On(*to))
+                    }
+                    Degraded::RewardWithoutGuard { reward, .. } => {
+                        effect_of(*reward) == Some(Effect::Off)
+                    }
+                })
+                .cloned()
+                .collect();
+            strictest.degraded = degraded;
+            strictest
+        }
+    }
+}
+
+/// What `policies` come to under one known mode.
+fn effective_under<'a>(
+    policies: &'a [Policy],
+    overrides: &[Override],
+    mode: Option<&Mode>,
+) -> Effective<'a> {
+    let mut in_effect: Vec<(&Policy, Option<Level>)> = policies
+        .iter()
+        .map(|policy| (policy, level_under(policy, overrides, mode)))
+        .collect();
+    let degraded = bind_rewards(&mut in_effect);
+    let policies = in_effect
+        .into_iter()
+        .map(|(policy, level)| PolicyEffect {
+            policy,
+            effect: level.map_or(Effect::Off, Effect::On),
+        })
+        .collect();
+    Effective { policies, degraded }
+}
+
+/// Every mode an override names.
+pub(super) fn modes_of(overrides: &[Override]) -> Vec<&Mode> {
+    let mut modes: Vec<&Mode> = Vec::new();
+    for o in overrides {
+        if let OverrideLayer::Mode(mode) = &o.layer
+            && !modes.contains(&mode)
+        {
+            modes.push(mode);
+        }
+    }
+    modes
+}
+
+/// The level of `policy` under `mode`, or `None` when it is off.
+fn level_under(policy: &Policy, overrides: &[Override], mode: Option<&Mode>) -> Option<Level> {
+    let mut enabled = policy.enabled();
+    let mut level = policy.base_level();
+    if policy.layer() == DefLayer::Base {
+        let project = override_of(overrides, policy.id(), &OverrideLayer::Project);
+        let by_mode =
+            mode.and_then(|m| override_of(overrides, policy.id(), &OverrideLayer::Mode(m.clone())));
+        for change in project.into_iter().chain(by_mode) {
+            match change {
+                Change::Level(new) => level = new,
+                Change::Off => enabled = false,
+                Change::On => enabled = true,
+            }
+        }
+    }
+    enabled.then_some(level)
+}
+
+fn override_of(overrides: &[Override], policy: PolicyId, layer: &OverrideLayer) -> Option<Change> {
+    overrides
+        .iter()
+        .find(|o| o.policy == policy && o.layer == *layer)
+        .map(|o| o.change)
+}
+
+/// Keeps each reward within its guard: off when the guard is off, no stronger than it.
+fn bind_rewards(in_effect: &mut [(&Policy, Option<Level>)]) -> Vec<Degraded> {
+    let guard_levels: Vec<(PolicyId, Option<Level>)> = in_effect
+        .iter()
+        .map(|(policy, level)| (policy.id(), *level))
+        .collect();
+    let mut degraded = Vec::new();
+    for (policy, level) in in_effect.iter_mut() {
+        let (Polarity::Reward { bound_by, .. }, Some(current)) = (policy.polarity(), *level) else {
+            continue;
+        };
+        let guard_level = guard_levels
+            .iter()
+            .find(|(id, _)| id == bound_by)
+            .and_then(|(_, level)| *level);
+        match guard_level {
+            None => {
+                *level = None;
+                degraded.push(Degraded::RewardWithoutGuard {
+                    reward: policy.id(),
+                    guard: *bound_by,
+                });
+            }
+            Some(guard) if current > guard => {
+                *level = Some(guard);
+                degraded.push(Degraded::RewardLowered {
+                    reward: policy.id(),
+                    guard: *bound_by,
+                    to: guard,
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    degraded
+}
+
+/// The authors are of the hierarchy, a meta policy is by a root, and nothing refers below its
+/// author. A reference is checked only when both authors are of the hierarchy.
+fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<AcceptError>) {
+    let author_of = |id: PolicyId| {
+        graph
+            .policies
+            .iter()
+            .find(|p| p.id == id)
+            .map(|p| &p.author)
+            .filter(|author| authority.contains(author))
+    };
+    for def in &graph.policies {
+        if !authority.contains(&def.author) {
+            errors.push(AcceptError::UnknownAuthor {
+                item: Target::Policy(def.id),
+                author: def.author.clone(),
+            });
+            continue;
+        }
+        if def.layer == DefLayer::Meta && !authority.is_root(&def.author) {
+            errors.push(AcceptError::MetaAuthorNotRoot {
+                policy: def.id,
+                author: def.author.clone(),
+            });
+        }
+        if let Polarity::Reward { bound_by, .. } = &def.polarity
+            && let Some(above) = author_of(*bound_by)
+            && !authority.covers(above, &def.author)
+        {
+            errors.push(AcceptError::ReferencesBelow {
+                item: Target::Policy(def.id),
+                referenced: *bound_by,
+            });
+        }
+    }
+    for o in &graph.overrides {
+        let item = || Target::Override(o.layer.clone(), o.policy);
+        if !authority.contains(&o.author) {
+            errors.push(AcceptError::UnknownAuthor {
+                item: item(),
+                author: o.author.clone(),
+            });
+        } else if let Some(above) = author_of(o.policy)
+            && !authority.covers(above, &o.author)
+        {
+            errors.push(AcceptError::ReferencesBelow {
+                item: item(),
+                referenced: o.policy,
+            });
         }
     }
 }

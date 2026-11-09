@@ -84,7 +84,7 @@
 //! | ID | Principle | Status |
 //! |---|---|---|
 //! | P1 | A tightening operation needs no approval from anyone, the agent included: leaning to the stopping side costs only a stopped task, which returns to the user. The exception is a rule whose judgment is uncertain, such as a classifier: it becomes Force only with a calibration record of its false stops, because an uncertain rule that keeps stopping keeps returning the task to the user. | active |
-//! | P2 | A loosening operation is decided by the origin of what it loosens. What came from the user is loosened only by an approver; the agent loosens only what it added itself, never below the user's rules, and for the user's rules it only proposes. | active |
+//! | P2 | A loosening operation is decided by who wrote what it loosens: only one who covers the author, the author itself or one above it, may loosen it. What came from the user, the root of the hierarchy, is loosened only by an approver who covers it; the agent, below the user, loosens only what it added itself, never below the rules of those above it, and for those it only proposes. | active |
 //! | P3 | A Meta policy does not change during a run, by any operation. | active |
 //! | P4 | A temporary change always has a period and reverts when it ends. What is meant to last is made with a permanent operation, an override. | active |
 //! | P5 | The domain holds the rules, their judgment, and whether an operation tightens or loosens, read from the difference before and after. Storage, history, import, the approval procedure and records belong to the application; reading a platform belongs to an adapter. | active |
@@ -114,11 +114,11 @@
 //! | FR11 | Switch by the kind of work, as a mode. A mode switch selects a layer of overrides, and is judged by the difference it makes (P8): an approver is needed when any difference loosens. | supported | Domain | #17 |
 //! | FR12 | See which policies are in effect and at which level, off told apart from in effect but not matching. | supported | Domain | #6 |
 //! | FR13 | Write a recommendation that does not stop anything. It neither tightens nor loosens, and it stays within the guard that binds it. | supported | Domain | |
-//! | FR14 | Place a policy that cannot be changed, as a Meta policy. Only the user can place one (P3). | supported | Domain | |
+//! | FR14 | Place a policy that cannot be changed, as a Meta policy. Only the root of the hierarchy, the user, can place one (P3). | supported | Domain | |
 //! | FR15 | Change a Meta policy during a run. A Meta policy changes only as a change to the code of the repository (P3). | not supported | ? | |
-//! | FR16 | The agent adds a policy for itself during a task. Only a policy that is not Meta and that tightens may be added, never a Meta policy or an exemption, and it is removed when the task ends (P1). | supported | Domain, Application | #14 |
+//! | FR16 | The agent adds a policy for itself during a task. Only a policy that is not Meta and that tightens may be added, written by the agent or one below it, never a Meta policy or an exemption, and it is removed when the task ends (P1). | supported | Domain, Application | #14, #19 |
 //! | FR17 | The agent loosens a policy of the user. The agent only proposes; an approver makes the change as an ordinary operation (P2). | not supported | Application | #14 |
-//! | FR18 | The agent removes or weakens a policy or a set that it added itself. This holds only for what came from the agent (P2). | supported | Domain | #14 |
+//! | FR18 | The agent removes or weakens a policy or a set that it added itself. This holds only for what the agent covers, what it or one below it wrote (P2). | supported | Domain | #14 |
 //! | FR19 | The agent creates an exemption (P2). | not supported | ? | |
 //! | FR20 | When something cannot be seen, fall back to the stopping side: not being able to read never loosens a rule. | supported | Domain | |
 //! | FR21 | See and cancel temporary changes and exemptions. Cancelling is judged by its result (P8): no approval when it tightens, a loosening under P2 when it loosens, as when the user's raise is cancelled. | withdrawn -> FR32 | Domain, Application | #14, #15 |

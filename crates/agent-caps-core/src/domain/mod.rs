@@ -12,20 +12,25 @@
 //! Outcome::evidence ─▶ Judged events           (appended by the caller, folded like any other)
 //! ```
 //!
-//! Dependencies between the modules run one way: `name` and `schema` ◀ `predicate` ◀ `exempt`
-//! ◀ `event` ◀ `state` ◀ `policy` ◀ `catalog` ◀ `judge`.
+//! Dependencies between the modules run one way: `name`, `schema` and `authority` ◀ `predicate`
+//! ◀ `exempt` ◀ `event` ◀ `state` ◀ `policy` ◀ `catalog` ◀ `judge` and `change`. `authority`
+//! knows nothing of the others, and `arch-lint.toml` keeps it so.
 //!
 //! # Glossary
 //!
 //! - Policy: the one part of a catalog. A guard says what must hold, a reward what is
 //!   recommended within a guard, each at a [`policy::Level`].
 //! - Catalog: the accepted set of policies with their layers ([`catalog`]).
+//! - Principal and authority: who wrote a policy, and the hierarchy that says whose work whom
+//!   may loosen ([`authority`]); a change of a catalog is judged by it ([`change`]).
 //! - Evidence: what caps appends (judgments, mode switches, exemptions, scores). With the
 //!   platform's transcript, it is what the state is folded from.
 //! - Slot: what one temporal operator (`once`, `count`, `last`) remembers between events.
 //! - Unknown: what could not be seen. A stopping guard that cannot tell denies.
 
+pub mod authority;
 pub mod catalog;
+pub mod change;
 pub mod event;
 pub mod exempt;
 mod glob;

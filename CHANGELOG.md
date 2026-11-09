@@ -29,9 +29,37 @@ and this project adheres to
   only if its target and filter type-check against the guard it names (#10).
 - `EventKind::source`: where events of a kind are recorded (caps's evidence or
   the transcript), `EventKind::may_be_lost_in`, and `EventFilter::check`.
+- `domain::authority`: `Principal` (an opaque key) and `Authority`, a hierarchy
+  of principals with one or more roots that cannot be made with a cycle or an
+  unknown parent. `Authority::covers(actor, author)` says whether the actor is
+  the author or above it. The module knows nothing of policies; `arch-lint.toml`
+  keeps it so (#14).
+- `Catalog::change(after, by)`: accepts a changed policy graph and judges
+  whether `by` may make the change. What `by` covers is free to change; of what
+  it does not cover, no policy may be removed, nothing may be loosened (an
+  override is judged by what its policy comes to), nothing new may be made,
+  and no policy may take effect below what it is without `by`'s own work,
+  under no mode or any named mode (an unknown mode follows from them). A meta
+  policy never differs, for anyone.
+  Rejections are `ChangeRejected` (`Invalid`, `Meta`, `UnknownPrincipal`,
+  `Loosens` with each `Loosening`). `classify` gives the direction of one
+  policy's difference (a change to its examples loosens: they are the evidence
+  for the rule), and `PolicyGraph::not_covered_by` narrows a graph (#14).
+- New accept checks: every author is of the hierarchy
+  (`AcceptError::UnknownAuthor`), a meta policy is written by a root
+  (`MetaAuthorNotRoot`), and an item refers only to items of its own author or
+  above it (`ReferencesBelow`), a reward's `bound_by` and an override's target
+  (#14).
 
 ### Changed
 
+- Breaking, before 1.0: `PolicyDef` and `Override` have an `author:
+  Principal`, and `Catalog::accept(graph, authority)` takes the `Authority` the
+  catalog is accepted with and keeps it (`Catalog::authority`). To change the
+  hierarchy, accept the graph again with the new one (#14).
+- Breaking, before 1.0: `Effect` is ordered `Off, On(Level)` and derives
+  `PartialOrd` and `Ord`, so `Off < On(Inform) < On(Advise) < On(Force)`; the
+  variants changed places (#14).
 - Breaking, before 1.0: `Scope` is no longer `Copy`, `Eq` or `Hash`, since it
   can hold a filter, and it moved from `domain::schema` to `domain::predicate`
   (#10).
@@ -43,6 +71,12 @@ and this project adheres to
 
 ### Fixed
 
+- `Catalog::effective` under an unknown mode now computes every mode to the
+  end, rewards bound to their guards, and gives each policy the strictest
+  effect any of them gives. Before, it took each policy's strictest level
+  before binding the rewards, which could give a reward a level no mode gives;
+  what is listed as degraded is now only what the strictest effect still shows
+  (#14).
 - `Catalog::accept` now rejects an override that raises a guard to Force when
   the guard lacks a fixture it fails on and one it holds on
   (`AcceptError::RaisedWithoutFixtures`); before, only the level a guard was
