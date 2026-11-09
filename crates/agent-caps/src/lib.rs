@@ -18,8 +18,8 @@
 //! use agent_caps::domain::judge::{judge, Verdict};
 //! use agent_caps::domain::name::CommandWords;
 //! use agent_caps::domain::policy::{DefLayer, Expect, Fixture, Level, Polarity, PolicyDef, PolicyGraph, Rule};
-//! use agent_caps::domain::predicate::{Cond, EventFilter, Lit, Pred};
-//! use agent_caps::domain::schema::{At, EventKind, Field, Origin, Scope};
+//! use agent_caps::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
+//! use agent_caps::domain::schema::{At, EventKind, Field, Origin};
 //!
 //! let event = |body| Event { at: At::from_millis(0), origin: Origin::Agent, body };
 //! let words = |text: &str| CommandWords::new(text.split(' ').map(str::to_owned).collect()).unwrap();

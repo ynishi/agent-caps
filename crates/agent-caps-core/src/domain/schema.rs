@@ -1,5 +1,5 @@
 //! The vocabulary events are described in: their kinds, the fields a predicate can read, and the
-//! small values an event carries (when, from whom, which scope).
+//! small values an event carries (when, from whom, where it was recorded).
 //!
 //! A predicate reads an event through a [`Field`], never through the Rust field of a variant.
 //! Each field belongs to one [`EventKind`] and has one [`FieldType`]; that table is the schema the
@@ -43,20 +43,6 @@ pub enum Source {
     /// caps's own evidence. A record lost there may have been a mode switch or an exemption, so
     /// the state stops trusting those.
     Evidence,
-}
-
-/// The span a temporal operator counts within, and that an exemption may last for. Each starts
-/// again at its own start event; a new session starts all of them again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Scope {
-    /// From [`EventKind::SessionStart`].
-    Session,
-    /// From [`EventKind::AgentStart`].
-    Agent,
-    /// From the last mode switch that took effect.
-    Mode,
-    /// From [`EventKind::TaskStart`].
-    Task,
 }
 
 /// What a judgment of one policy came to, as caps records it in its evidence.
@@ -115,6 +101,25 @@ pub enum EventKind {
     Judged,
     /// A record could not be read.
     Unreadable,
+}
+
+impl EventKind {
+    /// Where events of this kind are recorded: caps's evidence for what it judged, recorded or
+    /// was sent, the platform's transcript for the rest. An unreadable record from a source may
+    /// have been an event of any kind recorded there.
+    pub fn source(self) -> Source {
+        match self {
+            Self::Judged | Self::Exempt | Self::ModeSwitch | Self::Measured => Source::Evidence,
+            _ => Source::Transcript,
+        }
+    }
+
+    /// Whether an unreadable record of `source` may have been an event of this kind. A mode
+    /// switch or an exemption the agent writes is read from the transcript (it takes no effect,
+    /// but it is an event of its kind), so those two may be lost from either source.
+    pub fn may_be_lost_in(self, source: Source) -> bool {
+        self.source() == source || matches!(self, Self::ModeSwitch | Self::Exempt)
+    }
 }
 
 /// A value a predicate can read from an event.

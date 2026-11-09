@@ -5,6 +5,11 @@
 //! the modes and exemptions it recorded, the scores it was sent). The domain sees both only as
 //! [`Event`] values, in the order the caller folds them. A record the adapter cannot read is not
 //! dropped but becomes [`Body::Unreadable`], so the state knows what it has not seen.
+//!
+//! The fold history holds only events that happened. An act judged before it runs (a
+//! [`Body::ToolUse`] whose `ok` is not known yet) is judged on a copy of the state with the act
+//! folded over it, and it enters the history when it is read back from the transcript, with
+//! its result. An act that was stopped never runs, so it is not in the history.
 
 use super::exempt::Exempt;
 use super::name::{CommandWords, Mode, PolicyId};

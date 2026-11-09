@@ -9,8 +9,8 @@ use super::policy::{
     Change, DefLayer, Expect, Fixture, Level, Override, OverrideLayer, Polarity, PolicyDef,
     PolicyGraph, RewardLevel, Rule,
 };
-use super::predicate::{Cmp, Cond, EventFilter, Lit, Pred};
-use super::schema::{At, EventKind, Field, Judgment, Origin, Scope, Source};
+use super::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
+use super::schema::{At, EventKind, Field, Judgment, Origin, Source};
 use super::state::Known;
 
 const GUARD: &str = "00000000-0000-7000-8000-000000000001";
@@ -63,8 +63,8 @@ fn unreadable(source: Source) -> Event {
     agent(Body::Unreadable { source })
 }
 
-/// `cargo test` passed within the task.
-fn tested() -> Pred {
+/// `cargo test` passed within the scope.
+fn tested_in(scope: Scope) -> Pred {
     Pred::Once {
         event: EventFilter {
             kind: EventKind::ToolUse,
@@ -73,8 +73,13 @@ fn tested() -> Pred {
                 Cond::Eq(Field::Ok, Lit::Bool(true)),
             ])),
         },
-        scope: Scope::Task,
+        scope,
     }
+}
+
+/// `cargo test` passed within the task.
+fn tested() -> Pred {
+    tested_in(Scope::Task)
 }
 
 fn fixture(name: &str, events: Vec<Event>, expect: Expect) -> Fixture {
@@ -925,4 +930,494 @@ fn a_last_value_is_false_when_unseen_and_unknown_when_lost() {
         ),
         Verdict::Warn(vec![Cause::Unknown(id(GUARD))])
     );
+}
+
+fn test_run() -> Event {
+    bash("cargo test", Some(true))
+}
+
+fn commit(ok: Option<bool>) -> Event {
+    bash("git commit -m x", ok)
+}
+
+/// A commit; with `ok_only`, one that succeeded.
+fn commit_filter(ok_only: bool) -> EventFilter {
+    let is_commit = Cond::Words(Field::Command, words("git commit"));
+    EventFilter {
+        kind: EventKind::ToolUse,
+        cond: Some(if ok_only {
+            Cond::All(vec![is_commit, Cond::Eq(Field::Ok, Lit::Bool(true))])
+        } else {
+            is_commit
+        }),
+    }
+}
+
+fn violated() -> Verdict {
+    Verdict::Deny(vec![Cause::Violated(id(GUARD))])
+}
+
+fn unknown() -> Verdict {
+    Verdict::Deny(vec![Cause::Unknown(id(GUARD))])
+}
+
+/// A stopping guard on the end of a turn: `cargo test` passed since the boundary `scope` names.
+fn stop_guard_in(scope: Scope) -> PolicyDef {
+    let mut guard = test_guard(Level::Force);
+    guard.rule = Rule::Structural(tested_in(scope));
+    guard
+}
+
+/// A stopping guard on a commit: `cargo test` passed since the last commit.
+fn commit_guard() -> PolicyDef {
+    let mut guard = test_guard(Level::Force);
+    guard.subject = EventKind::ToolUse;
+    guard.when = Some(Pred::Now(Cond::Words(Field::Command, words("git commit"))));
+    guard.rule = Rule::Structural(tested_in(Scope::Since(commit_filter(false))));
+    guard.fixtures = vec![
+        fixture(
+            "first commit after a test",
+            vec![agent(Body::TaskStart), test_run(), commit(None)],
+            Expect::Satisfied,
+        ),
+        fixture(
+            "second commit without a new test",
+            vec![
+                agent(Body::TaskStart),
+                test_run(),
+                commit(Some(true)),
+                commit(None),
+            ],
+            Expect::Violated,
+        ),
+    ];
+    guard
+}
+
+/// FR33, UC1: a second commit with no test after the first one is stopped, however recent the
+/// test before the first commit was; a new test in between lets it through.
+#[test]
+fn a_second_commit_without_a_new_test_is_stopped() {
+    let catalog = catalog(vec![commit_guard()], vec![]);
+    let start = agent(Body::TaskStart);
+    assert_eq!(
+        verdict(&catalog, &[start.clone(), test_run(), commit(None)]),
+        Verdict::Allow
+    );
+    assert_eq!(
+        verdict(&catalog, &[start.clone(), commit(None)]),
+        violated()
+    );
+    // The same task, but the test came before the first commit only.
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[start.clone(), test_run(), commit(Some(true)), commit(None)]
+        ),
+        violated()
+    );
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[
+                start.clone(),
+                test_run(),
+                commit(Some(true)),
+                test_run(),
+                commit(None)
+            ]
+        ),
+        Verdict::Allow
+    );
+    // An edit between the commits is not a test.
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[
+                start,
+                test_run(),
+                commit(Some(true)),
+                edit("src/a.rs"),
+                commit(None)
+            ]
+        ),
+        violated()
+    );
+}
+
+/// FR33, UC1: the event that closes an interval is judged with the interval before it, and
+/// the interval starts again before the next event: `once(commit, Since(commit))` is true on a
+/// commit and on nothing else, and `count(commit, Since(commit))` is at most 1.
+#[test]
+fn the_closing_event_is_judged_with_the_interval_before_it() {
+    let advise = |rule| {
+        let mut guard = test_guard(Level::Advise);
+        guard.subject = EventKind::ToolUse;
+        guard.rule = Rule::Structural(rule);
+        guard.fixtures = vec![];
+        catalog(vec![guard], vec![])
+    };
+    let since = || Scope::Since(commit_filter(false));
+    let once = advise(Pred::Once {
+        event: commit_filter(false),
+        scope: since(),
+    });
+    let start = agent(Body::TaskStart);
+    assert_eq!(
+        verdict(&once, &[start.clone(), commit(None)]),
+        Verdict::Allow
+    );
+    assert_eq!(
+        verdict(&once, &[start.clone(), commit(None), edit("src/a.rs")]),
+        Verdict::Warn(vec![Cause::Violated(id(GUARD))])
+    );
+    assert_eq!(
+        verdict(
+            &once,
+            &[start.clone(), commit(None), edit("src/a.rs"), commit(None)]
+        ),
+        Verdict::Allow
+    );
+    let twice = advise(Pred::Not(Box::new(Pred::Count {
+        event: commit_filter(false),
+        scope: since(),
+        cmp: Cmp::Ge,
+        n: 2,
+    })));
+    assert_eq!(
+        verdict(
+            &twice,
+            &[start.clone(), commit(None), commit(None), commit(None)]
+        ),
+        Verdict::Allow
+    );
+    // Closing loosens a count: without the scope, the third commit is the third.
+    let task = advise(Pred::Not(Box::new(Pred::Count {
+        event: commit_filter(false),
+        scope: Scope::Task,
+        cmp: Cmp::Ge,
+        n: 2,
+    })));
+    assert_eq!(
+        verdict(&task, &[start, commit(None), commit(None), commit(None)]),
+        Verdict::Warn(vec![Cause::Violated(id(GUARD))])
+    );
+}
+
+/// FR33, UC1: a `Since` scope starts again at a new session and not at a new task.
+#[test]
+fn a_since_scope_starts_again_at_a_session_and_not_at_a_task() {
+    let catalog = catalog(
+        vec![stop_guard_in(Scope::Since(commit_filter(false)))],
+        vec![],
+    );
+    let stop = agent(Body::Stop);
+    let task = agent(Body::TaskStart);
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[task.clone(), test_run(), task.clone(), stop.clone()]
+        ),
+        Verdict::Allow
+    );
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[task, test_run(), agent(Body::SessionStart), stop]
+        ),
+        violated()
+    );
+}
+
+/// FR33, UC1: one event can close several `Since` scopes at once, and each starts again.
+#[test]
+fn two_since_scopes_close_on_one_event() {
+    let edited = || EventFilter {
+        kind: EventKind::ToolUse,
+        cond: Some(Cond::Eq(Field::Tool, Lit::Text("Edit".to_owned()))),
+    };
+    let bash_call = EventFilter {
+        kind: EventKind::ToolUse,
+        cond: Some(Cond::Eq(Field::Tool, Lit::Text("Bash".to_owned()))),
+    };
+    // No edit since the last commit, and none since the last shell call.
+    let mut guard = test_guard(Level::Force);
+    guard.rule = Rule::Structural(Pred::All(vec![
+        Pred::Not(Box::new(Pred::Once {
+            event: edited(),
+            scope: Scope::Since(commit_filter(false)),
+        })),
+        Pred::Not(Box::new(Pred::Once {
+            event: edited(),
+            scope: Scope::Since(bash_call),
+        })),
+    ]));
+    guard.fixtures = vec![
+        fixture(
+            "edited",
+            vec![agent(Body::TaskStart), edit("src/a.rs"), agent(Body::Stop)],
+            Expect::Violated,
+        ),
+        fixture(
+            "clean",
+            vec![agent(Body::TaskStart), agent(Body::Stop)],
+            Expect::Satisfied,
+        ),
+    ];
+    let catalog = catalog(vec![guard], vec![]);
+    let start = agent(Body::TaskStart);
+    let stop = agent(Body::Stop);
+    // A commit is also a shell call: both scopes close on it.
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[
+                start.clone(),
+                edit("src/a.rs"),
+                commit(Some(true)),
+                stop.clone()
+            ]
+        ),
+        Verdict::Allow
+    );
+    // Another shell call closes only one of them.
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[start, edit("src/a.rs"), bash("ls", Some(true)), stop]
+        ),
+        violated()
+    );
+}
+
+/// FR33, FR20, UC3: an unreadable record closes a `Since` scope as unknown only when the filter's
+/// kind is recorded where the record was lost; elsewhere a fact already seen stays seen.
+#[test]
+fn an_unreadable_record_closes_a_since_scope_only_where_its_kind_is_recorded() {
+    let stop = agent(Body::Stop);
+    let tested_after_commit = catalog(
+        vec![stop_guard_in(Scope::Since(commit_filter(false)))],
+        vec![],
+    );
+    let events = |lost| {
+        [
+            agent(Body::TaskStart),
+            test_run(),
+            unreadable(lost),
+            stop.clone(),
+        ]
+    };
+    // A commit is a tool use, recorded in the transcript: the lost line may have been one.
+    assert_eq!(
+        verdict(&tested_after_commit, &events(Source::Transcript)),
+        unknown()
+    );
+    // A lost record of the evidence cannot have been a tool use.
+    assert_eq!(
+        verdict(&tested_after_commit, &events(Source::Evidence)),
+        Verdict::Allow
+    );
+
+    // The other way round, for a kind recorded in the evidence.
+    let judged = EventFilter {
+        kind: EventKind::Judged,
+        cond: None,
+    };
+    let tested_after_judgment = catalog(vec![stop_guard_in(Scope::Since(judged))], vec![]);
+    assert_eq!(
+        verdict(&tested_after_judgment, &events(Source::Evidence)),
+        unknown()
+    );
+    assert_eq!(
+        verdict(&tested_after_judgment, &events(Source::Transcript)),
+        Verdict::Allow
+    );
+
+    // A mode switch the agent writes is read from the transcript and closes the scope like any
+    // other, so a lost record of either source may have been one.
+    let switched = EventFilter {
+        kind: EventKind::ModeSwitch,
+        cond: None,
+    };
+    let tested_after_switch = catalog(vec![stop_guard_in(Scope::Since(switched))], vec![]);
+    for lost in [Source::Transcript, Source::Evidence] {
+        assert_eq!(verdict(&tested_after_switch, &events(lost)), unknown());
+    }
+}
+
+/// FR33, FR20: when the filter's condition is not known on an event (`ok` of a call whose result
+/// has not come back), it is not known whether the interval closed, and the guard cannot tell.
+#[test]
+fn a_filter_whose_condition_is_unknown_leaves_the_close_unknown() {
+    let catalog = catalog(
+        vec![stop_guard_in(Scope::Since(commit_filter(true)))],
+        vec![],
+    );
+    let start = agent(Body::TaskStart);
+    let stop = agent(Body::Stop);
+    let after = |commit| verdict(&catalog, &[start.clone(), test_run(), commit, stop.clone()]);
+    assert_eq!(after(commit(None)), unknown());
+    // A commit that failed does not close the interval.
+    assert_eq!(after(commit(Some(false))), Verdict::Allow);
+    assert_eq!(after(commit(Some(true))), violated());
+}
+
+/// A stopping guard on every tool use but a commit, which is what an exemption can lift.
+fn no_commit_guard() -> PolicyDef {
+    let mut guard = test_guard(Level::Force);
+    guard.subject = EventKind::ToolUse;
+    guard.rule = Rule::Structural(Pred::Now(Cond::Not(Box::new(Cond::Words(
+        Field::Command,
+        words("git commit"),
+    )))));
+    guard.fixtures = vec![
+        fixture(
+            "commit",
+            vec![agent(Body::TaskStart), commit(None)],
+            Expect::Violated,
+        ),
+        fixture(
+            "edit",
+            vec![agent(Body::TaskStart), edit("src/a.rs")],
+            Expect::Satisfied,
+        ),
+    ];
+    guard
+}
+
+fn exemption(target: Option<Cond>, lifetime: Lifetime) -> Event {
+    user(Body::Exempt(Exempt {
+        guard: id(GUARD),
+        target,
+        lifetime,
+        reason: "for now".parse().unwrap(),
+    }))
+}
+
+/// FR33, FR9, UC1: an exemption that lasts within `Since(g)` ends after `g`: `g` itself is judged
+/// with it, the next event without it. A `g` that failed does not end it, and one whose result is
+/// not known ends it, since it is not known whether it did.
+#[test]
+fn a_within_since_exemption_ends_after_the_event() {
+    let catalog = catalog(vec![no_commit_guard()], vec![]);
+    let start = agent(Body::TaskStart);
+    let until_commit = || exemption(None, Lifetime::Within(Scope::Since(commit_filter(true))));
+    let after = |first: Event| {
+        verdict(
+            &catalog,
+            &[start.clone(), until_commit(), first, commit(Some(true))],
+        )
+    };
+    // The closing commit is judged with the exemption still in effect.
+    assert_eq!(
+        verdict(
+            &catalog,
+            &[start.clone(), until_commit(), commit(Some(true))]
+        ),
+        Verdict::Allow
+    );
+    // The next one is not.
+    assert_eq!(after(commit(Some(true))), violated());
+    // A failed commit does not end it; an unknown one does.
+    assert_eq!(after(commit(Some(false))), Verdict::Allow);
+    assert_eq!(after(commit(None)), violated());
+}
+
+/// FR33: a filter of a `Since` scope that reads a field from another kind of event is rejected by
+/// accept, wherever the scope stands.
+#[test]
+fn an_ill_typed_since_filter_is_rejected() {
+    let bad = || {
+        Scope::Since(EventFilter {
+            kind: EventKind::Stop,
+            cond: Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
+        })
+    };
+    let mut guard = test_guard(Level::Advise);
+    guard.fixtures = vec![];
+    guard.rule = Rule::Structural(Pred::All(vec![
+        tested_in(bad()),
+        Pred::Count {
+            event: commit_filter(false),
+            scope: bad(),
+            cmp: Cmp::Ge,
+            n: 2,
+        },
+        Pred::Last {
+            field: Field::Ok,
+            scope: bad(),
+            value: Lit::Bool(true),
+        },
+    ]));
+    let error = AcceptError::Predicate {
+        policy: id(GUARD),
+        error: super::predicate::PredError::OtherKind {
+            field: Field::Ok,
+            read_from: EventKind::Stop,
+        },
+    };
+    assert_eq!(rejected(vec![guard], vec![]), vec![error; 3]);
+}
+
+/// FR33, FR9, UC4: an exemption that arrives as an event takes effect only if it type-checks
+/// against the guard it names, its target and the filter of its `Within(Since(..))` alike.
+#[test]
+fn an_ill_typed_exemption_takes_no_effect() {
+    let mut guard = test_guard(Level::Force);
+    guard.subject = EventKind::ToolUse;
+    guard.when = Some(Pred::Now(Cond::Glob(
+        Field::Path,
+        GlobPattern::new("src/*"),
+    )));
+    guard.fixtures = vec![
+        fixture(
+            "untested edit",
+            vec![agent(Body::TaskStart), edit("src/a.rs")],
+            Expect::Violated,
+        ),
+        fixture(
+            "tested edit",
+            vec![
+                agent(Body::TaskStart),
+                bash("cargo test", Some(true)),
+                edit("src/a.rs"),
+            ],
+            Expect::Satisfied,
+        ),
+    ];
+    let catalog = catalog(vec![guard], vec![]);
+    let on_a = Cond::Eq(Field::Path, Lit::Text("src/a.rs".to_owned()));
+    let judged = |exempt: Event| {
+        verdict(
+            &catalog,
+            &[agent(Body::TaskStart), exempt, edit("src/a.rs")],
+        )
+    };
+    // Well typed: it covers the edit.
+    assert_eq!(
+        judged(exemption(Some(on_a.clone()), Lifetime::Next)),
+        Verdict::Allow
+    );
+    // The target reads the type of an agent from a tool use, though it would hold on this
+    // event through its other branch.
+    let ill_target = Cond::Any(vec![
+        on_a.clone(),
+        Cond::Eq(Field::AgentType, Lit::Text("x".to_owned())),
+    ]);
+    assert_eq!(
+        judged(exemption(Some(ill_target), Lifetime::Next)),
+        violated()
+    );
+    // The same for the filter of the scope it lasts within.
+    let within = |filter| exemption(Some(on_a.clone()), Lifetime::Within(Scope::Since(filter)));
+    let good = EventFilter {
+        kind: EventKind::Stop,
+        cond: None,
+    };
+    let bad = EventFilter {
+        kind: EventKind::Stop,
+        cond: Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
+    };
+    assert_eq!(judged(within(good)), Verdict::Allow);
+    assert_eq!(judged(within(bad)), violated());
 }

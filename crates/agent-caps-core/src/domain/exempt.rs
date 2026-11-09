@@ -9,8 +9,8 @@
 //! for a guard of the meta layer, and only while its lifetime lasts.
 
 use super::name::{PolicyId, Reason};
-use super::predicate::Cond;
-use super::schema::{At, Scope};
+use super::predicate::{Cond, PredError, Scope};
+use super::schema::{At, EventKind};
 
 /// How long an exemption lasts.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,10 +18,23 @@ pub enum Lifetime {
     /// The next judgment it covers, and no more: the [`super::schema::Judgment::Exempted`] that
     /// caps records for it uses it up.
     Next,
-    /// Until the scope starts again.
+    /// Until the scope starts again. Within [`Scope::Since`], until the event after the one the
+    /// filter matched: that event is judged with the exemption still in effect.
     Within(Scope),
     /// Until the instant, compared with the time of the judged event.
     Until(At),
+}
+
+impl Lifetime {
+    /// Whether the lifetime has not run out by the time of an event at `at`. Only `Until` ends by
+    /// time; `Next` ends when it is used and `Within` when its scope starts again, both in the
+    /// fold of the state.
+    pub(super) fn lasts_at(&self, at: At) -> bool {
+        match self {
+            Self::Until(until) => at < *until,
+            Self::Next | Self::Within(_) => true,
+        }
+    }
 }
 
 /// A user's exemption from one guard.
@@ -36,4 +49,20 @@ pub struct Exempt {
     pub lifetime: Lifetime,
     /// Why the user made it.
     pub reason: Reason,
+}
+
+impl Exempt {
+    /// What is wrong with the exemption when its guard judges a `subject` event: the target is
+    /// read from the subject, and the filter of a `Within(Since(..))` from its own kind. An
+    /// exemption with any error takes no effect.
+    pub fn check(&self, subject: EventKind) -> Vec<PredError> {
+        let mut errors = self
+            .target
+            .as_ref()
+            .map_or_else(Vec::new, |target| target.check(subject));
+        if let Lifetime::Within(Scope::Since(filter)) = &self.lifetime {
+            errors.extend(filter.check());
+        }
+        errors
+    }
 }

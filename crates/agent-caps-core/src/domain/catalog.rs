@@ -27,7 +27,11 @@
 //! - A reward is bound by a guard that exists, and is not stronger than it as defined. After the
 //!   overrides, a reward stronger than its guard is lowered to the guard's level, and a reward
 //!   whose guard is off is off; both are reported as [`Degraded`], never done silently.
-//! - Every predicate reads each field from its own kind of event, with an operand of its type.
+//! - Every predicate reads each field from its own kind of event, with an operand of its type;
+//!   so does the filter of a `Since` scope.
+//! - An exemption that arrives as an event takes effect only if it names a guard of the catalog
+//!   and reads its target and the filter of a `Within(Since(..))` as a predicate would
+//!   ([`Catalog::apply`]).
 //! - No override reaches a meta policy, and no override gives a reward Force.
 //! - A guard that is Force, as defined or through any override of any layer, has at
 //!   least one fixture it fails on and one it holds on: an override cannot make a stopping guard
@@ -321,9 +325,16 @@ impl Catalog {
         State::start(&self.slots)
     }
 
-    /// The state after `event`.
+    /// The state after `event`. An exemption that does not type-check against the guard it
+    /// names (its target is read from the guard's subject, and the filter of a
+    /// `Within(Since(..))` from its own kind), or that names no guard outside the meta layer,
+    /// takes no effect.
     pub fn apply(&self, state: State, event: &Event) -> State {
-        state.apply(&self.slots, event)
+        state.apply(&self.slots, event, |guard| {
+            self.policy(guard)
+                .filter(|p| p.is_guard() && p.layer() != DefLayer::Meta)
+                .map(Policy::subject)
+        })
     }
 
     /// The state after `events`, from the start.
