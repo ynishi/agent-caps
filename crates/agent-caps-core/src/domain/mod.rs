@@ -7,7 +7,8 @@
 //! ```text
 //! PolicyGraph ─ Catalog::accept ─▶ Catalog    (type check, slots, fixtures)
 //! events ─ Catalog::fold / apply ─▶ State      (mode, one slot per temporal operator, exemptions)
-//! judge(&Catalog, &State, &Event) ─▶ Outcome   (Verdict, Recognitions, Degraded)
+//! Catalog::effective(mode) ─▶ Effective        (every policy On(level) or Off, Degraded)
+//! judge(&Catalog, &State, &Event) ─▶ Outcome   (Verdict, Recognitions, Degraded; reads Effective)
 //! Outcome::evidence ─▶ Judged events           (appended by the caller, folded like any other)
 //! ```
 //!

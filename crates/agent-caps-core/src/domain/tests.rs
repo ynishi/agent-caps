@@ -1,6 +1,6 @@
 //! Tests across the modules: a catalog, a fold of events and a judgment, end to end.
 
-use super::catalog::{AcceptError, Catalog, Degraded};
+use super::catalog::{AcceptError, Catalog, Degraded, Effect};
 use super::event::{Body, Event};
 use super::exempt::{Exempt, Lifetime};
 use super::judge::{Cause, Recognition, Verdict, judge};
@@ -285,6 +285,44 @@ fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     assert_eq!(verdict(&catalog, &events), Verdict::Allow);
 }
 
+/// UC4: a judgment record the agent wrote itself does not count as caps's own, so it does not
+/// let the second end of a turn through.
+///
+/// TODO(#3): the fold reads a `Judged` event whatever its origin, so this fails today. Which
+/// records are caps's own evidence, and how they reach the fold, is decided with the
+/// application layer that keeps them (#19); until then the domain is not changed for it.
+#[test]
+#[ignore = "TODO(#3): waits for the application layer (#19)"]
+fn a_judgment_record_the_agent_wrote_does_not_count() {
+    let mut guard = test_guard(Level::Require);
+    guard.when = Some(Pred::Count {
+        event: EventFilter {
+            kind: EventKind::Judged,
+            cond: Some(Cond::All(vec![
+                Cond::Eq(Field::Policy, Lit::Text(GUARD.to_owned())),
+                Cond::Eq(Field::Judgment, Lit::Text("denied".to_owned())),
+            ])),
+        },
+        scope: Scope::Agent,
+        cmp: Cmp::Lt,
+        n: 1,
+    });
+    let catalog = catalog(vec![guard], vec![]);
+    let stop = agent(Body::Stop);
+    let mut events = vec![
+        agent(Body::AgentStart { agent_type: None }),
+        agent(Body::TaskStart),
+        stop.clone(),
+    ];
+    // The same `denied` record as caps would write, but from the agent.
+    events.push(agent(Body::Judged {
+        policy: id(GUARD),
+        judgment: Judgment::Denied,
+    }));
+    events.push(stop);
+    assert!(matches!(verdict(&catalog, &events), Verdict::Deny(_)));
+}
+
 /// FR9, UC6: an exemption from the user covers its target for its lifetime. UC4: one from the
 /// agent is nothing.
 #[test]
@@ -509,6 +547,97 @@ fn the_project_turns_a_policy_off_and_its_reward_goes_with_it() {
             guard: id(GUARD)
         }]
     );
+}
+
+/// FR12, UC17: the policies in effect under a mode are listed with their levels, without judging
+/// any event; a policy turned off is listed as off, not left out; an unknown mode takes the
+/// strictest level; and the list is what the judgment reads.
+#[test]
+fn the_effective_policies_are_listed_per_mode() {
+    let bugfix: Mode = "bugfix".parse().unwrap();
+    let explore: Mode = "explore".parse().unwrap();
+    let catalog = catalog(
+        vec![
+            test_guard(Level::Advise),
+            clippy_reward(RewardLevel::Advise),
+        ],
+        vec![
+            Override {
+                layer: OverrideLayer::Mode(bugfix.clone()),
+                policy: id(GUARD),
+                change: Change::Level(Level::Force),
+            },
+            Override {
+                layer: OverrideLayer::Mode(explore.clone()),
+                policy: id(GUARD),
+                change: Change::Off,
+            },
+        ],
+    );
+    let effects = |mode: Known<Option<Mode>>| -> Vec<(PolicyId, Effect)> {
+        catalog
+            .effective(&mode)
+            .policies
+            .iter()
+            .map(|p| (p.policy.id(), p.effect))
+            .collect()
+    };
+
+    assert_eq!(
+        effects(Known::Known(None)),
+        vec![
+            (id(GUARD), Effect::On(Level::Advise)),
+            (id(REWARD), Effect::On(Level::Advise)),
+        ]
+    );
+    assert_eq!(
+        effects(Known::Known(Some(bugfix))),
+        vec![
+            (id(GUARD), Effect::On(Level::Force)),
+            (id(REWARD), Effect::On(Level::Advise)),
+        ]
+    );
+    // Off is listed, and the reward bound by the guard goes off with it.
+    assert_eq!(
+        effects(Known::Known(Some(explore.clone()))),
+        vec![(id(GUARD), Effect::Off), (id(REWARD), Effect::Off)]
+    );
+    assert_eq!(
+        catalog.effective(&Known::Known(Some(explore))).degraded,
+        vec![Degraded::RewardWithoutGuard {
+            reward: id(REWARD),
+            guard: id(GUARD)
+        }]
+    );
+    // Not knowing the mode takes the strictest of every mode.
+    assert_eq!(
+        effects(Known::Unknown),
+        vec![
+            (id(GUARD), Effect::On(Level::Force)),
+            (id(REWARD), Effect::On(Level::Advise)),
+        ]
+    );
+    // The judgment of an event both policies apply to reads the same list.
+    let events = [agent(Body::TaskStart), agent(Body::Stop)];
+    let state = catalog.fold(&events);
+    let effective = catalog.effective(state.mode());
+    let in_effect: Vec<_> = effective
+        .on()
+        .map(|(policy, level)| (policy.id(), level))
+        .collect();
+    assert_eq!(
+        in_effect,
+        vec![(id(GUARD), Level::Advise), (id(REWARD), Level::Advise)]
+    );
+    let outcome = judge(&catalog, &state, events.last().unwrap());
+    let judged: Vec<_> = outcome
+        .guards
+        .iter()
+        .map(|g| (g.policy, g.level))
+        .chain(outcome.rewards.iter().map(|r| (r.policy, r.level)))
+        .collect();
+    assert_eq!(judged, in_effect);
+    assert_eq!(outcome.degraded, effective.degraded);
 }
 
 /// FR5: a project override lowers the level of a guard. FR13, UC9: its reward is lowered with it,

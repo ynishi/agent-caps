@@ -129,24 +129,24 @@ impl Outcome {
 
 /// Judges `event` by every policy in effect. `state` must already be folded over `event`.
 pub fn judge(catalog: &Catalog, state: &State, event: &Event) -> Outcome {
-    let (in_effect, degraded) = catalog.in_effect(state.mode());
+    let effective = catalog.effective(state.mode());
     let mut guards = Vec::new();
     let mut rewards = Vec::new();
-    for entry in in_effect {
-        let finding = entry.policy.evaluate(catalog.slots(), state, event);
+    for (policy, level) in effective.on() {
+        let finding = policy.evaluate(catalog.slots(), state, event);
         if finding == Finding::NotApplicable {
             continue;
         }
-        if entry.policy.is_guard() {
+        if policy.is_guard() {
             guards.push(GuardResult {
-                policy: entry.policy.id(),
-                level: entry.level,
+                policy: policy.id(),
+                level,
                 finding,
             });
         } else {
             rewards.push(RewardResult {
-                policy: entry.policy.id(),
-                level: entry.level,
+                policy: policy.id(),
+                level,
                 recognition: if finding == Finding::Satisfied {
                     Recognition::Hit
                 } else {
@@ -159,7 +159,7 @@ pub fn judge(catalog: &Catalog, state: &State, event: &Event) -> Outcome {
         verdict: combine(&guards),
         guards,
         rewards,
-        degraded,
+        degraded: effective.degraded,
     }
 }
 

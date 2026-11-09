@@ -100,6 +100,8 @@
 //!
 //! - Only structural rules: a rule answered by a classifier is not part of the model yet.
 //! - Temporal operators do not nest, and there is no regex.
+//! - A `Judged` event counts whatever its origin, so a judgment record the agent writes itself
+//!   is read as caps's own and can let a guard that counts its denials through (#3).
 #![warn(missing_docs)]
 
 pub mod _requirements;
