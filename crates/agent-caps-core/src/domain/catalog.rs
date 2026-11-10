@@ -33,6 +33,8 @@
 //! Binding { policy, level, mode: ModeScope, author }    a policy, at a level, where the scope holds
 //!   effect of a policy under a mode = the strongest level of its bindings whose scope
 //!                                      does not fail to hold, or Off with none
+//!   then a guard at Force that reads a classifier whose record falls short of its bound
+//!   is lowered to Advise (Degraded::Uncalibrated)
 //!   then each reward is held to its guard (Degraded)
 //! + a state's temporary adjustments (Catalog::effective_in)
 //!   bindings of the catalog a held adjustment suspends do not hold; each binding one adds holds
@@ -53,7 +55,7 @@
 //! # Capabilities
 //!
 //! ```text
-//! bindings and mode    ─▶ Effective   the strength as written (`Effective::degraded`: rewards)
+//! bindings and mode    ─▶ Effective   the strength as written (`Effective::degraded`)
 //! + Capabilities       ─▶ Enforced    the strength the platform holds (`Enforced::lowered`)
 //!      each policy held to the cap of its own subject; each reward held to its guard
 //! ```
@@ -131,6 +133,16 @@
 //! - A reward is bound by a guard that exists. Under a mode, a reward whose bindings make it
 //!   stronger than its guard is lowered to the guard's level, and a reward whose guard is off is
 //!   off; both are reported as [`Degraded`], never done silently.
+//! - A classifier is declared once, by name ([`super::policy::Classifier`], FR52), by its owner's
+//!   set or one below it, and a policy reads it only by a filter of `Classified` events that
+//!   narrows to its name (`classifier == name`, [`AcceptError::UnnamedClassifier`]; a policy that
+//!   judges `Classified` events reads the one its `when` narrows to), a name that
+//!   is declared ([`AcceptError::UndeclaredClassifier`]) by its own author or one above
+//!   ([`AcceptError::ReferencesBelow`]); a meta policy reads none
+//!   ([`AcceptError::MetaReadsClassifier`]). What a policy reads of them is in `Reads`, and a
+//!   guard that reads one takes effect at Force only while the calibration record of each
+//!   admits it ([`super::policy::Calibration::admit`]), decided in [`Catalog::effective`] and
+//!   nowhere else (FR26): otherwise it is Advise, and reported as [`Degraded::Uncalibrated`].
 //! - Every predicate reads each field from its own kind of event, with an operand of its type;
 //!   so does the filter of a `Since` scope.
 //! - A temporary adjustment that arrives as an event takes effect only if the catalog's index
@@ -178,25 +190,29 @@ use std::fmt;
 use super::adjust::{AdjustIndex, BoundKind, Reach, TooStrong, may_bind_at};
 use super::authority::{Authority, NotWithin, Principal};
 use super::event::Event;
-use super::name::{BindingId, Mode, PolicyId};
+use super::name::{BindingId, ClassifierName, Mode, PolicyId};
 use super::policy::{
     Binding, DefLayer, Expect, Level, ModeScope, Polarity, Policy, PolicyDef, PolicyGraph, Rule,
+    Shortfall,
 };
 use super::predicate::{
-    EventFilter, JudgedRead, PredError, Reading, Site, StateAtom, Truth, note_reading,
-    state_readings,
+    ClassifiedRead, EventFilter, JudgedRead, PredError, Reading, Site, StateAtom, Truth,
+    classified_subject_read, note_reading, state_readings,
 };
 use super::schema::EventKind;
 use super::set::{JoinConflict, SetId, Sources};
 use super::state::{Known, SlotId, SlotTable, State, matched};
 
-/// One item of a catalog: a policy, a binding of one, or a set of them ([`super::set`]).
+/// One item of a catalog: a policy, a binding of one, a classifier, or a set of them
+/// ([`super::set`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
     /// The policy.
     Policy(PolicyId),
     /// The binding.
     Binding(BindingId),
+    /// The classifier's declaration, by name ([`super::policy::Classifier`]).
+    Classifier(ClassifierName),
     /// The set of policies, as a whole: its graph, its name and its owner.
     Set(SetId),
 }
@@ -206,6 +222,7 @@ impl fmt::Display for Target {
         match self {
             Self::Policy(id) => write!(f, "policy {id}"),
             Self::Binding(id) => write!(f, "binding {id}"),
+            Self::Classifier(name) => write!(f, "classifier {name}"),
             Self::Set(id) => write!(f, "set {id}"),
         }
     }
@@ -251,18 +268,44 @@ pub enum AcceptError {
         /// Its author.
         author: Principal,
     },
-    /// The item refers to a policy whose author is below its own, or beside it: a reward bound
-    /// by it, a binding that puts it into effect, or a policy whose predicate names it in a filter of
-    /// judgments (`policy == id`, `policy in {ids}`, wherever in the filter; the filter of a
-    /// `last` included). A filter of judgments that narrows to no policy (names none, or names
-    /// one only where it does not narrow, as in `any(policy == id, judgment == denied)`) is not
-    /// this for what it does not name: it sees only the policies its author may count. To fix a
-    /// predicate, name only the policies of its own author or of one above.
+    /// The item refers to a policy or a classifier whose author is below its own, or beside it:
+    /// a reward bound by it, a binding that puts it into effect, a policy whose predicate names
+    /// it in a filter of judgments (`policy == id`, `policy in {ids}`, wherever in the filter; the
+    /// filter of a `last` included), or a policy whose predicate reads the classifier. A filter
+    /// of judgments that narrows to no policy (names none, or names one only where it does not
+    /// narrow, as in `any(policy == id, judgment == denied)`) is not this for what it does not
+    /// name: it sees only the policies its author may count. To fix a predicate, name only the
+    /// policies and the classifiers of its own author or of one above.
     ReferencesBelow {
         /// The item.
         item: Target,
-        /// The policy it refers to.
-        referenced: PolicyId,
+        /// The policy ([`Target::Policy`]) or the classifier ([`Target::Classifier`]) it refers
+        /// to.
+        referenced: Target,
+    },
+    /// A filter of `Classified` events of the policy narrows to no one classifier: it has no
+    /// `classifier == name` (alone or in an `all`), or names a text that is no classifier name.
+    /// To fix it, narrow the filter to the classifier it reads.
+    UnnamedClassifier {
+        /// The policy.
+        policy: PolicyId,
+    },
+    /// The policy reads a classifier that no set declares. To fix it, declare the classifier in
+    /// a set, or name one that is declared.
+    UndeclaredClassifier {
+        /// The policy.
+        policy: PolicyId,
+        /// The classifier it names.
+        classifier: ClassifierName,
+    },
+    /// The meta policy reads a classifier. A meta policy is lowered by nothing, and a guard that
+    /// reads a classifier is lowered while the classifier is not calibrated, so the two do not go
+    /// together. To fix it, read the classifier from a policy that is not meta.
+    MetaReadsClassifier {
+        /// The meta policy.
+        policy: PolicyId,
+        /// The classifier it names.
+        classifier: ClassifierName,
     },
     /// A predicate of the policy reads `ActorUnder` of a principal that is not in the
     /// hierarchy, or chooses events by one (`By::Under` or `By::Only` of a selector or a
@@ -371,6 +414,17 @@ impl fmt::Display for AcceptError {
                 f,
                 "{item} refers to {referenced}, whose author is not its own or above it"
             ),
+            Self::UnnamedClassifier { policy } => write!(
+                f,
+                "policy {policy} reads classified events without narrowing to one classifier"
+            ),
+            Self::UndeclaredClassifier { policy, classifier } => write!(
+                f,
+                "policy {policy} reads the classifier {classifier}, which no set declares"
+            ),
+            Self::MetaReadsClassifier { policy, classifier } => {
+                write!(f, "meta policy {policy} reads the classifier {classifier}")
+            }
             Self::UnknownActor { policy, principal } => write!(
                 f,
                 "policy {policy} reads the actor {principal}, who is not in the hierarchy"
@@ -439,8 +493,9 @@ impl fmt::Display for Rejected {
 
 impl std::error::Error for Rejected {}
 
-/// A level of a reward that its guard did not let it keep as its bindings give it, and what was
-/// done instead.
+/// A level that the catalog did not let a policy keep as its bindings give it, and what was done
+/// instead: a reward held to its guard, or a guard that reads an uncalibrated classifier held
+/// to Advise. Reported, never done silently.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Degraded {
     /// The reward's bindings made it stronger than its guard, and it was lowered to it.
@@ -458,6 +513,20 @@ pub enum Degraded {
         reward: PolicyId,
         /// Its guard.
         guard: PolicyId,
+    },
+    /// The guard's bindings made it Force, and it reads a classifier whose calibration record does
+    /// not meet the bound of its declaration ([`super::policy::Calibration::admit`]), so it was
+    /// lowered. One is reported for each classifier it reads that falls short; a reward bound to
+    /// the guard follows it as to any lowered guard.
+    Uncalibrated {
+        /// The guard.
+        guard: PolicyId,
+        /// The classifier that falls short.
+        classifier: ClassifierName,
+        /// How it falls short.
+        shortfall: Shortfall,
+        /// The level the guard is lowered to.
+        to: Level,
     },
 }
 
@@ -484,7 +553,7 @@ pub struct PolicyEffect<'a> {
 }
 
 /// What the catalog comes to under one mode, as written: every policy with its effect, and what
-/// the rewards could not keep as their bindings give it. This is the written strength, which does not depend on
+/// could not be kept as the bindings give it ([`Degraded`]). This is the written strength, which does not depend on
 /// the platform: [`Catalog::change`], the checks of a claim and the fixtures read it. What a
 /// platform can enforce of it is [`Enforced`], made by [`Catalog::enforced`] (which states how)
 /// and, event by event, by [`super::judge::judge`].
@@ -492,7 +561,8 @@ pub struct PolicyEffect<'a> {
 pub struct Effective<'a> {
     /// Every policy of the catalog, by id, with its effect.
     pub policies: Vec<PolicyEffect<'a>>,
-    /// What had to be degraded.
+    /// What had to be degraded: a reward held to its guard, a guard held to Advise for want of a
+    /// classifier's calibration.
     pub degraded: Vec<Degraded>,
 }
 
@@ -879,6 +949,13 @@ pub(super) struct Reads {
     /// events by (`By::Under`, always `Unreadable`), each with the direction it reads it in. A
     /// principal read in two directions is `Unreadable`.
     actors: Vec<(Principal, Reading)>,
+    /// The classifiers those operators and the filters of their `Since` scopes read, each named
+    /// by a filter that narrows to it ([`ClassifiedRead::Named`]): the one set that the
+    /// acceptance of a policy checks against the declarations and that its effect is lowered by.
+    classifiers: Vec<ClassifierName>,
+    /// Whether a filter of `Classified` events it holds narrows to no one classifier
+    /// ([`ClassifiedRead::Unnamed`]), which is not accepted.
+    unnamed_classifier: bool,
 }
 
 impl Reads {
@@ -893,11 +970,19 @@ impl Reads {
                     reads.slots.push(slot);
                 }
             }
+            for read in pred.classified_reads() {
+                reads.note_classified(read);
+            }
             for read in pred.judged_reads() {
                 if !reads.judged.contains(&read) {
                     reads.judged.push(read);
                 }
             }
+        }
+        // A policy that judges the answers reads the classifier its `when` narrows to, as a
+        // filter of `Classified` events does: the judged event is the answer.
+        if policy.subject() == EventKind::Classified {
+            reads.note_classified(classified_subject_read(policy.when()));
         }
         let sites = if policy.is_guard() {
             (Site::GuardWhen, Site::GuardRule)
@@ -918,6 +1003,17 @@ impl Reads {
         reads
     }
 
+    /// Notes a classifier read: the set of classifiers, or that a read names none.
+    fn note_classified(&mut self, read: ClassifiedRead) {
+        match read {
+            ClassifiedRead::Named(name) if !self.classifiers.contains(&name) => {
+                self.classifiers.push(name);
+            }
+            ClassifiedRead::Named(_) => {}
+            ClassifiedRead::Unnamed => self.unnamed_classifier = true,
+        }
+    }
+
     /// The principals the policy reads in the hierarchy of actors, with `ActorUnder` or a
     /// `By::Under`, each with the direction it reads it in.
     pub(super) fn actors(&self) -> &[(Principal, Reading)] {
@@ -936,6 +1032,11 @@ impl Reads {
                     .as_ref()
                     .is_none_or(|narrowed| narrowed.contains(&id))
         })
+    }
+
+    /// The classifiers the policy reads, each once, in the order they first appear.
+    pub(super) fn classifiers(&self) -> &[ClassifierName] {
+        &self.classifiers
     }
 
     /// Whether the policy reads the slot.
@@ -1019,7 +1120,7 @@ impl Catalog {
         let policies = compile_policies(&graph, &authority);
         let slots = SlotTable::of(policies.iter().flat_map(Policy::preds));
         let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
-        check_reads(&policies, &reads, &authority, &mut errors);
+        check_reads(&graph, &policies, &reads, &authority, &mut errors);
         check_actors(&policies, &authority, &mut errors);
         let index = AdjustIndex::new(
             policies.iter().map(|p| {
@@ -1240,6 +1341,9 @@ impl Catalog {
                 Degraded::RewardWithoutGuard { reward, .. } => {
                     effect_of(*reward) == Some(Effect::Off)
                 }
+                Degraded::Uncalibrated { guard, to, .. } => {
+                    effect_of(*guard) == Some(Effect::On(*to))
+                }
             })
             .cloned()
             .collect();
@@ -1250,6 +1354,14 @@ impl Catalog {
     /// What the catalog comes to under one known mode, read binding by binding. It is called with
     /// a known mode only ([`Catalog::effective`] decides an unknown one), so a scope never reads
     /// as unknown here.
+    ///
+    /// This is the one place that decides whether Force takes effect, whatever the way in
+    /// ([`Catalog::effective`], [`Catalog::effective_in`] and so everything that reads them).
+    /// Per mode, the strongest level of the bindings that hold comes first; then a guard at Force
+    /// that reads a classifier is lowered to Advise when the classifier's declaration does not
+    /// admit its calibration record ([`Calibration::admit`](super::policy::Calibration::admit)),
+    /// one [`Degraded::Uncalibrated`] for each classifier that falls short; then each reward is
+    /// held to its guard as that guard now comes to ([`bind_rewards`]).
     fn effective_under(
         &self,
         bindings: &[InEffect<'_>],
@@ -1267,7 +1379,8 @@ impl Catalog {
                 (policy, strongest)
             })
             .collect();
-        let degraded = bind_rewards(&mut in_effect);
+        let mut degraded = self.lower_uncalibrated(&mut in_effect);
+        degraded.extend(bind_rewards(&mut in_effect));
         let policies = in_effect
             .into_iter()
             .map(|(policy, level)| PolicyEffect {
@@ -1276,6 +1389,44 @@ impl Catalog {
             })
             .collect();
         Effective { policies, degraded }
+    }
+
+    /// Lowers to Advise each policy at Force that reads a classifier whose declaration does not
+    /// admit its record, and reports each such classifier. `in_effect` is in the order of the
+    /// policies, as `self.reads` is. A reward is never at Force, so only a guard is lowered.
+    fn lower_uncalibrated(&self, in_effect: &mut [(&Policy, Option<Level>)]) -> Vec<Degraded> {
+        let mut degraded = Vec::new();
+        for ((policy, level), reads) in in_effect.iter_mut().zip(&self.reads) {
+            if *level != Some(Level::Force) {
+                continue;
+            }
+            let short: Vec<(ClassifierName, Shortfall)> = reads
+                .classifiers()
+                .iter()
+                .filter_map(|name| {
+                    // Acceptance refuses a read of an undeclared classifier; were one to get
+                    // here, it has no record to admit, so the guard does not stay at Force.
+                    let shortfall = match self.graph.classifier(name) {
+                        Some(declared) => declared.bound.admit(declared.record.as_ref()).err()?,
+                        None => Shortfall::Missing,
+                    };
+                    Some((name.clone(), shortfall))
+                })
+                .collect();
+            if short.is_empty() {
+                continue;
+            }
+            *level = Some(Level::Advise);
+            degraded.extend(short.into_iter().map(|(classifier, shortfall)| {
+                Degraded::Uncalibrated {
+                    guard: policy.id(),
+                    classifier,
+                    shortfall,
+                    to: Level::Advise,
+                }
+            }));
+        }
+        degraded
     }
 
     /// What the catalog is enforced at under `mode` on a platform with `caps`: [`Catalog::effective`]
@@ -1392,8 +1543,8 @@ fn bind_rewards(in_effect: &mut [(&Policy, Option<Level>)]) -> Vec<Degraded> {
     degraded
 }
 
-/// Every owner and every author is of the hierarchy, and every item of a set, policy and binding,
-/// is by its owner or one below ([`Authority::within`], the one answer, which a binding and a
+/// Every owner and every author is of the hierarchy, and every item of a set, policy, binding and
+/// classifier, is by its owner or one below ([`Authority::within`], the one answer, which a binding and a
 /// temporary binding are held to as well). Checked of each set's own graph, so it needs no
 /// composition and is reported with any conflict of the sets.
 fn check_owners(sources: &Sources, authority: &Authority, errors: &mut Vec<AcceptError>) {
@@ -1413,7 +1564,11 @@ fn check_owners(sources: &Sources, authority: &Authority, errors: &mut Vec<Accep
             .graph
             .bindings()
             .map(|b| (Target::Binding(b.id), &b.author));
-        for (item, author) in policies.chain(bindings) {
+        let classifiers = source
+            .graph
+            .classifiers()
+            .map(|c| (Target::Classifier(c.name.clone()), &c.author));
+        for (item, author) in policies.chain(bindings).chain(classifiers) {
             let error = match authority.within(author, &source.owner) {
                 Ok(()) => continue,
                 Err(NotWithin::UnknownPrincipal(_)) => AcceptError::UnknownAuthor {
@@ -1462,7 +1617,7 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
         {
             errors.push(AcceptError::ReferencesBelow {
                 item: Target::Policy(def.id),
-                referenced: *bound_by,
+                referenced: Target::Policy(*bound_by),
             });
         }
     }
@@ -1475,7 +1630,7 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
         {
             errors.push(AcceptError::ReferencesBelow {
                 item: Target::Binding(b.id),
-                referenced: b.policy,
+                referenced: Target::Policy(b.policy),
             });
         }
     }
@@ -1520,7 +1675,14 @@ fn compile_policies(graph: &PolicyGraph, authority: &Authority) -> Vec<Policy> {
 /// policy's reads are made from its predicates as written, so a read of every policy is the one
 /// thing its check looks for; the policies it names are checked as any other's, and it is not
 /// also told off for every policy below that a read of every policy would reach.
+///
+/// The classifiers a policy reads are checked here too, from the same [`Reads`]: a filter that
+/// narrows to none ([`AcceptError::UnnamedClassifier`]), a classifier no set declares
+/// ([`AcceptError::UndeclaredClassifier`]), a declaration whose author is below the reader's
+/// ([`AcceptError::ReferencesBelow`] with [`Target::Classifier`]), and any classifier read by a
+/// meta policy ([`AcceptError::MetaReadsClassifier`]).
 fn check_reads(
+    graph: &PolicyGraph,
     policies: &[Policy],
     reads: &[Reads],
     authority: &Authority,
@@ -1531,6 +1693,7 @@ fn check_reads(
             continue;
         }
         let meta = reader.layer() == DefLayer::Meta;
+        check_classifier_reads(graph, reader, reads, authority, errors);
         if meta && reads.judged.iter().any(|read| read.narrowed.is_none()) {
             let error = AcceptError::MetaReadsUnscoped(reader.id());
             if !errors.contains(&error) {
@@ -1552,12 +1715,58 @@ fn check_reads(
             {
                 let error = AcceptError::ReferencesBelow {
                     item: Target::Policy(reader.id()),
-                    referenced: target.id(),
+                    referenced: Target::Policy(target.id()),
                 };
                 if !errors.contains(&error) {
                     errors.push(error);
                 }
             }
+        }
+    }
+}
+
+/// The classifiers `reader` reads, against the declarations of the graph: see [`check_reads`].
+fn check_classifier_reads(
+    graph: &PolicyGraph,
+    reader: &Policy,
+    reads: &Reads,
+    authority: &Authority,
+    errors: &mut Vec<AcceptError>,
+) {
+    let mut found = Vec::new();
+    if reads.unnamed_classifier {
+        found.push(AcceptError::UnnamedClassifier {
+            policy: reader.id(),
+        });
+    }
+    for name in reads.classifiers() {
+        if reader.layer() == DefLayer::Meta {
+            found.push(AcceptError::MetaReadsClassifier {
+                policy: reader.id(),
+                classifier: name.clone(),
+            });
+            continue;
+        }
+        match graph.classifier(name) {
+            None => found.push(AcceptError::UndeclaredClassifier {
+                policy: reader.id(),
+                classifier: name.clone(),
+            }),
+            Some(declared)
+                if authority.contains(&declared.author)
+                    && !authority.covers(&declared.author, reader.author()) =>
+            {
+                found.push(AcceptError::ReferencesBelow {
+                    item: Target::Policy(reader.id()),
+                    referenced: Target::Classifier(name.clone()),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+    for error in found {
+        if !errors.contains(&error) {
+            errors.push(error);
         }
     }
 }

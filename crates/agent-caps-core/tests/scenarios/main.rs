@@ -29,6 +29,7 @@ mod binding;
 mod budget;
 mod capability;
 mod claim;
+mod classified;
 mod clock;
 mod commit_after_test;
 mod compose;

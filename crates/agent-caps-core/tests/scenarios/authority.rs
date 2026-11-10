@@ -418,7 +418,7 @@ fn an_item_refers_only_to_items_of_its_own_author_or_above() {
         errors,
         vec![AcceptError::ReferencesBelow {
             item: Target::Policy(id(REWARD)),
-            referenced: id(GUARD),
+            referenced: Target::Policy(id(GUARD)),
         }]
     );
     // The user's binding, on the agent's guard.
@@ -430,7 +430,7 @@ fn an_item_refers_only_to_items_of_its_own_author_or_above() {
         errors,
         vec![AcceptError::ReferencesBelow {
             item: Target::Binding(binding_id(id(GUARD), 1)),
-            referenced: id(GUARD),
+            referenced: Target::Policy(id(GUARD)),
         }]
     );
 }
@@ -513,7 +513,7 @@ fn denial(policy: &str, by: Principal) -> Event {
 fn a_policy_names_the_judgments_only_of_policies_above_it() {
     let below = vec![AcceptError::ReferencesBelow {
         item: Target::Policy(id(GUARD)),
-        referenced: id(OTHER),
+        referenced: Target::Policy(id(OTHER)),
     }];
     for cond in [
         Cond::All(vec![of(OTHER), denied()]),
@@ -754,7 +754,7 @@ fn a_meta_policy_reads_judgments_only_by_naming_the_policies() {
         ),
         vec![AcceptError::ReferencesBelow {
             item: Target::Policy(id(GUARD)),
-            referenced: id(OTHER),
+            referenced: Target::Policy(id(OTHER)),
         }]
     );
 }
@@ -777,7 +777,7 @@ fn a_last_of_judgments_that_names_the_policies_is_accepted_beside_one_below() {
         ),
         vec![AcceptError::ReferencesBelow {
             item: Target::Policy(id(GUARD)),
-            referenced: id(OTHER),
+            referenced: Target::Policy(id(OTHER)),
         }]
     );
     for cond in [Some(of(GUARD)), Some(denied()), None] {
@@ -812,7 +812,7 @@ fn a_last_of_judgments_whose_test_names_a_policy_below_is_rejected() {
     };
     let below = vec![AcceptError::ReferencesBelow {
         item: Target::Policy(id(GUARD)),
-        referenced: id(OTHER),
+        referenced: Target::Policy(id(OTHER)),
     }];
     for filter in [None, Some(denied()), Some(of(GUARD))] {
         for test in [of(OTHER), Cond::All(vec![of(OTHER), denied()])] {

@@ -38,6 +38,10 @@
 //! transaction can use, is answered in one place, `state_readings`, for every atom that reads
 //! the state.
 //!
+//! A filter of `Classified` events narrows to one classifier with `classifier == name`
+//! (`classified_read`), the one place that says which classifier a rule reads; the catalog checks
+//! the name against the declarations and takes effect on it.
+//!
 //! A [`Selector`] chooses events by what they are ([`EventFilter`]) and by who acted ([`By`]).
 //! The filter alone is what is read where no actor can be: the capabilities of a platform and
 //! the cover of an exemption take an [`EventFilter`], which cannot hold a `By`.
@@ -61,7 +65,7 @@
 use std::fmt;
 
 use super::authority::Principal;
-use super::name::{CommandWords, GlobPattern, Meter, Mode, PolicyId};
+use super::name::{ClassifierName, CommandWords, GlobPattern, Meter, Mode, PolicyId};
 use super::schema::{At, EventKind, Field, FieldType};
 
 /// A truth value of Kleene's three-valued logic.
@@ -977,6 +981,31 @@ impl Pred {
     }
 }
 
+impl Pred {
+    /// The classifiers the predicate reads, each read in the order it first appears: one for the
+    /// filter of each temporal operator and of each `Since` scope that looks for `Classified`
+    /// events ([`classified_read`]). The operators are those of [`Pred::temporals`], so a `last`,
+    /// a `once`, a `count` and the scope of a sum are read alike.
+    pub(super) fn classified_reads(&self) -> Vec<ClassifiedRead> {
+        let mut out = Vec::new();
+        for temporal in self.temporals() {
+            let since = match temporal.scope() {
+                Scope::Since(selector) => Some(&selector.filter),
+                _ => None,
+            };
+            for read in std::iter::once(&temporal.selector().filter)
+                .chain(since)
+                .filter_map(classified_read)
+            {
+                if !out.contains(&read) {
+                    out.push(read);
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Where a predicate stands in a policy. It decides whether the direction an atom that reads the
 /// state is read in can be told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1172,6 +1201,71 @@ pub(super) fn last_read(filter: &EventFilter, test: &Cond) -> Option<JudgedRead>
     let mut read = judged_read(filter)?;
     named_policies(test, &mut read.named);
     Some(read)
+}
+
+/// What one filter of `Classified` events reads: the one classifier it narrows to, or none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ClassifiedRead {
+    /// The filter narrows to this classifier with `classifier == name`.
+    Named(ClassifierName),
+    /// The filter does not narrow to one classifier, or narrows to a text that is no classifier
+    /// name (no answer carries it): a read the catalog does not accept.
+    Unnamed,
+}
+
+/// What a filter reads, when it looks for `Classified` events: the one place that decides which
+/// classifier a rule reads, so what the catalog checks against the declarations and what it takes
+/// effect on are the same set. A filter narrows to a classifier with `classifier == name`, alone
+/// or in an `all` that names one classifier and no other; a condition on the answer beside it
+/// narrows nothing further. Any other shape (no condition, an `any`, a `not`, an `in`, a glob)
+/// reads no classifier by name.
+pub(super) fn classified_read(filter: &EventFilter) -> Option<ClassifiedRead> {
+    (filter.kind == EventKind::Classified)
+        .then(|| read_of(filter.cond.as_ref().and_then(narrowed_classifier)))
+}
+
+/// What a policy that judges `Classified` events reads: the classifier its `when` narrows to by
+/// the same rule as a filter ([`classified_read`]), where `when` is a `Now` of a condition, or an
+/// `all` of predicates that narrow to one name. The judged event is the answer, so the policy
+/// reads the classifier it applies to; with no `when`, or one that narrows to none, it reads no
+/// classifier by name. The rule of a policy of any other subject reads through its filters alone.
+pub(super) fn classified_subject_read(when: Option<&Pred>) -> ClassifiedRead {
+    read_of(when.and_then(narrowed_classifier_of))
+}
+
+/// The read of a text a condition narrowed to: the classifier it names, or none when it narrowed
+/// to nothing or to a text that is no classifier name (no answer carries it).
+fn read_of(narrowed: Option<&str>) -> ClassifiedRead {
+    narrowed
+        .and_then(|text| text.parse().ok())
+        .map_or(ClassifiedRead::Unnamed, ClassifiedRead::Named)
+}
+
+/// The one name among `names`, when they are all the same name (the same name given twice is one
+/// name; two names narrow to no event, and so to none that can be read) and there is one.
+fn the_one<'a>(mut names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+    let first = names.next()?;
+    names.all(|name| name == first).then_some(first)
+}
+
+/// The one classifier a condition on a `Classified` event narrows to: `classifier == name`, or an
+/// `all` with exactly one such name among its conditions. `None` when it does not.
+fn narrowed_classifier(cond: &Cond) -> Option<&str> {
+    match cond {
+        Cond::Eq(Field::Classifier, Lit::Text(text)) => Some(text),
+        Cond::All(conds) => the_one(conds.iter().filter_map(narrowed_classifier)),
+        _ => None,
+    }
+}
+
+/// [`narrowed_classifier`] for a predicate of the judged event: a `Now`, or an `all` of
+/// predicates.
+fn narrowed_classifier_of(pred: &Pred) -> Option<&str> {
+    match pred {
+        Pred::Now(cond) => narrowed_classifier(cond),
+        Pred::All(preds) => the_one(preds.iter().filter_map(narrowed_classifier_of)),
+        _ => None,
+    }
 }
 
 /// The policies a text of a condition on a judgment names. A text that is not an id as a

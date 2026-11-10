@@ -20,9 +20,10 @@
 //!
 //! # Only adding merges
 //!
-//! Composing is a join: the policies and the bindings of every set, by id. Two sets with the same
-//! item (an equal policy or binding with the same id) hold one item, and two with different items
-//! under one id, or two policies of one name under two ids, conflict ([`JoinConflict`]). The join
+//! Composing is a join: the policies and the bindings of every set, by id, and the classifiers, by
+//! name. Two sets with the same item (an equal policy or binding with the same id, an equal
+//! classifier with the same name) hold one item, and two with different items under one id or one
+//! classifier name, or two policies of one name under two ids, conflict ([`JoinConflict`]). The join
 //! is commutative, associative and idempotent, with the empty sources as its unit (an empty graph),
 //! so the composed graph does
 //! not depend on the order of the sets, and the same graph given as two sets adds nothing. Inside
@@ -37,6 +38,11 @@
 //! policy ([`super::policy`]). Weakening a shared rule for one project is a version of the shared
 //! set that its owner gives the project, or a temporary adjustment, which has a lifetime
 //! ([`super::adjust`]).
+//!
+//! A classifier is declared in one set and read by name from the others. Its declaration holds the
+//! last record of its calibration, so two sets that declare one are the same item only while the
+//! record is the same: when either updates it, they conflict. The set that declares it is the one
+//! that changes it.
 //!
 //! # Refused
 //!
@@ -53,7 +59,7 @@
 //!
 //! # Provenance
 //!
-//! Every item of a set, policy and binding, is by the set's owner or one below it
+//! Every item of a set, policy, binding and classifier, is by the set's owner or one below it
 //! ([`super::authority::Authority::within`]), checked when a catalog is accepted, so a set holds
 //! only what its owner may loosen. The owner is a value the application guarantees, as the one who
 //! makes a change is ([`super::change`]): the store says which file a set comes from, and so whose
@@ -95,8 +101,9 @@
 //!   a set replaces it ([`Sources::replaced`]) rather than being added beside it.
 //! - [`SourcesError::DuplicateName`]: two sets have one name. Rename one.
 //! - [`SourcesError::Unknown`]: a set taken out or replaced is not one of the sources.
-//! - [`JoinConflict`]: two sets hold different items under one id, or two policies of one name.
-//!   Make the items equal, give them their own ids and names, or leave one out.
+//! - [`JoinConflict`]: two sets hold different items under one id or one classifier name, or two
+//!   policies of one name. Make the items equal, give them their own ids and names, or leave one
+//!   out.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::{self, Entry};
@@ -199,7 +206,8 @@ pub struct JoinConflict {
 }
 
 impl JoinConflict {
-    /// Where the two sets hold different items: a policy's or a binding's id, or a policy's name.
+    /// Where the two sets hold different items: a policy's or a binding's id, a policy's name, or
+    /// a classifier's name.
     pub fn clash(&self) -> &Clash {
         &self.clash
     }
@@ -308,12 +316,13 @@ impl Sources {
         self.sets.get(id)
     }
 
-    /// The graph of every set, each policy and binding once: the one place sets are composed.
+    /// The graph of every set, each policy, binding and classifier once: the one place sets are
+    /// composed.
     /// The items enter in [`SetId`] order through the graph's one insert, which takes an item
     /// equal to one of another set as the same item.
     ///
     /// Otherwise every conflict, in the order of [`Clash`] (the policies' ids, the bindings' ids,
-    /// the names), and for each clash every pair of sets whose items under it cannot enter one
+    /// the policies' names, the classifiers' names), and for each clash every pair of sets whose items under it cannot enter one
     /// graph, in [`SetId`] order: three sets with three different items under one id give three
     /// pairs, and two sets with the same item are not a pair.
     pub fn compose(&self) -> Result<PolicyGraph, Vec<JoinConflict>> {

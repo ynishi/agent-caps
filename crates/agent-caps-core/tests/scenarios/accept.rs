@@ -97,7 +97,7 @@ fn accept_reports_every_broken_invariant() {
         vec![
             AcceptError::ReferencesBelow {
                 item: Target::Binding(binding_id(id(OTHER), 1)),
-                referenced: id(OTHER),
+                referenced: Target::Policy(id(OTHER)),
             },
             AcceptError::UnknownBindingPolicy {
                 binding: binding_id(id(REWARD), 1),

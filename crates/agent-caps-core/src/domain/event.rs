@@ -17,7 +17,7 @@
 
 use super::adjust::Adjustment;
 use super::authority::Principal;
-use super::name::{AdjustmentId, CommandWords, Meter, Mode, PolicyId};
+use super::name::{AdjustmentId, ClassifierName, CommandWords, Meter, Mode, PolicyId};
 use super::predicate::{Amount, Cond, Lit, Truth};
 use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
 
@@ -36,11 +36,11 @@ pub struct Event {
 /// What happened. New kinds are added as the model grows, so a match on it outside this crate
 /// needs a wildcard arm.
 ///
-/// Two bodies are equal when they are the same event, the score of a measurement compared as a
-/// number with every NaN equal to every NaN: a NaN score is the same as itself, where `f64`'s
-/// `==` takes it for a difference, and `0.0` and `-0.0` are the same score. So the equality is
-/// total ([`Eq`]): a slot of the state that holds an event is not taken for changed when it was
-/// not touched, and a fixture, and the policy that holds it, equals itself.
+/// Two bodies are equal when they are the same event, the score of a measurement and the answer of
+/// a classifier compared as a number with every NaN equal to every NaN: a NaN score is the same as
+/// itself, where `f64`'s `==` takes it for a difference, and `0.0` and `-0.0` are the same score.
+/// So the equality is total ([`Eq`]): a slot of the state that holds an event is not taken for
+/// changed when it was not touched, and a fixture, and the policy that holds it, equals itself.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Body {
@@ -105,6 +105,18 @@ pub enum Body {
         /// The score.
         score: f64,
     },
+    /// A classifier answered: a claim, read by the rules that name the classifier (a filter of
+    /// `Classified` events narrows to one with `classifier == name`,
+    /// [`super::catalog::AcceptError::UnnamedClassifier`]). It counts only from one who covers the
+    /// authors of the rules that read it, as any record a rule reads does ([`super::tx`]). The
+    /// answer is a judgment that may be wrong, so a guard that reads one stops only while the
+    /// classifier's calibration meets its bound ([`super::policy::Classifier`]).
+    Classified {
+        /// The classifier, by name and version.
+        classifier: ClassifierName,
+        /// The answer.
+        answer: f64,
+    },
     /// A temporary adjustment is made: an exemption, or bindings added and suspended, for its
     /// lifetime ([`super::adjust`]). It is held, with who made it, when it may take effect and its
     /// transaction keeps it.
@@ -138,11 +150,11 @@ pub enum Body {
     },
 }
 
-// Written by hand, not derived, for the score of a measurement: `f64` has no total equality, so
-// the score is compared as a number with NaN equal to NaN (see the doc of `Body`), which is an
-// equivalence: reflexive with the NaN case, and symmetric and transitive as `==` and "both are
-// NaN" each are, never both at once. Every other field is compared with
-// its own `==`. The match is on `self` with no wildcard, so a new kind does not compile until its
+// Written by hand, not derived, for the score of a measurement and the answer of a classifier:
+// `f64` has no total equality, so the number is compared with NaN equal to NaN (see the doc of
+// `Body`), which is an equivalence: reflexive with the NaN case, and symmetric and transitive as
+// `==` and "both are NaN" each are, never both at once. Every other field is compared with its
+// own `==`. The match is on `self` with no wildcard, so a new kind does not compile until its
 // equality is written.
 impl PartialEq for Body {
     fn eq(&self, other: &Self) -> bool {
@@ -174,6 +186,11 @@ impl PartialEq for Body {
                 other,
                 Self::Measured { oracle: o, score: s }
                     if oracle == o && (score == s || (score.is_nan() && s.is_nan()))
+            ),
+            Self::Classified { classifier, answer } => matches!(
+                other,
+                Self::Classified { classifier: c, answer: a }
+                    if classifier == c && (answer == a || (answer.is_nan() && a.is_nan()))
             ),
             Self::Adjust(adjustment) => matches!(other, Self::Adjust(a) if adjustment == a),
             Self::Cancel { id } => matches!(other, Self::Cancel { id: i } if id == i),
@@ -249,6 +266,7 @@ impl Body {
             Self::Used { .. } => EventKind::Used,
             Self::ModeSwitch { .. } => EventKind::ModeSwitch,
             Self::Measured { .. } => EventKind::Measured,
+            Self::Classified { .. } => EventKind::Classified,
             Self::Adjust(_) => EventKind::Adjust,
             Self::Cancel { .. } => EventKind::Cancel,
             Self::Judged { .. } => EventKind::Judged,
@@ -272,6 +290,11 @@ impl Body {
                 Read::Found(Value::Text(oracle.clone()))
             }
             (Self::Measured { score, .. }, Field::Score) => Read::Found(Value::Num(*score)),
+            // The text the name holds, so `classifier == "commit-why@3"` is the name's own equality.
+            (Self::Classified { classifier, .. }, Field::Classifier) => {
+                Read::Found(Value::Text(classifier.as_str().to_owned()))
+            }
+            (Self::Classified { answer, .. }, Field::Answer) => Read::Found(Value::Num(*answer)),
             (Self::Judged { policy, .. }, Field::Policy) => {
                 Read::Found(Value::Text(policy.to_string()))
             }

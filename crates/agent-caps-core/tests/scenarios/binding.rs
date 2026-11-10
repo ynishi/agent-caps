@@ -83,9 +83,9 @@ fn exempt(n: u8, path: Option<&str>) -> Body {
 #[test]
 fn a_binding_added_by_one_below_does_not_lower_the_rule_above() {
     let before = catalog(vec![test_guard(Level::Force)], vec![]);
-    let (policies, mut bindings) = before.graph().clone().into_parts();
+    let (policies, mut bindings, classifiers) = before.graph().clone().into_parts();
     bindings.push(bind(GUARD, 1, Level::Inform, ModeScope::Any, the_agent()));
-    let graph = PolicyGraph::parse(policies, bindings).unwrap();
+    let graph = PolicyGraph::parse_with(policies, bindings, classifiers).unwrap();
     let after = before.change(by_author(graph), &the_agent()).unwrap();
     assert_eq!(guard_effect(&after), Effect::On(Level::Force));
 }
@@ -136,7 +136,7 @@ fn a_binding_of_the_one_above_cannot_be_removed_by_the_one_below() {
         ),
         vec![AcceptError::ReferencesBelow {
             item: Target::Binding(binding_id(id(GUARD), 1)),
-            referenced: id(GUARD),
+            referenced: Target::Policy(id(GUARD)),
         }]
     );
 }

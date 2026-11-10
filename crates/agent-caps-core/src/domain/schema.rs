@@ -116,6 +116,8 @@ event_kinds! {
     ModeSwitch,
     /// An oracle measured a score.
     Measured,
+    /// A classifier gave an answer.
+    Classified,
     /// A temporary adjustment was made.
     Adjust,
     /// A temporary adjustment was cancelled.
@@ -161,6 +163,9 @@ impl EventKind {
             Self::Spawn
             | Self::ModeSwitch
             | Self::Measured
+            // An answer is stated by whoever runs the classifier, and it is as good as that one:
+            // it moves the slot of the rule that reads it, so it is judged as any record is.
+            | Self::Classified
             | Self::Adjust
             | Self::Cancel
             | Self::Judged => Nature::Claim,
@@ -229,6 +234,11 @@ pub enum Field {
     Oracle,
     /// The score of a [`EventKind::Measured`] (number).
     Score,
+    /// The classifier of a [`EventKind::Classified`], as the text of its
+    /// [`ClassifierName`](super::name::ClassifierName) (text).
+    Classifier,
+    /// The answer of a [`EventKind::Classified`] (number).
+    Answer,
     /// The policy of a [`EventKind::Judged`], as its hyphenated id (text).
     Policy,
     /// What a [`EventKind::Judged`] came to, as [`Judgment::as_str`] (text).
@@ -259,6 +269,7 @@ impl Field {
             Self::Tool | Self::Command | Self::Path | Self::Ok => EventKind::ToolUse,
             Self::ModeTo => EventKind::ModeSwitch,
             Self::Oracle | Self::Score => EventKind::Measured,
+            Self::Classifier | Self::Answer => EventKind::Classified,
             Self::Policy | Self::Judgment => EventKind::Judged,
             Self::Meter => EventKind::Used,
         }
@@ -271,12 +282,13 @@ impl Field {
             | Self::Path
             | Self::ModeTo
             | Self::Oracle
+            | Self::Classifier
             | Self::Policy
             | Self::Judgment
             | Self::Meter => FieldType::Text,
             Self::Command => FieldType::Words,
             Self::Ok => FieldType::Bool,
-            Self::Score => FieldType::Num,
+            Self::Score | Self::Answer => FieldType::Num,
         }
     }
 }

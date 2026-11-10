@@ -1,6 +1,6 @@
 //! The values with a rule of their own that the rest of the domain refers to: the id and name of a
-//! policy, the id of a binding and of a temporary adjustment, a mode, a meter, the words of a
-//! command, a shell pattern and the reason of an adjustment.
+//! policy, the id of a binding and of a temporary adjustment, a mode, a meter, the name of a
+//! classifier, the words of a command, a shell pattern and the reason of an adjustment.
 //!
 //! Each is made only through its constructor, so a value of the type always keeps its rule.
 
@@ -21,6 +21,9 @@ pub enum NameError {
     /// A name (of a policy, a mode, a meter or a set of policies) that is empty or has a character
     /// other than an ASCII letter, a digit, `-` or `_`.
     Name(String),
+    /// A classifier name that is empty or has a character other than an ASCII letter, a digit,
+    /// `-`, `_` or `@`.
+    Classifier(String),
     /// Command words that are none, or that have an empty word.
     Words,
     /// A reason that is empty or only white space.
@@ -39,6 +42,10 @@ impl fmt::Display for NameError {
             Self::Name(text) => write!(
                 f,
                 "`{text}` is not a name: one or more ASCII letters, digits, `-` or `_`"
+            ),
+            Self::Classifier(text) => write!(
+                f,
+                "`{text}` is not a classifier name: one or more ASCII letters, digits, `-`, `_` or `@`"
             ),
             Self::Words => f.write_str("command words need at least one word and no empty word"),
             Self::Reason => f.write_str("a reason cannot be empty"),
@@ -150,10 +157,12 @@ pub(super) fn write_uuid(f: &mut fmt::Formatter<'_>, value: u128) -> fmt::Result
 /// Whether `text` is a name: one or more ASCII letters, digits, `-` or `_`. The one rule of a name,
 /// read by the id of a set of policies ([`super::set::SetId`]) too.
 pub(super) fn is_name(text: &str) -> bool {
-    !text.is_empty()
-        && text
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    !text.is_empty() && text.chars().all(is_name_char)
+}
+
+/// A character a name may hold: an ASCII letter, a digit, `-` or `_`.
+fn is_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '_')
 }
 
 /// The name of a policy, for the people who read a verdict. Two policies of a catalog never
@@ -231,6 +240,42 @@ impl FromStr for Meter {
 }
 
 impl fmt::Display for Meter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The name of a classifier, with its version in the text (`commit-why@3`): the judge of a rule that
+/// code cannot express ([`Classifier`](super::policy::Classifier)). A new version of the judge is
+/// another name, so another classifier, declared and calibrated on its own. A rule reads it as
+/// text ([`Field::Classifier`](super::schema::Field::Classifier)), the same text it holds, so
+/// whether two names are the same is one comparison of that text.
+///
+/// It is a name (ASCII letters, digits, `-` and `_`) that may also hold `@`, which sets the version
+/// apart by convention and carries no meaning of its own.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ClassifierName(String);
+
+impl ClassifierName {
+    /// The name as text: what [`Field::Classifier`](super::schema::Field::Classifier) reads.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for ClassifierName {
+    type Err = NameError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if !text.is_empty() && text.chars().all(|c| is_name_char(c) || c == '@') {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(NameError::Classifier(text.to_owned()))
+        }
+    }
+}
+
+impl fmt::Display for ClassifierName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }

@@ -457,10 +457,10 @@ pub fn rebuilt(
     keep: impl Fn(&Binding) -> bool,
     edit: impl Fn(&mut Binding),
 ) -> PolicyGraph {
-    let (policies, mut bindings) = graph.clone().into_parts();
+    let (policies, mut bindings, classifiers) = graph.clone().into_parts();
     bindings.retain(|b| keep(b));
     bindings.iter_mut().for_each(edit);
-    PolicyGraph::parse(policies, bindings).unwrap()
+    PolicyGraph::parse_with(policies, bindings, classifiers).unwrap()
 }
 
 /// The fixed id the scenarios give the set first named `name`: a stable hash of the name (64-bit
@@ -505,18 +505,19 @@ pub fn set(name: &str, owner: Principal, graph: PolicyGraph) -> Source {
 /// user's rules has the user's set and the agent's beside it, so a change of the agent's own work
 /// leaves the user's set as it is.
 pub fn by_author(graph: PolicyGraph) -> Sources {
-    let (policies, bindings) = graph.into_parts();
+    let (policies, bindings, classifiers) = graph.into_parts();
     let mut owners: Vec<Principal> = policies
         .iter()
         .map(|p| p.author.clone())
         .chain(bindings.iter().map(|b| b.author.clone()))
+        .chain(classifiers.iter().map(|c| c.author.clone()))
         .collect();
     owners.sort();
     owners.dedup();
     let sets = owners
         .into_iter()
         .map(|owner| {
-            let graph = PolicyGraph::parse(
+            let graph = PolicyGraph::parse_with(
                 policies
                     .iter()
                     .filter(|p| p.author == owner)
@@ -525,6 +526,11 @@ pub fn by_author(graph: PolicyGraph) -> Sources {
                 bindings
                     .iter()
                     .filter(|b| b.author == owner)
+                    .cloned()
+                    .collect(),
+                classifiers
+                    .iter()
+                    .filter(|c| c.author == owner)
                     .cloned()
                     .collect(),
             )
