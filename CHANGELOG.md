@@ -116,6 +116,38 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a catalog is accepted from sets of policies, and
+  keeps them (#47). The new module `domain::set` has `SetId` (a surrogate
+  key in the hyphenated UUID form, as `PolicyId` is; `NameError::SetId` for
+  one that is not), `SetName` (a name, as `Mode` is), `Source { id, name,
+  owner, graph }`, `Sources` (by id, made by `Sources::new`, which refuses an
+  id given twice and a name given twice, every one at once, with
+  `SourcesError::Duplicate` and `DuplicateName`; changed into another value
+  by `with`, `without(id)` and `replaced`, which make it through `new` again
+  and refuse an id that is missing with `Unknown`; a new version keeps its id
+  and may change its name) and `JoinConflict`, which names the two sets by
+  id. `Catalog::accept(sources, authority)` and `Catalog::change(after, by)`
+  take `Sources`; write a single graph as
+  `Sources::new(vec![Source { id, name, owner, graph }])?`, with an owner
+  that every author of the graph is or is below. `Catalog::sources()` returns
+  the sets, and `Catalog::graph()` the graph they compose to. Sets compose by
+  adding only (`Sources::compose`): the policies and bindings of every set, by
+  id, an item two sets hold the same once, and two different items under one
+  id, or two policies of one name, a conflict (`AcceptError::Conflict`, with
+  the `Clash` and the two sets, every pair that differs, in `SetId` order).
+  The join is commutative, associative and idempotent; nothing is replaced by
+  id and no set wins over another, so the caller's composition that let a
+  later binding take the place of one with its id is gone. Accepting checks
+  that every item of a set is by its owner or one below
+  (`AcceptError::NotWithinOwner`) and that the owner is of the hierarchy
+  (`AcceptError::UnknownOwner`). A change judges a set as an item whose author
+  is its owner (`Target::Set`): adding, removing, replacing, renaming or
+  re-owning a set whose owner `by` does not cover is a `Loosening::Uncovered`, reported beside
+  what its items loosen; so a change by one below no longer edits a binding of
+  a set above in place, even to raise it, and adds a binding in its own set
+  instead. A swap of a set (`replaced`) is one change. A set holding a meta
+  policy enters only when a catalog is first accepted. In the ledger, FR3,
+  FR4 and FR25 are withdrawn for FR48, FR49 and FR50, and UC7 for UC27.
 - Breaking, before 1.0: a policy graph is keyed by id (#46). The fields of
   `PolicyGraph` are private, and a graph is made only by
   `PolicyGraph::parse(policies, bindings)`, which refuses a second policy or

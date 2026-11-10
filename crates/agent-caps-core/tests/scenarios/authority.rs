@@ -18,9 +18,9 @@ use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, OTHER, REWARD, Written, accept, agent, anyone, at, authority, bind, binding_id, catalog,
-    clippy_reward, graph_of, id, inside, mode, outcome, outside, rejected, test_guard, tested,
-    the_agent, the_helper, the_user, verdict,
+    GUARD, OTHER, REWARD, Written, accept, agent, anyone, at, authority, bind, binding_id,
+    by_author, catalog, clippy_reward, graph_of, id, inside, mode, outcome, outside, rejected,
+    set_id, test_guard, tested, the_agent, the_helper, the_user, verdict,
 };
 
 const AGENT_REWARD: &str = "00000000-0000-7000-8000-000000000004";
@@ -75,6 +75,13 @@ fn loosenings(result: Result<Catalog, ChangeRejected>) -> Vec<Loosening> {
     }
 }
 
+/// The user's set, which holds what the user wrote, is changed by one who does not cover the user.
+fn users_set() -> Loosening {
+    Loosening::Uncovered {
+        target: Target::Set(set_id("user")),
+    }
+}
+
 fn uncovered_policy(policy: &str) -> Loosening {
     Loosening::Uncovered {
         target: Target::Policy(id(policy)),
@@ -124,7 +131,7 @@ fn an_agent_below_the_user_adds_a_guard_and_it_takes_effect() {
         vec![test_guard(Level::Advise), agent_guard(Level::Force)],
         vec![],
     );
-    let changed = before.change(after, &the_agent()).unwrap();
+    let changed = before.change(by_author(after), &the_agent()).unwrap();
     assert_eq!(effect_of(&changed, OTHER, None), Effect::On(Level::Force));
     assert_eq!(effect_of(&changed, GUARD, None), Effect::On(Level::Advise));
     let events = [agent(Body::TaskStart), agent(Body::Stop)];
@@ -139,16 +146,18 @@ fn an_agent_below_the_user_adds_a_guard_and_it_takes_effect() {
 #[test]
 fn an_agent_cannot_loosen_the_users_guard() {
     let before = catalog(vec![test_guard(Level::Force)], vec![]);
-    let by_agent = |policies, bindings| before.change(graph_of(policies, bindings), &the_agent());
+    let by_agent =
+        |policies, bindings| before.change(by_author(graph_of(policies, bindings)), &the_agent());
     let users = || vec![the_user()];
 
-    // The user's binding lowered, or removed: the binding is not the agent's to change, and the
-    // guard goes down, which asks the user.
+    // The user's binding lowered, or removed: the binding is not the agent's to change, nor the
+    // user's set that holds it, and the guard goes down, which asks the user.
     let mut off = test_guard(Level::Force);
     off.level = None;
     let lost = || {
         vec![
             uncovered_binding(GUARD, 0),
+            users_set(),
             moves_under(None, users(), vec![lowered(GUARD, users())]),
         ]
     };
@@ -162,19 +171,23 @@ fn an_agent_cannot_loosen_the_users_guard() {
     rewritten.rule = Rule::Structural(Pred::All(vec![tested()]));
     assert_eq!(
         loosenings(by_agent(vec![rewritten], vec![])),
-        vec![uncovered_policy(GUARD)]
+        vec![uncovered_policy(GUARD), users_set()]
     );
     // Authored by the agent, so that the guard is the agent's own, and its binding with it: both
-    // taken over.
+    // taken over, out of the user's set.
     let mut taken = test_guard(Level::Force);
     taken.author = the_agent();
     assert_eq!(
         loosenings(by_agent(vec![taken], vec![])),
-        vec![uncovered_policy(GUARD), uncovered_binding(GUARD, 0)]
+        vec![
+            uncovered_policy(GUARD),
+            uncovered_binding(GUARD, 0),
+            users_set()
+        ]
     );
     assert_eq!(
         loosenings(by_agent(vec![], vec![])),
-        vec![uncovered_policy(GUARD)]
+        vec![uncovered_policy(GUARD), users_set()]
     );
 
     // The agent's own weaker binding: beside the user's it lowers nothing, and in its place it
@@ -191,12 +204,12 @@ fn an_agent_cannot_loosen_the_users_guard() {
     for users_binding in [off.clone(), test_guard(Level::Inform)] {
         assert_eq!(
             loosenings(by_agent(vec![users_binding], equal())),
-            vec![uncovered_binding(GUARD, 0)]
+            vec![uncovered_binding(GUARD, 0), users_set()]
         );
     }
 
     // The user, who covers what it wrote, changes its own guard freely.
-    let user = |policies| before.change(graph_of(policies, vec![]), &the_user());
+    let user = |policies| before.change(by_author(graph_of(policies, vec![])), &the_user());
     assert!(user(vec![test_guard(Level::Advise)]).is_ok());
     assert!(user(vec![off]).is_ok());
     assert!(user(vec![]).is_ok());
@@ -215,10 +228,10 @@ fn an_agent_cannot_weaken_the_examples_of_the_users_guard() {
     for guard in [marked, dropped] {
         let after = graph_of(vec![guard], vec![]);
         assert_eq!(
-            loosenings(before.change(after.clone(), &the_agent())),
-            vec![uncovered_policy(GUARD)]
+            loosenings(before.change(by_author(after.clone()), &the_agent())),
+            vec![uncovered_policy(GUARD), users_set()]
         );
-        assert!(before.change(after, &the_user()).is_ok());
+        assert!(before.change(by_author(after), &the_user()).is_ok());
     }
 }
 
@@ -228,12 +241,12 @@ fn an_agent_cannot_weaken_the_examples_of_the_users_guard() {
 fn an_agent_cannot_remove_the_users_reward() {
     let policies = || vec![test_guard(Level::Force), clippy_reward(Level::Advise)];
     let before = catalog(policies(), vec![]);
-    let by_agent = |policies| before.change(graph_of(policies, vec![]), &the_agent());
+    let by_agent = |policies| before.change(by_author(graph_of(policies, vec![])), &the_agent());
     let users = || vec![the_user()];
 
     assert_eq!(
         loosenings(by_agent(vec![test_guard(Level::Force)])),
-        vec![uncovered_policy(REWARD)]
+        vec![uncovered_policy(REWARD), users_set()]
     );
     assert_eq!(
         loosenings(by_agent(vec![
@@ -242,6 +255,7 @@ fn an_agent_cannot_remove_the_users_reward() {
         ])),
         vec![
             uncovered_binding(REWARD, 0),
+            users_set(),
             moves_under(None, users(), vec![lowered(REWARD, users())])
         ]
     );
@@ -252,6 +266,7 @@ fn an_agent_cannot_remove_the_users_reward() {
         loosenings(by_agent(vec![off, clippy_reward(Level::Advise)])),
         vec![
             uncovered_binding(GUARD, 0),
+            users_set(),
             moves_under(
                 None,
                 users(),
@@ -274,7 +289,7 @@ fn an_agent_removes_its_own_guard_and_its_own_binding() {
 
     let changed = before
         .change(
-            graph_of(vec![test_guard(Level::Advise)], vec![]),
+            by_author(graph_of(vec![test_guard(Level::Advise)], vec![])),
             &the_agent(),
         )
         .unwrap();
@@ -295,7 +310,7 @@ fn an_agents_binding_can_raise_the_users_guard() {
             bind(GUARD, 2, Level::Force, inside("bug-fix"), the_agent()),
         ],
     );
-    let changed = before.change(after, &the_agent()).unwrap();
+    let changed = before.change(by_author(after), &the_agent()).unwrap();
     assert_eq!(effect_of(&changed, GUARD, None), Effect::On(Level::Force));
     assert_eq!(
         effect_of(&changed, GUARD, Some("bug-fix")),
@@ -325,15 +340,16 @@ fn a_scope_for_a_new_mode_cannot_weaken_the_users_guard() {
     let users = || vec![the_user()];
     let expected = vec![
         uncovered_binding(GUARD, 0),
+        users_set(),
         moves_under(Some("explore"), users(), vec![lowered(GUARD, users())]),
     ];
     assert_eq!(
-        loosenings(before.change(weaken(vec![]), &the_agent())),
+        loosenings(before.change(by_author(weaken(vec![])), &the_agent())),
         expected.clone()
     );
     let inform = bind(GUARD, 1, Level::Inform, inside("explore"), the_agent());
     assert_eq!(
-        loosenings(before.change(weaken(vec![inform]), &the_agent())),
+        loosenings(before.change(by_author(weaken(vec![inform])), &the_agent())),
         expected
     );
 }
@@ -349,7 +365,7 @@ fn binding_the_users_off_guard_tightens_and_is_accepted() {
 
     let on = bind(GUARD, 1, Level::Force, ModeScope::Any, the_agent());
     let changed = before
-        .change(graph_of(vec![off], vec![on]), &the_agent())
+        .change(by_author(graph_of(vec![off], vec![on])), &the_agent())
         .unwrap();
     assert_eq!(effect_of(&changed, GUARD, None), Effect::On(Level::Force));
 }
@@ -373,7 +389,7 @@ fn placing_an_inform_binding_on_an_off_guard_tightens_and_is_accepted() {
         let graph = inform(scope);
         let stricter = accept(graph.clone()).unwrap();
         assert!(effect_of(&stricter, GUARD, Some("explore")) > effect_of(&before, GUARD, None));
-        assert!(before.change(graph, &the_agent()).is_ok());
+        assert!(before.change(by_author(graph), &the_agent()).is_ok());
     }
 }
 
@@ -636,7 +652,7 @@ fn a_change_by_one_below_leaves_the_rule_above_as_it_was() {
         vec![stops_until_denied(), agent_guard(Level::Force)],
         vec![],
     );
-    let changed = before.change(with_agent, &the_agent()).unwrap();
+    let changed = before.change(by_author(with_agent), &the_agent()).unwrap();
     assert_eq!(
         changed.graph().policy(id(GUARD)),
         Some(&stops_until_denied().def)
@@ -661,7 +677,7 @@ fn a_change_by_one_below_leaves_the_rule_above_as_it_was() {
         vec![stops_until_denied(), other_user_guard(Level::Force)],
         vec![],
     );
-    let widened = before.change(with_user, &the_user()).unwrap();
+    let widened = before.change(by_author(with_user), &the_user()).unwrap();
     assert_eq!(
         widened.graph().policy(id(GUARD)),
         Some(&stops_until_denied().def)
@@ -873,6 +889,11 @@ fn an_author_or_a_changer_outside_the_hierarchy_is_rejected() {
     assert_eq!(
         rejected(vec![written], vec![]),
         vec![
+            // Given as a set of its own, owned by its author.
+            AcceptError::UnknownOwner {
+                set: set_id("stranger"),
+                owner: stranger.clone(),
+            },
             unknown(Target::Policy(id(GUARD))),
             unknown(Target::Binding(binding_id(id(GUARD), 0))),
         ]
@@ -888,7 +909,13 @@ fn an_author_or_a_changer_outside_the_hierarchy_is_rejected() {
                 stranger.clone()
             )]
         ),
-        vec![unknown(Target::Binding(binding_id(id(GUARD), 1)))]
+        vec![
+            AcceptError::UnknownOwner {
+                set: set_id("stranger"),
+                owner: stranger.clone(),
+            },
+            unknown(Target::Binding(binding_id(id(GUARD), 1))),
+        ]
     );
 
     // A change whose graph has such an author is invalid.
@@ -896,14 +923,14 @@ fn an_author_or_a_changer_outside_the_hierarchy_is_rejected() {
     let mut also = agent_guard(Level::Force);
     also.author = stranger.clone();
     let result = before.change(
-        graph_of(vec![test_guard(Level::Force), also], vec![]),
+        by_author(graph_of(vec![test_guard(Level::Force), also], vec![])),
         &the_user(),
     );
     assert!(matches!(result.unwrap_err(), ChangeRejected::Invalid(_)));
     // And one who is not of the hierarchy cannot change, even with nothing changed.
     assert_eq!(
         before
-            .change(before.graph().clone(), &stranger)
+            .change(before.sources().clone(), &stranger)
             .unwrap_err(),
         ChangeRejected::UnknownPrincipal
     );
@@ -941,7 +968,7 @@ fn a_meta_policy_never_differs_for_anyone() {
         for (policies, ids) in &differences {
             assert_eq!(
                 before
-                    .change(graph_of(policies.clone(), vec![]), &by)
+                    .change(by_author(graph_of(policies.clone(), vec![])), &by)
                     .unwrap_err(),
                 ChangeRejected::Meta(ids.clone())
             );
@@ -952,25 +979,29 @@ fn a_meta_policy_never_differs_for_anyone() {
         vec![meta(Level::Force), other_user_guard(Level::Force)],
         vec![],
     );
-    assert!(before.change(beside, &the_user()).is_ok());
+    assert!(before.change(by_author(beside), &the_user()).is_ok());
 }
 
-/// FR42, FR16: a change that tightens one of the user's guards and loosens another is
-/// rejected as a whole, for the loosening only; each half alone is judged on its own.
+/// FR42, FR16, FR49: a change that tightens one of the user's guards and loosens another is
+/// rejected as a whole, for the loosening only; each half alone is judged on its own. The agent
+/// tightens with a binding of its own, in its own set: raising the user's binding in place
+/// changes the user's set, which is not the agent's to change, however it moves the rules.
 #[test]
 fn a_change_that_mixes_tightening_and_loosening_is_rejected_as_a_whole() {
     let before = catalog(
         vec![test_guard(Level::Advise), other_user_guard(Level::Advise)],
         vec![],
     );
+    let raise = || vec![bind(GUARD, 1, Level::Force, ModeScope::Any, the_agent())];
     let both = graph_of(
-        vec![test_guard(Level::Force), other_user_guard(Level::Inform)],
-        vec![],
+        vec![test_guard(Level::Advise), other_user_guard(Level::Inform)],
+        raise(),
     );
     assert_eq!(
-        loosenings(before.change(both, &the_agent())),
+        loosenings(before.change(by_author(both), &the_agent())),
         vec![
             uncovered_binding(OTHER, 0),
+            users_set(),
             moves_under(
                 None,
                 vec![the_user()],
@@ -982,11 +1013,20 @@ fn a_change_that_mixes_tightening_and_loosening_is_rejected_as_a_whole() {
         ]
     );
     let tightens = graph_of(
+        vec![test_guard(Level::Advise), other_user_guard(Level::Advise)],
+        raise(),
+    );
+    let changed = before.change(by_author(tightens), &the_agent()).unwrap();
+    assert_eq!(effect_of(&changed, GUARD, None), Effect::On(Level::Force));
+
+    let raised_in_place = graph_of(
         vec![test_guard(Level::Force), other_user_guard(Level::Advise)],
         vec![],
     );
-    let changed = before.change(tightens, &the_agent()).unwrap();
-    assert_eq!(effect_of(&changed, GUARD, None), Effect::On(Level::Force));
+    assert_eq!(
+        loosenings(before.change(by_author(raised_in_place), &the_agent())),
+        vec![users_set()]
+    );
 }
 
 /// The graph narrowed to what `by` does not cover: the policies and bindings whose author is
@@ -1058,17 +1098,21 @@ fn two_roots_do_not_cover_each_other() {
     let mut guard_b = other_user_guard(Level::Force);
     guard_b.author = b.clone();
     let before = Catalog::accept(
-        graph_of(vec![guard_a.clone(), guard_b.clone()], vec![]),
+        by_author(graph_of(vec![guard_a.clone(), guard_b.clone()], vec![])),
         two_roots,
     )
     .unwrap();
 
     let mut lowered_b = guard_b.clone();
     lowered_b.level = Some(Level::Advise);
+    let after = by_author(graph_of(vec![guard_a.clone(), lowered_b], vec![]));
     assert_eq!(
-        loosenings(before.change(graph_of(vec![guard_a.clone(), lowered_b], vec![]), &a)),
+        loosenings(before.change(after, &a)),
         vec![
             uncovered_binding(OTHER, 0),
+            Loosening::Uncovered {
+                target: Target::Set(set_id("b")),
+            },
             moves_under(None, vec![b.clone()], vec![lowered(OTHER, vec![b.clone()])])
         ]
     );
@@ -1076,7 +1120,7 @@ fn two_roots_do_not_cover_each_other() {
     lowered_a.level = Some(Level::Advise);
     assert!(
         before
-            .change(graph_of(vec![lowered_a, guard_b], vec![]), &a)
+            .change(by_author(graph_of(vec![lowered_a, guard_b], vec![])), &a)
             .is_ok()
     );
 }
@@ -1131,23 +1175,33 @@ fn a_catalog_accepted_again_with_a_new_hierarchy_uses_it() {
         vec![test_guard(Level::Force), agent_guard(Level::Force)],
         vec![],
     );
-    let removed = || graph_of(vec![test_guard(Level::Force)], vec![]);
+    let removed = || by_author(graph_of(vec![test_guard(Level::Force)], vec![]));
 
     let below = accept(graph.clone()).unwrap();
     assert!(below.change(removed(), &the_user()).is_ok());
 
     let two_roots = Authority::new([(the_user(), None), (the_agent(), None)]).unwrap();
-    let beside = Catalog::accept(graph.clone(), two_roots.clone()).unwrap();
+    let beside = Catalog::accept(by_author(graph.clone()), two_roots.clone()).unwrap();
     assert_eq!(beside.authority(), &two_roots);
     assert_eq!(
         loosenings(beside.change(removed(), &the_user())),
-        vec![uncovered_policy(OTHER)]
+        vec![
+            uncovered_policy(OTHER),
+            Loosening::Uncovered {
+                target: Target::Set(set_id("agent")),
+            },
+        ]
     );
 
-    let errors = Catalog::accept(graph, Authority::single(the_user())).unwrap_err();
+    // The agent's set is owned by one the hierarchy does not have, and so are its items.
+    let errors = Catalog::accept(by_author(graph), Authority::single(the_user())).unwrap_err();
     assert_eq!(
         errors.0,
         vec![
+            AcceptError::UnknownOwner {
+                set: set_id("agent"),
+                owner: the_agent(),
+            },
             AcceptError::UnknownAuthor {
                 item: Target::Policy(id(OTHER)),
                 author: the_agent(),

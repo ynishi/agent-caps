@@ -13,14 +13,15 @@ use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::policy::{DefLayer, Level, ModeScope, PolicyGraph};
 use agent_caps_core::domain::predicate::{By, Cond, Lit, Scope};
 use agent_caps_core::domain::schema::Field;
+use agent_caps_core::domain::set::Sources;
 use agent_caps_core::domain::state::Known;
 use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy, TxReport, Verdict};
 
 use super::common::{
-    GUARD, OTHER, agent, at, bind, binding_id, catalog, exempt_n, graph_of, id, inside, listed,
-    mode, outside, push_after_allowed, rebuilt, rejected, src_edit_guard, test_guard, the_agent,
-    the_helper, the_user,
+    GUARD, OTHER, agent, at, bind, binding_id, by_author, catalog, exempt_n, graph_of, id, inside,
+    listed, mode, outside, push_after_allowed, rebuilt, rejected, set_id, src_edit_guard,
+    test_guard, the_agent, the_helper, the_user,
 };
 
 /// The effect of the guard of the scenarios under no mode.
@@ -32,13 +33,18 @@ fn guard_effect(catalog: &Catalog) -> Effect {
         .unwrap()
 }
 
-/// The graph of `catalog` without the binding `n` of `policy`.
-fn without(catalog: &Catalog, policy: &str, n: u8) -> PolicyGraph {
-    rebuilt(
+/// The sets of `catalog`, one per author, without the binding `n` of `policy`.
+fn without(catalog: &Catalog, policy: &str, n: u8) -> Sources {
+    by_author(rebuilt(
         catalog.graph(),
         |b| b.id != binding_id(id(policy), n),
         |_| {},
-    )
+    ))
+}
+
+/// The set of the user's own, as a target of a change.
+fn users_set() -> Target {
+    Target::Set(set_id("user"))
 }
 
 /// The transaction of `event` after `before`.
@@ -80,7 +86,7 @@ fn a_binding_added_by_one_below_does_not_lower_the_rule_above() {
     let (policies, mut bindings) = before.graph().clone().into_parts();
     bindings.push(bind(GUARD, 1, Level::Inform, ModeScope::Any, the_agent()));
     let graph = PolicyGraph::parse(policies, bindings).unwrap();
-    let after = before.change(graph, &the_agent()).unwrap();
+    let after = before.change(by_author(graph), &the_agent()).unwrap();
     assert_eq!(guard_effect(&after), Effect::On(Level::Force));
 }
 
@@ -99,8 +105,8 @@ fn a_binding_of_the_one_above_cannot_be_removed_by_the_one_below() {
         .change(without(&before, GUARD, 1), &the_agent())
         .unwrap();
     assert_eq!(guard_effect(&own_removed), Effect::On(Level::Force));
-    // The user's: not the agent's to remove, and the guard would go down to Advise, which asks
-    // the user.
+    // The user's: not the agent's to remove, it changes the user's set, and the guard would go
+    // down to Advise, which asks the user.
     let Err(ChangeRejected::Loosens(loosenings)) =
         before.change(without(&before, GUARD, 0), &the_agent())
     else {
@@ -110,8 +116,10 @@ fn a_binding_of_the_one_above_cannot_be_removed_by_the_one_below() {
         loosenings.as_slice(),
         [
             Loosening::Uncovered { target: Target::Binding(removed) },
+            Loosening::Uncovered { target: set },
             Loosening::Moves { mode: None, authors, .. },
-        ] if *removed == binding_id(id(GUARD), 0) && *authors == vec![the_user()]
+        ] if *removed == binding_id(id(GUARD), 0) && *set == users_set()
+            && *authors == vec![the_user()]
     ));
     // The user removes its own.
     before
@@ -144,12 +152,15 @@ fn a_binding_of_the_one_above_cannot_be_removed_behind_one_of_ones_own() {
         vec![bind(GUARD, 1, Level::Force, ModeScope::Any, the_agent())],
     );
     let removed = before.change(without(&before, GUARD, 0), &the_agent());
-    assert_eq!(
-        removed,
-        Err(ChangeRejected::Loosens(vec![Loosening::Uncovered {
+    let the_users_binding_and_set = Err(ChangeRejected::Loosens(vec![
+        Loosening::Uncovered {
             target: Target::Binding(binding_id(id(GUARD), 0)),
-        }]))
-    );
+        },
+        Loosening::Uncovered {
+            target: users_set(),
+        },
+    ]));
+    assert_eq!(removed, the_users_binding_and_set);
     let weakened = rebuilt(
         before.graph(),
         |_| true,
@@ -160,10 +171,8 @@ fn a_binding_of_the_one_above_cannot_be_removed_behind_one_of_ones_own() {
         },
     );
     assert_eq!(
-        before.change(weakened, &the_agent()),
-        Err(ChangeRejected::Loosens(vec![Loosening::Uncovered {
-            target: Target::Binding(binding_id(id(GUARD), 0)),
-        }]))
+        before.change(by_author(weakened), &the_agent()),
+        the_users_binding_and_set
     );
     // The user may.
     before
@@ -282,7 +291,7 @@ fn the_binding_of_a_meta_policy_cannot_be_changed_even_by_the_root() {
     let mut lowered = meta;
     lowered.level = Some(Level::Advise);
     assert_eq!(
-        before.change(graph_of(vec![lowered], vec![]), &the_user()),
+        before.change(by_author(graph_of(vec![lowered], vec![])), &the_user()),
         Err(ChangeRejected::Meta(vec![id(GUARD)]))
     );
 }

@@ -8,7 +8,13 @@
 //! ```text
 //! policies, bindings ─ PolicyGraph::parse ─▶ PolicyGraph
 //!                                              (keyed by id: no id or name twice; one order, by id)
-//! PolicyGraph ─ Catalog::accept ─▶ Catalog    (structure, what each policy reads, fixtures)
+//! Source { id, name, owner, graph } … ─ Sources::new ─▶ Sources
+//!                                              (the sets of policies, by id: no id or name twice)
+//! Sources ─ Catalog::accept ─▶ Catalog        (each item within its set's owner; Sources::compose,
+//!                                               only adding merges; then structure, what each
+//!                                               policy reads, fixtures)
+//! Catalog::change(Sources, by) ─▶ Catalog     (sets added, removed or swapped, judged as one
+//!                                               change by its result)
 //! events ─ Catalog::fold / apply ─▶ State      (an act is folded; a claim is a transaction)
 //! Catalog::effective(mode) ─▶ Effective        (as written: every policy On(the strongest level of
 //!                                               its bindings that hold) or Off, Degraded)
@@ -27,7 +33,9 @@
 //! read the written strength only, which does not depend on the platform.
 //!
 //! Dependencies between the modules run one way: `name`, `schema` and `authority` ◀ `predicate`
-//! ◀ `adjust` ◀ `event` ◀ `state` ◀ `policy` ◀ `catalog` ◀ `judge`, `change` and `tx`. `event`
+//! ◀ `adjust` ◀ `event` ◀ `state` ◀ `policy` ◀ `set` ◀ `catalog` ◀ `judge`, `change` and `tx`.
+//! `set` composes graphs through the one insert of `policy`, which knows nothing of sets; both
+//! are kept so by `arch-lint.toml`. `event`
 //! reads `authority` for the principal an event is by, and `adjust` reads it for whether the maker
 //! of a temporary binding is within its policy's author's work. `authority` knows nothing of the others,
 //! and `arch-lint.toml` keeps it so. `catalog` does not use `tx`: the transaction is built on the
@@ -49,6 +57,9 @@
 //!   mode scope holds ([`policy::Binding`]). A policy takes effect at the strongest level of its
 //!   bindings that hold, and is off with none, so adding a binding never lowers a policy.
 //! - Catalog: the accepted set of policies with their bindings ([`catalog`]).
+//! - Set of policies: a graph with an id and an owner ([`set::Source`]), such as a shared set of
+//!   best practices or a project's own. A catalog is accepted from its sets and keeps them; they
+//!   compose by adding only, and a change adds, removes or swaps sets ([`set`]).
 //! - Temporary adjustment: a claim that changes how the rules take effect for a lifetime
 //!   ([`adjust`]): an exemption, which keeps a guard from judging the events it covers, or
 //!   bindings added and bindings of the catalog suspended. It is seen in the state
@@ -92,5 +103,6 @@ pub mod name;
 pub mod policy;
 pub mod predicate;
 pub mod schema;
+pub mod set;
 pub mod state;
 pub mod tx;

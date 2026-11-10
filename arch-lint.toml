@@ -50,5 +50,33 @@ deny = [
     "super::adjust", "super::adjust::**", "crate::domain::adjust", "crate::domain::adjust::**",
     "super::judge", "super::judge::**", "crate::domain::judge", "crate::domain::judge::**",
     "super::tx", "super::tx::**", "crate::domain::tx", "crate::domain::tx::**",
+    "super::set", "super::set::**", "crate::domain::set", "crate::domain::set::**",
 ]
-message = "authority is the lowest layer of the domain: it knows nothing of policies, catalogs, changes, events, adjustments, judgments, state, predicates or transactions, so who may loosen whose work can change without them."
+message = "authority is the lowest layer of the domain: it knows nothing of policies, sets, catalogs, changes, events, adjustments, judgments, state, predicates or transactions, so who may loosen whose work can change without them."
+
+[[scopes]]
+name = "policy"
+paths = ["crates/agent-caps-core/src/domain/policy.rs"]
+
+[[restrict-use]]
+name = "policy-knows-no-set"
+scope = "policy"
+deny = [
+    "super::set", "super::set::**", "crate::domain::set", "crate::domain::set::**",
+]
+message = "a policy graph knows nothing of the sets it is composed from: `set` reads the graph's one insert, never the other way, so the rule of what may enter a graph stays in one place."
+
+[[scopes]]
+name = "set"
+paths = ["crates/agent-caps-core/src/domain/set.rs"]
+
+[[restrict-use]]
+name = "set-is-below-catalog"
+scope = "set"
+deny = [
+    "super::catalog", "super::catalog::**", "crate::domain::catalog", "crate::domain::catalog::**",
+    "super::change", "super::change::**", "crate::domain::change", "crate::domain::change::**",
+    "super::tx", "super::tx::**", "crate::domain::tx", "crate::domain::tx::**",
+    "super::judge", "super::judge::**", "crate::domain::judge", "crate::domain::judge::**",
+]
+message = "set is below catalog: it composes sets into one graph and knows nothing of what a catalog checks, how a change is judged or how an event is judged, so the composition is the same whoever reads it."

@@ -19,7 +19,7 @@ use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 use agent_caps_core::domain::state::Known;
 
 use super::common::{
-    GUARD, OTHER, REWARD, Written, agent, at, bash, bind, catalog, clippy_reward,
+    GUARD, OTHER, REWARD, Written, agent, at, bash, bind, by_author, catalog, clippy_reward,
     commit_after_test_guard, edit, graph_of, id, inside, mode, outside, src_edit_guard, test_guard,
     the_agent, the_user, violated,
 };
@@ -493,7 +493,7 @@ fn a_change_is_judged_by_the_written_strength_whatever_the_platform_holds() {
         vec![bind(GUARD, 1, Level::Advise, ModeScope::Any, the_agent())],
     );
     assert!(matches!(
-        catalog.change(lowered, &the_agent()),
+        catalog.change(by_author(lowered), &the_agent()),
         Err(ChangeRejected::Loosens(_))
     ));
 }

@@ -49,7 +49,7 @@ fn the_base_alone_only_informs() {
     assert_eq!(out.rewards[0].written, Level::Inform);
 }
 
-/// UC7, UC8, FR42: the project's binding raises the guard from Inform to Advise, and the bugfix
+/// UC27, UC8, FR42: the project's binding raises the guard from Inform to Advise, and the bugfix
 /// mode's raises it again to Force; the reward is kept at its own level.
 #[test]
 fn the_project_raises_it_and_the_bugfix_mode_raises_it_again() {

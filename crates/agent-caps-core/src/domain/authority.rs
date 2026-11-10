@@ -11,7 +11,10 @@
 //! it, and nothing else in the domain decides who may do what. (A rule may read where the actor
 //! sits in the hierarchy of actors, which is this hierarchy plus the leaves that spawns add, and
 //! a spawn is compared with a place under its spawner; neither says who may loosen anything.)
-//! Nobody asks it of what only tightens: that is open to anyone.
+//! Nobody asks it of what only tightens, in what one may write: one's own work, or that of one
+//! below. What another wrote is a value its author keeps, and changing it in any way, to tighten
+//! included, is the author's or that of one who covers it; one who wants to tighten adds work of
+//! its own instead, which loses nothing, since adding never lowers a rule.
 //!
 //! ```text
 //! user            root
@@ -247,9 +250,12 @@ impl Authority {
     /// covers every one of them. This is the one question of whether a loosening may be done; it
     /// asks [`Authority::contains`] first, then [`Authority::covers`] of each author.
     ///
-    /// It is asked only of what loosens, or of what cannot be read as only tightening. What only
-    /// tightens is open to anyone, a principal outside the hierarchy included, and nobody asks.
-    /// With no author, the answer is whether `by` is of the hierarchy.
+    /// It is asked of what loosens, of what cannot be read as only tightening, and of any change
+    /// to a value another keeps (a set of policies of an owner, which only that owner or one above
+    /// it changes, even to tighten). What only tightens and is one's own to write (a claim in the
+    /// evidence, a binding or a set of one's own) is open to anyone, a principal outside the
+    /// hierarchy included, and nobody asks. With no author, the answer is whether `by` is of the
+    /// hierarchy.
     pub fn may_loosen<'a>(
         &self,
         by: &Principal,
