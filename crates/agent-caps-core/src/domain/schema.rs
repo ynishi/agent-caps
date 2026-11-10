@@ -1,5 +1,6 @@
-//! The vocabulary events are described in: their kinds, the fields a predicate can read, and the
-//! small values an event carries (when, from whom, where it was recorded).
+//! The vocabulary events are described in: their kinds and their [`Nature`], the fields a
+//! predicate can read, and the small values an event carries (when, what a judgment came to,
+//! which kinds a lost record may have been).
 //!
 //! A predicate reads an event through a [`Field`], never through the Rust field of a variant.
 //! Each field belongs to one [`EventKind`] and has one [`FieldType`]; that table is the schema the
@@ -22,30 +23,7 @@ impl At {
     }
 }
 
-/// Who an event comes from. What loosens a rule (a mode switch, an exemption) takes effect only
-/// from the user, or from caps recording what the user did; an agent cannot loosen its own
-/// rules by saying so in its transcript.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Origin {
-    /// The person who runs the agent: their prompt or command.
-    User,
-    /// caps itself: the evidence it appends after a judgment or a user's command.
-    Caps,
-    /// The agent: its own output and tool calls.
-    Agent,
-}
-
-/// Where an unreadable record was.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Source {
-    /// The platform's transcript: a line cut by compaction, or one the adapter could not parse.
-    Transcript,
-    /// caps's own evidence. A record lost there may have been a mode switch or an exemption, so
-    /// the state stops trusting those.
-    Evidence,
-}
-
-/// What a judgment of one policy came to, as caps records it in its evidence.
+/// What a judgment of one policy came to, as it is recorded in the evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Judgment {
     /// A guard let the event through.
@@ -54,7 +32,7 @@ pub enum Judgment {
     Warned,
     /// A guard stopped the event.
     Denied,
-    /// A guard did not judge the event because the user exempted it.
+    /// A guard did not judge the event because an exemption covered it.
     Exempted,
     /// A reward's recommendation was followed.
     Hit,
@@ -73,52 +51,127 @@ impl Judgment {
     }
 }
 
-/// The kinds of event, without their values: what a policy judges, and what a temporal operator
-/// looks for. New kinds are added as the model grows, so a match on it outside this crate needs
-/// a wildcard arm.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum EventKind {
+/// Declares [`EventKind`] and [`EventKind::ALL`] from one list of the kinds, so the list of every
+/// kind cannot fall behind the enum. A kind missing from `ALL` would let a lost record be taken
+/// as not of that kind.
+macro_rules! event_kinds {
+    ($($(#[$doc:meta])* $kind:ident,)+) => {
+        /// The kinds of event, without their values: what a policy judges, and what a temporal
+        /// operator looks for. New kinds are added as the model grows, so a match on it outside
+        /// this crate needs a wildcard arm.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
+        pub enum EventKind {
+            $($(#[$doc])* $kind,)+
+        }
+
+        impl EventKind {
+            /// Every kind, each once, made from the same list as the enum.
+            pub const ALL: &'static [Self] = &[$(Self::$kind,)+];
+        }
+    };
+}
+
+event_kinds! {
     /// A session started.
     SessionStart,
     /// A (sub)agent started.
     AgentStart,
     /// A task started.
     TaskStart,
-    /// The user sent a prompt.
+    /// A prompt was submitted.
     PromptSubmit,
-    /// The agent used a tool.
+    /// A tool was used.
     ToolUse,
-    /// The agent is about to end its turn.
+    /// A turn is about to end.
     Stop,
-    /// The mode changed.
+    /// The mode was switched.
     ModeSwitch,
     /// An oracle measured a score.
     Measured,
-    /// The user exempted a guard for a while.
+    /// A guard was exempted for a while.
     Exempt,
-    /// caps judged a policy.
+    /// A policy was judged.
     Judged,
     /// A record could not be read.
     Unreadable,
 }
 
+/// What an event is to the rules: something that happened, which they judge, or something said,
+/// which may change how they take effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Nature {
+    /// An act observed on the platform. It is what rules judge, and it always takes effect: a
+    /// test that passed makes `once(test)` true, which is the rule at work.
+    Act,
+    /// A claim: what someone states, which may change how a rule takes effect (an exemption, a
+    /// mode switch, a record a rule reads). It takes effect as a transaction, judged by the
+    /// difference it makes ([`super::tx`]).
+    Claim,
+}
+
 impl EventKind {
-    /// Where events of this kind are recorded: caps's evidence for what it judged, recorded or
-    /// was sent, the platform's transcript for the rest. An unreadable record from a source may
-    /// have been an event of any kind recorded there.
-    pub fn source(self) -> Source {
+    /// Whether an event of this kind is an act or a claim. This is the one place that says so.
+    ///
+    /// An act is taken as it is because of where it comes from: a platform adapter reads it from
+    /// what the platform observed, which nobody can forge by writing text. A claim is only as
+    /// good as the one who makes it, so it is judged by the difference it makes and by who
+    /// covers what it loosens. That guarantee of where an act comes from is the adapter's; the
+    /// domain relies on it and does not check it.
+    pub fn nature(self) -> Nature {
         match self {
-            Self::Judged | Self::Exempt | Self::ModeSwitch | Self::Measured => Source::Evidence,
-            _ => Source::Transcript,
+            Self::SessionStart
+            | Self::AgentStart
+            | Self::TaskStart
+            | Self::PromptSubmit
+            | Self::ToolUse
+            | Self::Stop
+            | Self::Unreadable => Nature::Act,
+            Self::ModeSwitch | Self::Measured | Self::Exempt | Self::Judged => Nature::Claim,
         }
     }
+}
 
-    /// Whether an unreadable record of `source` may have been an event of this kind. A mode
-    /// switch or an exemption the agent writes is read from the transcript (it takes no effect,
-    /// but it is an event of its kind), so those two may be lost from either source.
-    pub fn may_be_lost_in(self, source: Source) -> bool {
-        self.source() == source || matches!(self, Self::ModeSwitch | Self::Exempt)
+/// A set of kinds of event, each at most once: for a record that could not be read, the kinds
+/// it may have been. Which those are is the adapter's to say, from where the record was.
+///
+/// There is no empty default: a set that leaves a kind out says the lost record cannot have been
+/// of that kind, which loosens the rules that read it. An adapter that cannot tell what a record
+/// may have been gives [`KindSet::any`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KindSet(Vec<EventKind>);
+
+impl KindSet {
+    /// Every kind: what a record may have been when nothing is known of it.
+    pub fn any() -> Self {
+        Self::new(EventKind::ALL.iter().copied())
+    }
+
+    /// The set of `kinds`; a kind given twice is held once.
+    pub fn new(kinds: impl IntoIterator<Item = EventKind>) -> Self {
+        let mut set = Vec::new();
+        for kind in kinds {
+            if !set.contains(&kind) {
+                set.push(kind);
+            }
+        }
+        Self(set)
+    }
+
+    /// Whether the kind is in the set.
+    pub fn contains(&self, kind: EventKind) -> bool {
+        self.0.contains(&kind)
+    }
+
+    /// The kinds, in the order they were first given.
+    pub fn iter(&self) -> impl Iterator<Item = EventKind> + '_ {
+        self.0.iter().copied()
+    }
+}
+
+impl FromIterator<EventKind> for KindSet {
+    fn from_iter<I: IntoIterator<Item = EventKind>>(kinds: I) -> Self {
+        Self::new(kinds)
     }
 }
 

@@ -3,15 +3,16 @@
 
 use agent_caps_core::domain::catalog::AcceptError;
 use agent_caps_core::domain::event::Body;
+use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::policy::{
     Change, DefLayer, Expect, Fixture, Level, RewardLevel, Rule,
 };
-use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
-use agent_caps_core::domain::schema::{Field, Source};
+use agent_caps_core::domain::predicate::{Cond, Lit, Pred, Scope};
+use agent_caps_core::domain::schema::Field;
 
 use super::common::{
-    GUARD, OTHER, REWARD, accept, agent, clippy_reward, fixture, graph_of, id, project, rejected,
-    test_guard, unreadable,
+    GUARD, OTHER, REWARD, accept, agent, clippy_reward, fixture, graph_of, id, lost_line, project,
+    rejected, test_guard, user,
 };
 
 /// FR2, UC12: a stopping guard without fixtures is not accepted. FR14: a Meta policy takes no
@@ -82,11 +83,7 @@ fn a_fixture_that_fails_rejects_the_catalog_unless_it_is_a_known_gap() {
     let wrong = || {
         fixture(
             "lost line",
-            vec![
-                agent(Body::TaskStart),
-                unreadable(Source::Transcript),
-                agent(Body::Stop),
-            ],
+            vec![agent(Body::TaskStart), lost_line(), agent(Body::Stop)],
             Expect::Satisfied,
         )
     };
@@ -106,4 +103,41 @@ fn a_fixture_that_fails_rejects_the_catalog_unless_it_is_a_known_gap() {
         ..wrong()
     });
     assert!(accept(graph_of(vec![guard], vec![])).is_ok());
+}
+
+/// FR2, FR34, UC12: a fixture is folded as a run is. An exemption of the root's guard from the
+/// principal below it takes no effect in a fixture either, so the guard still fails there; the
+/// same exemption from the root covers the guard.
+#[test]
+fn a_loosening_claim_in_a_fixture_takes_effect_as_it_would_at_run_time() {
+    let exempt = Body::Exempt(Exempt {
+        guard: id(GUARD),
+        target: None,
+        lifetime: Lifetime::Within(Scope::Task),
+        reason: "in the example".parse().unwrap(),
+    });
+    let with = |claim, expect| {
+        let mut guard = test_guard(Level::Force);
+        guard.fixtures.push(fixture(
+            "exempted",
+            vec![agent(Body::TaskStart), claim, agent(Body::Stop)],
+            expect,
+        ));
+        accept(graph_of(vec![guard], vec![]))
+    };
+    // From below: not exempted, the guard fails as it would in a run.
+    assert!(with(agent(exempt.clone()), Expect::Violated).is_ok());
+    assert_eq!(
+        with(agent(exempt.clone()), Expect::NotApplicable)
+            .unwrap_err()
+            .0,
+        vec![AcceptError::FixtureFailed {
+            policy: id(GUARD),
+            fixture: "exempted".to_owned(),
+            expected: Expect::NotApplicable,
+            found: Expect::Violated,
+        }]
+    );
+    // From the root: exempted.
+    assert!(with(user(exempt), Expect::NotApplicable).is_ok());
 }

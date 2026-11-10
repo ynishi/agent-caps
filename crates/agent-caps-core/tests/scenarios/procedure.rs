@@ -28,7 +28,7 @@ use agent_caps_core::domain::policy::{
     DefLayer, Expect, Finding, Level, Polarity, PolicyDef, RewardLevel, Rule,
 };
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
-use agent_caps_core::domain::schema::{EventKind, Field, Judgment, Origin, Source};
+use agent_caps_core::domain::schema::{EventKind, Field, Judgment};
 
 use super::common::{
     GUARD, OTHER, REWARD, agent, at, bash, catalog, fixture, id, outcome, step, the_user,
@@ -39,10 +39,10 @@ const COMMIT: &str = GUARD;
 const TEST_STAGE: &str = REWARD;
 const CLIPPY_STAGE: &str = OTHER;
 
-/// caps's record that the policy was a hit.
+/// The record that the policy was a hit, in the name of its author.
 fn hit(policy: &str) -> Event {
     at(
-        Origin::Caps,
+        the_user(),
         0,
         Body::Judged {
             policy: id(policy),
@@ -220,7 +220,7 @@ fn an_edge_gives_none_both_for_a_stage_not_reached_and_for_one_not_seen() {
         &catalog,
         &[
             agent(Body::TaskStart),
-            unreadable(Source::Transcript),
+            unreadable(&[EventKind::Judged]),
             bash("cargo clippy", Some(true)),
         ],
     );

@@ -6,6 +6,11 @@
 //! wrote" comes to: a principal's work is loosened by itself and by those above it, never by
 //! those beside or below it.
 //!
+//! [`Authority::may_loosen`] is the one question of whether something that loosens may be done:
+//! a change of a catalog ([`super::change`]) and a claim in the evidence ([`super::tx`]) both ask
+//! it, and nothing else in the domain looks at who did what. Nobody asks it of what only
+//! tightens: that is open to anyone.
+//!
 //! ```text
 //! user            root
 //!  └─ agent       below the user: its work is covered by the user, the user's is not covered by it
@@ -82,6 +87,29 @@ impl fmt::Display for AuthorityError {
 }
 
 impl std::error::Error for AuthorityError {}
+
+/// Why a principal may not loosen the work of some authors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotCovered {
+    /// The principal is not one of the hierarchy, so it covers nobody's work.
+    UnknownPrincipal(Principal),
+    /// The authors the principal does not cover, each once, in the order they were given.
+    Uncovered(Vec<Principal>),
+}
+
+impl fmt::Display for NotCovered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownPrincipal(p) => write!(f, "{p} is not in the hierarchy"),
+            Self::Uncovered(authors) => {
+                f.write_str("not covered:")?;
+                authors.iter().try_for_each(|a| write!(f, " {a}"))
+            }
+        }
+    }
+}
+
+impl std::error::Error for NotCovered {}
 
 /// A hierarchy of principals: each has at most one parent, the principal above it, and a
 /// principal without one is a root.
@@ -167,6 +195,34 @@ impl Authority {
     /// first, as the catalog does when it accepts a policy graph.
     pub fn covers(&self, actor: &Principal, author: &Principal) -> bool {
         self.ancestors(author).any(|p| p == actor)
+    }
+
+    /// Whether `by` may loosen what `authors` wrote: `by` is a principal of the hierarchy, and it
+    /// covers every one of them. This is the one question of whether a loosening may be done; it
+    /// asks [`Authority::contains`] first, then [`Authority::covers`] of each author.
+    ///
+    /// It is asked only of what loosens, or of what cannot be read as only tightening. What only
+    /// tightens is open to anyone, a principal outside the hierarchy included, and nobody asks.
+    /// With no author, the answer is whether `by` is of the hierarchy.
+    pub fn may_loosen<'a>(
+        &self,
+        by: &Principal,
+        authors: impl IntoIterator<Item = &'a Principal>,
+    ) -> Result<(), NotCovered> {
+        if !self.contains(by) {
+            return Err(NotCovered::UnknownPrincipal(by.clone()));
+        }
+        let mut uncovered: Vec<Principal> = Vec::new();
+        for author in authors {
+            if !self.covers(by, author) && !uncovered.contains(author) {
+                uncovered.push(author.clone());
+            }
+        }
+        if uncovered.is_empty() {
+            Ok(())
+        } else {
+            Err(NotCovered::Uncovered(uncovered))
+        }
     }
 
     /// `principal` itself, then each principal above it up to the root. Ends only because no

@@ -20,7 +20,7 @@ use agent_caps_core::domain::judge::{Recognition, Verdict};
 use agent_caps_core::domain::name::GlobPattern;
 use agent_caps_core::domain::policy::{DefLayer, Level, Polarity, PolicyDef, RewardLevel, Rule};
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
-use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment, Origin};
+use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{GUARD, REWARD, agent, at, bash, catalog, edit, id, outcome, read, the_user};
 
@@ -160,7 +160,7 @@ fn the_carrier_guard_is_listed_on_every_tool_call_and_never_fails() {
     assert_eq!(out.verdict, Verdict::Allow);
     // And recorded: its evidence is appended on every tool call.
     assert!(out.evidence(At::from_millis(0)).contains(&at(
-        Origin::Caps,
+        the_user(),
         0,
         Body::Judged {
             policy: id(GUARD),

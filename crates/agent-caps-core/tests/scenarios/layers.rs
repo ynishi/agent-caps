@@ -1,7 +1,8 @@
 //! Scenarios S4, L1, L2 and L3: the layers Base, Project and Mode, and what operating on them does.
 //!
-//! - S4: a mode's override changes the level, only the user or caps switch the mode, and the
-//!   verdict does not depend on the order of the policies.
+//! - S4: a mode's override changes the level, a switch that lowers a guard takes effect only from
+//!   one who covers the guard's author, and the verdict does not depend on the order of the
+//!   policies. The `mode_switch` module checks the switch as a claim further.
 //! - L2: the order is Base, then Project, then Mode; a policy the project turns off can be turned
 //!   on again by a mode; the order of the overrides in the graph does not matter.
 //! - L3: a meta policy takes no override. `Catalog::accept` rejects one in any layer, so its level
@@ -22,12 +23,12 @@ use agent_caps_core::domain::policy::{
     Change, DefLayer, Level, Override, Polarity, PolicyDef, Rule,
 };
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
-use agent_caps_core::domain::schema::{EventKind, Field, Origin, Source};
+use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::state::Known;
 
 use super::common::{
     GUARD, OTHER, agent, at, bash, catalog, id, in_mode, listed, mode, mode_switch, outcome,
-    project, rejected, test_guard, the_user, unreadable, verdict, violated,
+    project, rejected, test_guard, the_agent, the_user, unreadable, verdict, violated,
 };
 
 /// The level the guard had on the last event.
@@ -58,17 +59,18 @@ fn bash_guard() -> PolicyDef {
     }
 }
 
-/// UC8: a mode changes the level of a policy. UC4: a loosening switch from the agent is
-/// nothing; only the user or caps make it. FR20: a lost record puts the strictest mode in force.
+/// UC8, FR11: a mode changes the level of a policy. UC25: a switch that lowers the root's guard
+/// is nothing from the principal below it; the root makes it. FR20: a lost record that may have
+/// been a switch puts the strictest mode in force.
 #[test]
-fn a_mode_overrides_the_level_and_only_the_user_or_caps_switch_it() {
+fn a_mode_overrides_the_level_and_a_lowering_switch_needs_the_guards_author() {
     let catalog = catalog(
         vec![test_guard(Level::Force)],
         vec![in_mode("modeling", GUARD, Change::Level(Level::Inform))],
     );
-    let switch = |origin| {
+    let switch = |by| {
         at(
-            origin,
+            by,
             0,
             Body::ModeSwitch {
                 to: mode("modeling"),
@@ -78,20 +80,16 @@ fn a_mode_overrides_the_level_and_only_the_user_or_caps_switch_it() {
     let stop = agent(Body::Stop);
     let warned = Verdict::Warn(vec![Cause::Violated(id(GUARD))]);
     assert_eq!(
-        verdict(&catalog, &[switch(Origin::User), stop.clone()]),
+        verdict(&catalog, &[switch(the_user()), stop.clone()]),
         warned
     );
-    assert_eq!(
-        verdict(&catalog, &[switch(Origin::Caps), stop.clone()]),
-        warned
-    );
-    // The agent cannot loosen its own rules.
+    // One below the guard's author cannot loosen it.
     assert!(matches!(
-        verdict(&catalog, &[switch(Origin::Agent), stop.clone()]),
+        verdict(&catalog, &[switch(the_agent()), stop.clone()]),
         Verdict::Deny(_)
     ));
-    // A lost evidence record may have been a switch: the strictest mode applies.
-    let state = catalog.fold(&[switch(Origin::User), unreadable(Source::Evidence)]);
+    // A lost record may have been a switch: the strictest mode applies.
+    let state = catalog.fold(&[switch(the_user()), unreadable(&[EventKind::ModeSwitch])]);
     assert_eq!(state.mode(), &Known::Unknown);
     assert!(matches!(
         judge(&catalog, &state, &stop).verdict,

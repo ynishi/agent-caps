@@ -7,11 +7,11 @@ use agent_caps_core::domain::catalog::Degraded;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Recognition, Verdict};
 use agent_caps_core::domain::policy::{Change, Level, RewardLevel};
-use agent_caps_core::domain::schema::{At, Judgment, Origin};
+use agent_caps_core::domain::schema::{At, Judgment};
 
 use super::common::{
     GUARD, REWARD, agent, at, bash, catalog, clippy_reward, id, in_mode, mode_switch, outcome,
-    project, test_guard,
+    project, test_guard, the_user,
 };
 
 /// FR6: a project turns a policy off. FR13, UC9: the reward bound by it goes with it.
@@ -72,7 +72,7 @@ fn a_reward_is_kept_within_its_guard_and_is_never_a_failure() {
     );
     assert_eq!(followed.rewards[0].recognition, Recognition::Hit);
     assert!(followed.evidence(At::from_millis(0)).contains(&at(
-        Origin::Caps,
+        the_user(),
         0,
         Body::Judged {
             policy: id(REWARD),

@@ -12,28 +12,35 @@
 //! The gap is kept in the guard: a fixture with the right expectation and `known_gap: true`,
 //! and a paired test that pins the finding the guard gives today.
 
+use agent_caps_core::domain::authority::Principal;
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{
     DefLayer, Expect, Finding, Fixture, Level, Polarity, PolicyDef, Rule,
 };
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
-use agent_caps_core::domain::schema::{EventKind, Field, Origin, Source};
+use agent_caps_core::domain::schema::{EventKind, Field};
 
 use super::common::{
-    GUARD, agent, at, bash, catalog, fixture, id, outcome, test_guard, the_user, unreadable,
-    verdict, violated,
+    GUARD, agent, at, bash, catalog, fixture, id, lost_line, outcome, test_guard, the_agent,
+    the_user, verdict, violated,
 };
 
-fn bench(score: f64) -> Event {
+/// A score of the bench, recorded by `by`.
+fn bench_by(by: Principal, score: f64) -> Event {
     at(
-        Origin::Caps,
+        by,
         0,
         Body::Measured {
             oracle: "bench".to_owned(),
             score,
         },
     )
+}
+
+/// A score of the bench, recorded by the root, where the scenarios place the oracle.
+fn bench(score: f64) -> Event {
+    bench_by(the_user(), score)
 }
 
 /// The events of the example the guard gets wrong: a high score, then a low one.
@@ -118,6 +125,17 @@ fn the_bench_guard_stops_without_a_high_score_and_lets_one_through() {
     );
 }
 
+/// UC16, FR35, UC25: a score recorded by one below the guard's author does not move the
+/// guard's slot, so a high score from there does not let the turn end.
+#[test]
+fn a_score_from_below_the_guards_author_does_not_count() {
+    let catalog = catalog(vec![bench_guard()], vec![]);
+    assert_eq!(
+        verdict(&catalog, &[bench_by(the_agent(), 0.9), agent(Body::Stop)]),
+        violated()
+    );
+}
+
 /// FR20: a lost line makes the last value unknown, so an advising guard warns with an unknown
 /// cause.
 #[test]
@@ -156,12 +174,7 @@ fn a_last_value_is_false_when_unseen_and_unknown_when_lost() {
     assert_eq!(
         verdict(
             &catalog,
-            &[
-                start,
-                bash("cargo build", Some(true)),
-                unreadable(Source::Transcript),
-                stop
-            ]
+            &[start, bash("cargo build", Some(true)), lost_line(), stop]
         ),
         Verdict::Warn(vec![Cause::Unknown(id(GUARD))])
     );

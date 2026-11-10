@@ -51,7 +51,7 @@ fn an_ill_typed_since_filter_is_rejected() {
     assert_eq!(rejected(vec![guard], vec![]), vec![error; 3]);
 }
 
-/// FR33, FR9, UC4: an exemption that arrives as an event takes effect only if it type-checks
+/// FR33, FR34, UC25: an exemption that arrives as an event takes effect only if it type-checks
 /// against the guard it names, its target and the filter of its `Within(Since(..))` alike.
 #[test]
 fn an_ill_typed_exemption_takes_no_effect() {

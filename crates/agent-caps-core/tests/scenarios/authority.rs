@@ -11,7 +11,8 @@ use agent_caps_core::domain::judge::Verdict;
 use agent_caps_core::domain::policy::{
     Change, DefLayer, Level, OverrideLayer, Polarity, PolicyDef, RewardLevel, Rule,
 };
-use agent_caps_core::domain::predicate::Pred;
+use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::state::Known;
 
 use super::common::{
@@ -401,6 +402,107 @@ fn an_item_refers_only_to_items_of_its_own_author_or_above() {
             referenced: id(GUARD),
         }]
     );
+}
+
+/// FR35, UC25: a policy reads the judgments only of policies whose authors cover its own. The
+/// root's guard that counts the judgments of the guard below it is rejected, and so is one whose
+/// filter of judgments does not narrow the policy, since it reads every policy's. The guard below
+/// may read the root's judgments.
+#[test]
+fn a_policy_reads_the_judgments_only_of_policies_above_it() {
+    let counting = |cond: Option<Cond>| {
+        let mut guard = test_guard(Level::Advise);
+        guard.fixtures = vec![];
+        guard.when = Some(Pred::Count {
+            event: EventFilter {
+                kind: EventKind::Judged,
+                cond,
+            },
+            scope: Scope::Session,
+            cmp: Cmp::Lt,
+            n: 1,
+        });
+        guard
+    };
+    let of = |policy: &str| Cond::Eq(Field::Policy, Lit::Text(policy.to_owned()));
+    let denied = Cond::Eq(Field::Judgment, Lit::Text("denied".to_owned()));
+    let below = vec![AcceptError::ReferencesBelow {
+        item: Target::Policy(id(GUARD)),
+        referenced: id(OTHER),
+    }];
+    for cond in [
+        Some(Cond::All(vec![of(OTHER), denied.clone()])),
+        Some(Cond::In(Field::Policy, vec![Lit::Text(OTHER.to_owned())])),
+        Some(denied.clone()),
+        None,
+    ] {
+        assert_eq!(
+            rejected(
+                vec![counting(cond.clone()), agent_guard(Level::Force)],
+                vec![]
+            ),
+            below,
+            "{cond:?}"
+        );
+    }
+    // Narrowed to its own judgments, it is accepted beside the guard below.
+    catalog(
+        vec![
+            counting(Some(Cond::All(vec![of(GUARD), denied.clone()]))),
+            agent_guard(Level::Force),
+        ],
+        vec![],
+    );
+    // An `any` narrows to what its branches allow: its own judgments only is accepted, and a
+    // branch that reads the guard below, or one that does not narrow, is rejected.
+    catalog(
+        vec![
+            counting(Some(Cond::Any(vec![of(GUARD), of(GUARD)]))),
+            agent_guard(Level::Force),
+        ],
+        vec![],
+    );
+    for cond in [
+        Cond::Any(vec![of(GUARD), of(OTHER)]),
+        Cond::Any(vec![of(GUARD), denied]),
+    ] {
+        assert_eq!(
+            rejected(
+                vec![counting(Some(cond.clone())), agent_guard(Level::Force)],
+                vec![]
+            ),
+            below,
+            "{cond:?}"
+        );
+    }
+    // The guard below reads the root's judgments.
+    let mut reads_above = counting(Some(of(GUARD)));
+    reads_above.id = id(OTHER);
+    reads_above.name = "reads-above".parse().unwrap();
+    reads_above.author = the_agent();
+    catalog(vec![test_guard(Level::Force), reads_above], vec![]);
+}
+
+/// FR35, UC25: a `last` of a judgment's field reads every policy's judgments, so the root's
+/// policy that holds one is rejected when there is a policy below it, and accepted when there
+/// is none.
+#[test]
+fn a_last_of_a_judgment_reads_every_policy() {
+    let mut last = test_guard(Level::Advise);
+    last.fixtures = vec![];
+    last.rule = Rule::Structural(Pred::Last {
+        field: Field::Policy,
+        scope: Scope::Session,
+        value: Lit::Text(GUARD.to_owned()),
+    });
+    assert_eq!(
+        rejected(vec![last.clone(), agent_guard(Level::Force)], vec![]),
+        vec![AcceptError::ReferencesBelow {
+            item: Target::Policy(id(GUARD)),
+            referenced: id(OTHER),
+        }]
+    );
+    catalog(vec![last, other_user_guard(Level::Force)], vec![]);
 }
 
 /// FR16, FR18: an author must be of the hierarchy, whether of a policy or of an override, and so

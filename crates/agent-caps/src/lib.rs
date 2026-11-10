@@ -20,9 +20,12 @@
 //! use agent_caps::domain::name::CommandWords;
 //! use agent_caps::domain::policy::{DefLayer, Expect, Fixture, Level, Polarity, PolicyDef, PolicyGraph, Rule};
 //! use agent_caps::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
-//! use agent_caps::domain::schema::{At, EventKind, Field, Origin};
+//! use agent_caps::domain::schema::{At, EventKind, Field};
 //!
-//! let event = |body| Event { at: At::from_millis(0), origin: Origin::Agent, body };
+//! // Who is who is the caller's arrangement: here, the agent's work is below the user's.
+//! let (user, agent) = (Principal::new("user"), Principal::new("agent"));
+//! let authority = Authority::new([(user.clone(), None), (agent.clone(), Some(user.clone()))]).unwrap();
+//! let event = |body| Event { at: At::from_millis(0), by: agent.clone(), body };
 //! let words = |text: &str| CommandWords::new(text.split(' ').map(str::to_owned).collect()).unwrap();
 //! let test_run = |ok| event(Body::ToolUse {
 //!     tool: "Bash".to_owned(),
@@ -44,7 +47,6 @@
 //! let fixture = |name: &str, events, expect| Fixture {
 //!     name: name.to_owned(), events, expect, known_gap: false,
 //! };
-//! let user = Principal::new("user");
 //! let guard = PolicyDef {
 //!     id: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b".parse().unwrap(),
 //!     name: "test-before-stop".parse().unwrap(),
@@ -61,7 +63,7 @@
 //!     author: user.clone(),
 //! };
 //! let policies = PolicyGraph { policies: vec![guard], overrides: vec![] };
-//! let catalog = Catalog::accept(policies, Authority::single(user)).unwrap();
+//! let catalog = Catalog::accept(policies, authority).unwrap();
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];
 //! let state = catalog.fold(&history);
@@ -77,6 +79,7 @@
 //! - [`domain::predicate`]: the structural rule language.
 //! - [`domain::event`] and [`domain::schema`]: what happened, and the fields a rule can read.
 //! - [`domain::state`]: the fold of the events a judgment reads.
+//! - [`domain::tx`]: how a claim takes effect, as a transaction judged by the difference it makes.
 //! - [`domain::judge`]: the verdict of one event.
 //! - [`_requirements`]: the ledger of use cases, principles and functional requirements.
 //!
@@ -91,9 +94,12 @@
 //!
 //! # Security
 //!
-//! A policy graph is trusted as the user's own rules once it is accepted. Events are not: an
-//! event from the agent cannot switch the mode or exempt a guard, and a record that cannot be
-//! read never loosens a rule.
+//! A policy graph is trusted as the user's own rules once it is accepted. Events are not: a claim
+//! (a mode switch, an exemption, a record of a judgment or a score) that loosens a rule takes
+//! effect only from one who covers the rule's author in the hierarchy the caller gives, and a
+//! record that cannot be read never loosens a rule. That an act (a tool use, the end of a turn)
+//! really happened on the platform is the adapter's guarantee, since nobody can forge it by
+//! writing text; the core takes an act as it is.
 //!
 //! # Compatibility
 //!
@@ -106,8 +112,7 @@
 //!
 //! - Only structural rules: a rule answered by a classifier is not part of the model yet.
 //! - Temporal operators do not nest, and there is no regex.
-//! - A `Judged` event counts whatever its origin, so a judgment record the agent writes itself
-//!   is read as caps's own and can let a guard that counts its denials through (#3).
+//! - An agent's start is an act, so it starts `Scope::Agent` again whoever it is by.
 #![warn(missing_docs)]
 
 pub mod _requirements;
