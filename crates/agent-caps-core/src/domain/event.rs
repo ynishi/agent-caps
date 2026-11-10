@@ -3,7 +3,9 @@
 //! The caller reads events from wherever they are kept (the platform's transcript through an
 //! adapter, the evidence the application appends) and gives them to the domain as [`Event`]
 //! values, in the order it folds them. Each event names the [`Principal`] it comes from; where
-//! that principal sits is the caller's arrangement ([`super::authority`]). Whether an event is an
+//! that principal sits is the caller's arrangement ([`super::authority`]), plus the leaves that
+//! spawns add to it ([`super::state`]); a rule reads it with
+//! [`Pred::ActorUnder`](super::predicate::Pred::ActorUnder). Whether an event is an
 //! act or a claim is its kind's [`Nature`](super::schema::Nature). A record the adapter cannot
 //! read is not dropped but becomes [`Body::Unreadable`], with the kinds it may have been, so the
 //! state knows what it has not seen.
@@ -38,10 +40,16 @@ pub struct Event {
 pub enum Body {
     /// A session started.
     SessionStart,
-    /// A (sub)agent started.
-    AgentStart {
-        /// Its type, as the platform names it.
-        agent_type: Option<String>,
+    /// A (sub)agent was spawned. The event is by its spawner. `child` joins the hierarchy of
+    /// actors under `under` ([`super::state`]), when `child` is not in it yet and `under` is; a
+    /// spawn that does not meet that adds nothing. Where the child is placed can change how the
+    /// rules that read the actor take effect, so a spawn is a claim, judged as a transaction
+    /// against a place directly under its spawner ([`super::tx`]).
+    Spawn {
+        /// The new actor. A name the platform makes up for each start: no rule can name it.
+        child: Principal,
+        /// The actor of the hierarchy it is placed under.
+        under: Principal,
     },
     /// A task started.
     TaskStart,
@@ -135,7 +143,7 @@ impl Body {
     pub fn kind(&self) -> EventKind {
         match self {
             Self::SessionStart => EventKind::SessionStart,
-            Self::AgentStart { .. } => EventKind::AgentStart,
+            Self::Spawn { .. } => EventKind::Spawn,
             Self::TaskStart => EventKind::TaskStart,
             Self::PromptSubmit => EventKind::PromptSubmit,
             Self::ToolUse { .. } => EventKind::ToolUse,
@@ -159,9 +167,6 @@ impl Body {
             }
             (Self::ToolUse { path, .. }, Field::Path) => absent(path.clone().map(Value::Text)),
             (Self::ToolUse { ok, .. }, Field::Ok) => unknown(ok.map(Value::Bool)),
-            (Self::AgentStart { agent_type }, Field::AgentType) => {
-                unknown(agent_type.clone().map(Value::Text))
-            }
             (Self::ModeSwitch { to }, Field::ModeTo) => Read::Found(Value::Text(to.to_string())),
             (Self::Measured { oracle, .. }, Field::Oracle) => {
                 Read::Found(Value::Text(oracle.clone()))

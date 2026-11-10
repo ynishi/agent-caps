@@ -47,6 +47,10 @@
 //!   ([`AcceptError::UnknownAuthor`]), so [`Authority::covers`] is total on the authors.
 //! - The author of a meta policy is a root of the hierarchy ([`AcceptError::MetaAuthorNotRoot`]):
 //!   only the top places what nothing changes.
+//! - A principal that `ActorUnder` names is a principal of the hierarchy
+//!   ([`AcceptError::UnknownActor`]): the leaves that spawns add are new at every start, so a rule
+//!   cannot name one. How a policy reads each such principal, in a direction a spawn's
+//!   transaction can use, is part of what it reads ([`super::tx`]).
 //! - An item refers only to items whose author is its own or above it
 //!   ([`AcceptError::ReferencesBelow`]): a reward's `bound_by`, the policy an override
 //!   targets, and every policy whose judgments a predicate of the policy reads. What is above
@@ -111,7 +115,10 @@ use super::policy::{
     Change, DefLayer, Expect, Level, Override, OverrideLayer, Polarity, Policy, PolicyDef,
     PolicyGraph, Rule,
 };
-use super::predicate::{JudgedRead, Pred, PredError, Scope, Temporal, judged_read};
+use super::predicate::{
+    JudgedRead, PredError, Reading, Scope, Site, StateAtom, Temporal, judged_read, note_reading,
+    state_readings,
+};
 use super::schema::EventKind;
 use super::state::{GuardIndex, Known, SlotId, SlotTable, State};
 
@@ -168,6 +175,15 @@ pub enum AcceptError {
         item: Target,
         /// The policy it refers to.
         referenced: PolicyId,
+    },
+    /// A predicate of the policy reads `ActorUnder` of a principal that is not in the
+    /// hierarchy. The leaves that spawns add have names that are new at every start, so a rule
+    /// can name only a principal of the hierarchy.
+    UnknownActor {
+        /// The policy.
+        policy: PolicyId,
+        /// The principal it names.
+        principal: Principal,
     },
     /// The meta policy reads judgments without naming the policies: a filter of judgments that
     /// narrows to no policy, or a `last` of a judgment's field. What such a read sees grows with
@@ -264,6 +280,10 @@ impl fmt::Display for AcceptError {
             Self::ReferencesBelow { item, referenced } => write!(
                 f,
                 "{item} refers to {referenced}, whose author is not its own or above it"
+            ),
+            Self::UnknownActor { policy, principal } => write!(
+                f,
+                "policy {policy} reads the actor {principal}, who is not in the hierarchy"
             ),
             Self::MetaReadsUnscoped(policy) => write!(
                 f,
@@ -457,6 +477,9 @@ pub(super) struct Reads {
     judged: Vec<JudgedRead>,
     /// The modes it reads with `ModeIs`. The mode's scope is read through `slots`.
     modes: Vec<Mode>,
+    /// The principals it reads with `ActorUnder`, each with the direction it reads it in. A
+    /// principal read in two directions is `Unreadable`.
+    actors: Vec<(Principal, Reading)>,
 }
 
 impl Reads {
@@ -489,9 +512,33 @@ impl Reads {
                     }
                 }
             }
-            modes_into(pred, &mut reads.modes);
+        }
+        let sites = if policy.is_guard() {
+            (Site::GuardWhen, Site::GuardRule)
+        } else {
+            (Site::Reward, Site::Reward)
+        };
+        let when = policy.when().map(|when| (when, sites.0));
+        for (pred, site) in when.into_iter().chain([(policy.rule(), sites.1)]) {
+            for (atom, reading) in state_readings(pred, site) {
+                match atom {
+                    StateAtom::Mode(mode) => {
+                        if !reads.modes.contains(mode) {
+                            reads.modes.push(mode.clone());
+                        }
+                    }
+                    StateAtom::Actor(principal) => {
+                        note_reading(&mut reads.actors, principal.clone(), reading);
+                    }
+                }
+            }
         }
         reads
+    }
+
+    /// The principals the policy reads with `ActorUnder`, each with the direction it reads it in.
+    pub(super) fn actors(&self) -> &[(Principal, Reading)] {
+        &self.actors
     }
 
     /// Whether the policy reads the slot.
@@ -502,20 +549,6 @@ impl Reads {
     /// The modes the policy reads with `ModeIs`.
     pub(super) fn modes(&self) -> &[Mode] {
         &self.modes
-    }
-}
-
-/// Every mode `pred` reads with `ModeIs`, each once.
-fn modes_into(pred: &Pred, out: &mut Vec<Mode>) {
-    match pred {
-        Pred::ModeIs(mode) => {
-            if !out.contains(mode) {
-                out.push(mode.clone());
-            }
-        }
-        Pred::All(preds) | Pred::Any(preds) => preds.iter().for_each(|p| modes_into(p, out)),
-        Pred::Not(pred) => modes_into(pred, out),
-        Pred::Now(_) | Pred::Once { .. } | Pred::Count { .. } | Pred::Last { .. } => {}
     }
 }
 
@@ -547,6 +580,7 @@ impl Catalog {
         let slots = SlotTable::of(policies.iter().flat_map(Policy::preds));
         let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
         check_reads(&policies, &reads, &authority, &mut errors);
+        check_actors(&policies, &reads, &authority, &mut errors);
         let guards = GuardIndex::new(
             policies
                 .iter()
@@ -909,6 +943,26 @@ fn check_reads(
                 if !errors.contains(&error) {
                     errors.push(error);
                 }
+            }
+        }
+    }
+}
+
+/// Every principal a policy reads with `ActorUnder` is a principal of the hierarchy: what a
+/// policy reads is [`Reads`], the value the transaction of a spawn reads too.
+fn check_actors(
+    policies: &[Policy],
+    reads: &[Reads],
+    authority: &Authority,
+    errors: &mut Vec<AcceptError>,
+) {
+    for (policy, reads) in policies.iter().zip(reads) {
+        for (principal, _) in reads.actors() {
+            if !authority.contains(principal) {
+                errors.push(AcceptError::UnknownActor {
+                    policy: policy.id(),
+                    principal: principal.clone(),
+                });
             }
         }
     }

@@ -25,6 +25,22 @@
 //! decides who may. That is [`Authority::may_loosen`](super::authority::Authority::may_loosen),
 //! asked here and nowhere else at run time.
 //!
+//! # A spawn
+//!
+//! A spawn ([`Body::Spawn`](super::event::Body::Spawn)) is a claim: the platform observed that an
+//! agent started, but where its child sits in the hierarchy of actors is its spawner's choice,
+//! and the rules that read the actor (`ActorUnder`) take effect by it. The fold keeps only its
+//! shape ([`super::state`]); [`checks::SpawnCheck`] judges the placement.
+//!
+//! The difference of a spawn is not "before the child existed and after": the child, before, is an
+//! unknown actor, and every rule that reads the actor would be loosened by anything. The place it
+//! is judged against is directly under its spawner, which is the delegation of RFC 8693: the work
+//! of a child is its spawner's work. Against that, a placement that moves the child into a
+//! principal that a policy reads as "applies inside" tightens, and one that moves it out of a
+//! principal, or in or out where the direction of the reading cannot be told, loosens, by the
+//! author of that policy. The check reads the spawner (`Event::by`) to make that place, not to
+//! decide who may loosen: that is still the floor's alone, so the rule above holds.
+//!
 //! # Invariants
 //!
 //! - The floor is fixed. However the findings are combined, and whatever a policy adds, a claim
@@ -32,7 +48,9 @@
 //!   can turn a commit into an abort, never an abort into a commit. Nobody asks of a tightening
 //!   finding: it is open to anyone. A finding whose direction cannot be read is a loosening one.
 //! - The domain's checks are always applied, so no policy can leave one out to get past the
-//!   floor; each looks at one kind of [`StateChange`], and no two look at the same.
+//!   floor; each looks at one kind of [`StateChange`], and no two look at the same. A check
+//!   never decides who may loosen. (The spawn check reads `Event::by` to make the place a spawn is
+//!   compared with, which is a fact of the claim and not a question of trust.)
 //! - One function decides every claim: [`Catalog::apply`], [`Catalog::apply_with`],
 //!   [`Catalog::fold`], [`Catalog::fold_with`], [`Catalog::admit`] and the check of the fixtures
 //!   in [`Catalog::accept`] all go through it, so an example is folded as a run is.
@@ -154,6 +172,17 @@ pub enum FindingDetail {
         slot: SlotId,
         /// The policies that read it.
         reading: Vec<PolicyId>,
+    },
+    /// A spawn places a child where these policies, which read the actor, take effect less
+    /// strongly or in a direction that cannot be read, against a place directly under the
+    /// spawner.
+    Spawn {
+        /// The new actor.
+        child: Principal,
+        /// The actor it is placed under.
+        under: Principal,
+        /// The policies it loosens.
+        loosened: Vec<PolicyId>,
     },
     /// What a check from outside the domain says, in its own words.
     Described(String),
@@ -281,9 +310,12 @@ fn transact(
             findings: Vec::new(),
             uncovered: Vec::new(),
         };
-        return (carried.step(table, event, catalog.guards()), report);
+        let kept = carried.step(table, event, catalog.guards(), catalog.authority());
+        return (kept, report);
     }
-    let after = carried.clone().step(table, event, catalog.guards());
+    let after = carried
+        .clone()
+        .step(table, event, catalog.guards(), catalog.authority());
     let changes = State::changes(table, &carried, &after);
     let input = TxInput {
         catalog,
@@ -340,7 +372,8 @@ fn fixture_errors(catalog: &Catalog) -> Vec<AcceptError> {
                 continue;
             };
             let state = catalog.fold(&fixture.events);
-            let found = match policy.evaluate(catalog.slots(), &state, judged) {
+            let found = match policy.evaluate(catalog.slots(), catalog.authority(), &state, judged)
+            {
                 Finding::Violated => Expect::Violated,
                 Finding::Satisfied => Expect::Satisfied,
                 Finding::NotApplicable | Finding::Exempted => Expect::NotApplicable,

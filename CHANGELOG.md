@@ -70,8 +70,35 @@ and this project adheres to
   effective list to another, read by `Catalog::change` and `ModeCheck`.
 - `KindSet`: the kinds of event a record that could not be read may have been.
 
+- `Pred::ActorUnder(principal)`: a rule for a role, as a condition on the acting
+  principal (the event's `by`): it holds when the actor is the principal or sits
+  below it in the hierarchy of actors, which is the `Authority` plus the leaves
+  that spawns add. An actor the hierarchy does not know, or one placed after a
+  record that may have been a spawn was lost, is unknown, so a stopping rule
+  stops it. No event needs to end a role. `Catalog::accept` rejects a rule that
+  names a principal outside the hierarchy (`AcceptError::UnknownActor`).
+- `Body::Spawn { child, under }` and `EventKind::Spawn`: a sub agent joins the
+  hierarchy of actors under a place. A spawn is a claim, judged as a
+  transaction by the new domain check `SpawnCheck` against a place directly
+  under its spawner: a child placed into a principal that a rule applies inside
+  tightens it (open to anyone); one that leaves a principal such a rule applies
+  inside, or that is read in a direction that cannot be told (outside a
+  principal, in a guard's `rule`, in a reward), loosens it, and takes effect
+  only from one who covers the rule's author. `StateChange::ActorAdded` and
+  `FindingDetail::Spawn` carry it. A spawned leaf is no author, so what it
+  claims loosens nothing. The ledger has P15 and FR38 for it, and FR39 for the
+  scope of one actor, which is undecided.
+
 ### Changed
 
+- Breaking, before 1.0: `Body::AgentStart`, `EventKind::AgentStart`,
+  `Field::AgentType` and `Scope::Agent` are removed, replaced by `Body::Spawn`
+  and `Pred::ActorUnder`. A role is read from where the actor sits, not from
+  the last agent type seen, so a role needs no event to end it and a rule
+  needs no copy per role. "Once for each agent" can no longer be written
+  (FR39). `StateChange`, `AcceptError`, `FindingDetail`, `EventKind`, `Pred`
+  and `Body` each have new variants; the ledger's P12 is withdrawn for P16
+  (the scope's vocabulary without an agent).
 - Breaking, before 1.0: `schema::Origin` and `schema::Source` are removed, with
   `EventKind::source` and `EventKind::may_be_lost_in`. The domain holds no
   roles: an `Event` has `by: Principal`, and whether a claim takes effect is

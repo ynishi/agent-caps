@@ -75,8 +75,8 @@ macro_rules! event_kinds {
 event_kinds! {
     /// A session started.
     SessionStart,
-    /// A (sub)agent started.
-    AgentStart,
+    /// A (sub)agent was spawned: it joins the hierarchy of actors under one.
+    Spawn,
     /// A task started.
     TaskStart,
     /// A prompt was submitted.
@@ -121,13 +121,16 @@ impl EventKind {
     pub fn nature(self) -> Nature {
         match self {
             Self::SessionStart
-            | Self::AgentStart
             | Self::TaskStart
             | Self::PromptSubmit
             | Self::ToolUse
             | Self::Stop
             | Self::Unreadable => Nature::Act,
-            Self::ModeSwitch | Self::Measured | Self::Exempt | Self::Judged => Nature::Claim,
+            // A spawn is observed on the platform, but where it places its child is its
+            // spawner's choice, and that can change how a rule takes effect: it is a claim.
+            Self::Spawn | Self::ModeSwitch | Self::Measured | Self::Exempt | Self::Judged => {
+                Nature::Claim
+            }
         }
     }
 }
@@ -187,8 +190,6 @@ pub enum Field {
     Path,
     /// Whether a [`EventKind::ToolUse`] succeeded (bool).
     Ok,
-    /// The agent type of an [`EventKind::AgentStart`] (text).
-    AgentType,
     /// The mode a [`EventKind::ModeSwitch`] switched to (text).
     ModeTo,
     /// The oracle of a [`EventKind::Measured`] (text).
@@ -219,7 +220,6 @@ impl Field {
     pub fn kind(self) -> EventKind {
         match self {
             Self::Tool | Self::Command | Self::Path | Self::Ok => EventKind::ToolUse,
-            Self::AgentType => EventKind::AgentStart,
             Self::ModeTo => EventKind::ModeSwitch,
             Self::Oracle | Self::Score => EventKind::Measured,
             Self::Policy | Self::Judgment => EventKind::Judged,
@@ -231,7 +231,6 @@ impl Field {
         match self {
             Self::Tool
             | Self::Path
-            | Self::AgentType
             | Self::ModeTo
             | Self::Oracle
             | Self::Policy

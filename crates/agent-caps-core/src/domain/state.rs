@@ -18,9 +18,10 @@
 //! # How an event is folded
 //!
 //! Folding one event is two steps, and the module knows nothing of who an event comes from:
-//! neither step reads [`Event::by`]. Whether the step of a claim is kept is decided by its
-//! transaction ([`super::tx`]), which compares the state before and after the step as a list of
-//! [`StateChange`]s.
+//! neither step reads [`Event::by`]. (Evaluating `ActorUnder` reads the `by` of the event being
+//! judged, which is a fact the rule asks for, not a decision about trust.) Whether the step of a
+//! claim is kept is decided by its transaction ([`super::tx`]), which compares the state before
+//! and after the step as a list of [`StateChange`]s.
 //!
 //! ```text
 //! carry(at)      what the past brings, whatever the event is
@@ -54,6 +55,32 @@
 //! - The exemptions in effect. Each lasts only for its lifetime, and only one that names a guard
 //!   of the catalog outside the meta layer, and type-checks against it, is kept.
 //! - The scopes the last event closed, and whether that is known, until the next event.
+//! - The leaves that spawns added to the hierarchy of actors, each with its place and whether
+//!   that place is known, and whether a record that may have been a spawn was lost.
+//!
+//! # Actors
+//!
+//! Who acts is read from the event ([`Event::by`]); where the actor sits is read from the
+//! hierarchy of actors: the catalog's [`Authority`], plus the leaves that spawns added to it.
+//! The two are apart: a leaf is in the hierarchy of actors only, so it is no author, and what
+//! it claims loosens nothing ([`Authority::may_loosen`] knows it not).
+//!
+//! - Folding a [`Body::Spawn`] keeps its shape and nothing else: the child is new to the
+//!   hierarchy of actors, the place it is put under is in it, and a leaf is added once and never
+//!   moved. A spawn that does not meet that adds nothing. Whether the spawn takes effect at all
+//!   is its transaction's ([`super::tx`]); the fold does not read who made it.
+//! - `Actors::ancestry` is the one place that walks the ancestors of an actor. Whether an actor
+//!   is under a principal (`Actors::is_under`) and where a spawn places its child (the
+//!   transaction's check) both come from it. An actor the hierarchy does not know, and a leaf
+//!   whose place is unknown, make the walk stop with what it has: unknown is never "not under".
+//! - A record that could not be read and may have been a spawn may have added a leaf, possibly
+//!   with the name of one added after it. So every leaf added after such a record has an unknown
+//!   place; those added before it stay as they are. The child of the lost spawn itself is in
+//!   neither part of the hierarchy, so it is an unknown actor like any other.
+//! - The leaves and the mark of a lost spawn are kept for the whole fold, and a
+//!   [`Body::SessionStart`] does not clear them. The name of a leaf is new at every start, so a
+//!   leaf of an earlier session changes no judgment of the next, and a mark that stays can only
+//!   leave a later leaf unknown, which stops what stops on unknown.
 //!
 //! # Invariants
 //!
@@ -65,9 +92,9 @@
 //!   mode unknown and the start of the mode's scope unknown; a judgment ends every exemption for
 //!   the next judgment, which it may have used up; an exemption changes nothing, since one that
 //!   was lost can only have loosened. Losing a record never loosens a rule.
-//! - The start of a session, an agent or a task is assumed not to be lost (a known gap, see
-//!   [`Scope`]).
+//! - The start of a session or a task is assumed not to be lost (a known gap, see [`Scope`]).
 
+use super::authority::{Authority, Principal};
 use super::event::{Body, Event, Read, Value};
 use super::exempt::{Exempt, Lifetime};
 use super::name::{Mode, PolicyId};
@@ -156,6 +183,122 @@ pub enum StateChange {
         /// The mode after.
         after: Known<Option<Mode>>,
     },
+    /// A leaf was added to the hierarchy of actors.
+    ActorAdded {
+        /// The new actor.
+        child: Principal,
+        /// The actor it was placed under.
+        under: Principal,
+    },
+}
+
+/// One leaf the spawns added to the hierarchy of actors.
+#[derive(Debug, Clone, PartialEq)]
+struct Leaf {
+    child: Principal,
+    under: Principal,
+    /// `Unknown` when the leaf was added after a record that may have been a spawn.
+    placed: Known<()>,
+}
+
+/// The principals above an actor, itself first, as far as they can be told.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Ancestry {
+    /// The whole chain, up to the root of the authority.
+    Known(Vec<Principal>),
+    /// The walk met an actor the hierarchy does not know, or a leaf whose place is unknown. These
+    /// are the principals it passed (the one it stopped at included); what is above is not known.
+    Unknown { known: Vec<Principal> },
+}
+
+/// The hierarchy of actors beyond the authority's: the leaves that spawns added, in the order
+/// they were added. Together with the [`Authority`] it is the hierarchy `ActorUnder` reads.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct Actors {
+    leaves: Vec<Leaf>,
+    /// Whether a record that may have been a spawn was lost. It is kept for the whole fold.
+    lost: bool,
+}
+
+impl Actors {
+    fn leaf(&self, actor: &Principal) -> Option<&Leaf> {
+        self.leaves.iter().find(|leaf| leaf.child == *actor)
+    }
+
+    /// Whether the actor is in the hierarchy of actors: a principal of the authority, or a leaf.
+    fn has(&self, actor: &Principal, authority: &Authority) -> bool {
+        authority.contains(actor) || self.leaf(actor).is_some()
+    }
+
+    /// Adds the leaf, when `child` is new to the hierarchy of actors and `under` is in it: the
+    /// shape of a spawn, and nothing about who made it. A leaf added after a lost record that
+    /// may have been a spawn is of unknown place.
+    fn add(&mut self, child: &Principal, under: &Principal, authority: &Authority) {
+        if self.has(child, authority) || !self.has(under, authority) {
+            return;
+        }
+        let placed = if self.lost {
+            Known::Unknown
+        } else {
+            Known::Known(())
+        };
+        self.leaves.push(Leaf {
+            child: child.clone(),
+            under: under.clone(),
+            placed,
+        });
+    }
+
+    /// The principals above `actor`, itself first: the one place that walks the ancestors. From
+    /// `actor` it follows the leaves to a principal of the authority, then the authority's
+    /// parents. It stops with what it has at an actor that is in neither, and at a leaf whose
+    /// place is unknown.
+    pub(super) fn ancestry(&self, actor: &Principal, authority: &Authority) -> Ancestry {
+        let mut chain: Vec<Principal> = Vec::new();
+        let mut at = actor;
+        loop {
+            if let Some(leaf) = self.leaf(at) {
+                chain.push(at.clone());
+                match leaf.placed {
+                    Known::Known(()) => at = &leaf.under,
+                    Known::Unknown => return Ancestry::Unknown { known: chain },
+                }
+            } else if authority.contains(at) {
+                let mut above = Some(at);
+                while let Some(principal) = above {
+                    chain.push(principal.clone());
+                    above = authority.parent(principal);
+                }
+                return Ancestry::Known(chain);
+            } else {
+                chain.push(at.clone());
+                return Ancestry::Unknown { known: chain };
+            }
+        }
+    }
+
+    /// Whether `actor` is `ancestor` or below it, from [`Actors::ancestry`]: true or false when the
+    /// walk is whole, and when it stopped, true if it passed `ancestor` and unknown otherwise.
+    /// (The words and the direction differ from [`Authority::covers`], which is about whose
+    /// rules one may loosen.)
+    pub(super) fn is_under(
+        &self,
+        actor: &Principal,
+        ancestor: &Principal,
+        authority: &Authority,
+    ) -> Truth {
+        match self.ancestry(actor, authority) {
+            Ancestry::Known(chain) => Truth::of(chain.contains(ancestor)),
+            Ancestry::Unknown { known } if known.contains(ancestor) => Truth::True,
+            Ancestry::Unknown { .. } => Truth::Unknown,
+        }
+    }
+
+    /// The leaves `self` has that `before` does not, in the order they were added. `self` is
+    /// `before` folded further, and leaves are only ever appended, so they are the tail.
+    fn added_since<'a>(&'a self, before: &Self) -> impl Iterator<Item = &'a Leaf> {
+        self.leaves.iter().skip(before.leaves.len())
+    }
 }
 
 /// What one temporal operator remembers.
@@ -263,6 +406,8 @@ pub struct State {
     /// The scopes the last event closed, with whether it did: they start again (or become
     /// unknown) before the next event.
     closing: Vec<(Scope, Truth)>,
+    /// The leaves spawns added to the hierarchy of actors. Kept for the whole fold.
+    actors: Actors,
 }
 
 impl Scope {
@@ -272,7 +417,6 @@ impl Scope {
         let at_session = matches!(body, Body::SessionStart);
         match self {
             Self::Session | Self::Since(_) => Truth::of(at_session),
-            Self::Agent => Truth::of(at_session || matches!(body, Body::AgentStart { .. })),
             Self::Task => Truth::of(at_session || matches!(body, Body::TaskStart)),
             Self::Mode => match body {
                 Body::SessionStart | Body::ModeSwitch { .. } => Truth::True,
@@ -313,7 +457,7 @@ fn matched(filter: &EventFilter, body: &Body) -> Truth {
 
 /// The scopes with a fixed start event, which an exemption may last within whether or not a slot
 /// counts in them.
-static FIXED_SCOPES: [Scope; 4] = [Scope::Session, Scope::Agent, Scope::Mode, Scope::Task];
+static FIXED_SCOPES: [Scope; 3] = [Scope::Session, Scope::Mode, Scope::Task];
 
 impl State {
     /// The state before any event: no mode, every slot at its start value, no exemption.
@@ -323,12 +467,18 @@ impl State {
             slots: table.0.iter().map(Slot::start).collect(),
             exempts: Vec::new(),
             closing: Vec::new(),
+            actors: Actors::default(),
         }
     }
 
     /// The mode in effect.
     pub fn mode(&self) -> &Known<Option<Mode>> {
         &self.mode
+    }
+
+    /// The leaves that spawns added to the hierarchy of actors.
+    pub(super) fn actors(&self) -> &Actors {
+        &self.actors
     }
 
     /// The state carried to an event at `at`: steps 1 and 2 of the module doc. It depends on the
@@ -344,8 +494,16 @@ impl State {
 
     /// The state after `event`, from a state carried to it: steps 3 to 5 of the module doc.
     /// `guards` holds the guards an exemption may name: one takes effect only if its guard is
-    /// there and [`Exempt::check`] finds nothing wrong with it.
-    pub(super) fn step(mut self, table: &SlotTable, event: &Event, guards: &GuardIndex) -> Self {
+    /// there and [`Exempt::check`] finds nothing wrong with it. `authority` is the hierarchy the
+    /// catalog was accepted with: a spawn's shape is checked against it, and nothing else of it
+    /// is read here.
+    pub(super) fn step(
+        mut self,
+        table: &SlotTable,
+        event: &Event,
+        guards: &GuardIndex,
+        authority: &Authority,
+    ) -> Self {
         let body = &event.body;
         // 3. The scopes that start again before this event. Settling is idempotent, so a scope
         // listed twice does no harm; only the few that start are cloned.
@@ -384,6 +542,10 @@ impl State {
                 if may_have_been.contains(EventKind::Judged) {
                     self.exempts.retain(|e| e.lifetime != Lifetime::Next);
                 }
+                // It may have added a leaf, so the leaves added from now on are of unknown place.
+                if may_have_been.contains(EventKind::Spawn) {
+                    self.actors.lost = true;
+                }
             }
             _ => {
                 self.slots = self
@@ -396,6 +558,7 @@ impl State {
         }
         match body {
             Body::ModeSwitch { to } => self.mode = Known::Known(Some(to.clone())),
+            Body::Spawn { child, under } => self.actors.add(child, under, authority),
             Body::Exempt(exempt)
                 if guards
                     .subject(exempt.guard)
@@ -434,7 +597,8 @@ impl State {
 
     /// The differences between `before` and `after`, two states of the catalog whose table is
     /// `table`: each slot whose value, or whose scope's closing, differs; each exemption added or
-    /// ended (an exemption held twice counts twice); and the mode, when it differs.
+    /// ended (an exemption held twice counts twice); the mode, when it differs; and each leaf
+    /// added to the hierarchy of actors.
     pub(super) fn changes(table: &SlotTable, before: &State, after: &State) -> Vec<StateChange> {
         let closing_of = |state: &State, scope: &Scope| {
             state
@@ -474,6 +638,12 @@ impl State {
                 after: after.mode.clone(),
             });
         }
+        changes.extend(after.actors.added_since(&before.actors).map(|leaf| {
+            StateChange::ActorAdded {
+                child: leaf.child.clone(),
+                under: leaf.under.clone(),
+            }
+        }));
         changes
     }
 
@@ -517,9 +687,17 @@ impl State {
         })
     }
 
-    /// Whether `pred` holds of `event`, with the state already folded over it.
-    pub(super) fn holds(&self, table: &SlotTable, pred: &Pred, event: &Event) -> Truth {
+    /// Whether `pred` holds of `event`, with the state already folded over it. `authority` is the
+    /// hierarchy the catalog was accepted with, which `ActorUnder` reads with the leaves.
+    pub(super) fn holds(
+        &self,
+        table: &SlotTable,
+        authority: &Authority,
+        pred: &Pred,
+        event: &Event,
+    ) -> Truth {
         let slot = |temporal: Temporal| table.find(&temporal).and_then(|at| self.slots.get(at));
+        let holds = |pred: &Pred| self.holds(table, authority, pred, event);
         match pred {
             Pred::Now(cond) => event.body.holds(cond),
             Pred::ModeIs(mode) => match &self.mode {
@@ -527,6 +705,7 @@ impl State {
                 Known::Known(None) => Truth::False,
                 Known::Unknown => Truth::Unknown,
             },
+            Pred::ActorUnder(principal) => self.actors.is_under(&event.by, principal, authority),
             Pred::Once {
                 event: filter,
                 scope,
@@ -554,9 +733,96 @@ impl State {
                 Some(Slot::Last(Known::Known(None))) => Truth::False,
                 _ => Truth::Unknown,
             },
-            Pred::All(preds) => Truth::all(preds.iter().map(|p| self.holds(table, p, event))),
-            Pred::Any(preds) => Truth::any(preds.iter().map(|p| self.holds(table, p, event))),
-            Pred::Not(pred) => !self.holds(table, pred, event),
+            Pred::All(preds) => Truth::all(preds.iter().map(holds)),
+            Pred::Any(preds) => Truth::any(preds.iter().map(holds)),
+            Pred::Not(pred) => !holds(pred),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(key: &str) -> Principal {
+        Principal::new(key)
+    }
+
+    /// `user` above `agent`.
+    fn authority() -> Authority {
+        Authority::new([(p("user"), None), (p("agent"), Some(p("user")))]).unwrap()
+    }
+
+    #[test]
+    fn the_ancestry_follows_the_leaves_then_the_authority() {
+        let authority = authority();
+        let mut actors = Actors::default();
+        actors.add(&p("a"), &p("agent"), &authority);
+        actors.add(&p("b"), &p("a"), &authority);
+        assert_eq!(
+            actors.ancestry(&p("b"), &authority),
+            Ancestry::Known(vec![p("b"), p("a"), p("agent"), p("user")])
+        );
+        assert_eq!(
+            actors.is_under(&p("b"), &p("agent"), &authority),
+            Truth::True
+        );
+        assert_eq!(
+            actors.is_under(&p("agent"), &p("b"), &authority),
+            Truth::False
+        );
+    }
+
+    #[test]
+    fn an_actor_the_hierarchy_does_not_know_is_unknown_not_outside() {
+        let authority = authority();
+        let actors = Actors::default();
+        assert_eq!(
+            actors.ancestry(&p("x"), &authority),
+            Ancestry::Unknown {
+                known: vec![p("x")]
+            }
+        );
+        assert_eq!(
+            actors.is_under(&p("x"), &p("agent"), &authority),
+            Truth::Unknown
+        );
+        assert_eq!(actors.is_under(&p("x"), &p("x"), &authority), Truth::True);
+    }
+
+    #[test]
+    fn a_leaf_added_after_a_lost_spawn_stops_the_walk_at_itself() {
+        let authority = authority();
+        let mut actors = Actors::default();
+        actors.add(&p("before"), &p("agent"), &authority);
+        actors.lost = true;
+        actors.add(&p("after"), &p("agent"), &authority);
+        assert_eq!(
+            actors.is_under(&p("before"), &p("user"), &authority),
+            Truth::True
+        );
+        assert_eq!(
+            actors.ancestry(&p("after"), &authority),
+            Ancestry::Unknown {
+                known: vec![p("after")]
+            }
+        );
+        assert_eq!(
+            actors.is_under(&p("after"), &p("agent"), &authority),
+            Truth::Unknown
+        );
+    }
+
+    #[test]
+    fn a_leaf_is_added_once_under_a_place_that_is_there() {
+        let authority = authority();
+        let mut actors = Actors::default();
+        actors.add(&p("a"), &p("agent"), &authority);
+        // Already there, as a leaf or as a principal of the authority; and a place that is not.
+        actors.add(&p("a"), &p("user"), &authority);
+        actors.add(&p("agent"), &p("user"), &authority);
+        actors.add(&p("b"), &p("nowhere"), &authority);
+        assert_eq!(actors.leaves.len(), 1);
+        assert_eq!(actors.leaves[0].under, p("agent"));
     }
 }

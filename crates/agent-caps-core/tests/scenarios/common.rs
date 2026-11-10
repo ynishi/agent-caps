@@ -82,17 +82,18 @@ pub fn unreadable(may_have_been: &[EventKind]) -> Event {
     })
 }
 
-/// The kinds of act a platform's transcript records, which a line lost from it may have been.
+/// The kinds of event a platform's transcript records, which a line lost from it may have been.
+/// A spawn is one: it is a claim, but the platform is where it is read from.
 pub const ACTS: [EventKind; 6] = [
     EventKind::SessionStart,
-    EventKind::AgentStart,
+    EventKind::Spawn,
     EventKind::TaskStart,
     EventKind::PromptSubmit,
     EventKind::ToolUse,
     EventKind::Stop,
 ];
 
-/// A line of the transcript that could not be read: it may have been any act.
+/// A line of the transcript that could not be read: it may have been any event it records.
 pub fn lost_line() -> Event {
     unreadable(&ACTS)
 }
@@ -121,13 +122,20 @@ pub fn the_helper() -> Principal {
     Principal::new("helper")
 }
 
-/// The user, the agent below it, and the helper below the agent. A scenario that does not care
-/// who wrote what gives everything to the user.
+/// A role, below the agent: a node of the hierarchy that a rule can read an actor against
+/// (`ActorUnder`), and that a spawn can place a child under.
+pub fn the_reviewer() -> Principal {
+    Principal::new("reviewer")
+}
+
+/// The user, the agent below it, and the helper and the reviewer role below the agent. A
+/// scenario that does not care who wrote what gives everything to the user.
 pub fn authority() -> Authority {
     Authority::new([
         (the_user(), None),
         (the_agent(), Some(the_user())),
         (the_helper(), Some(the_agent())),
+        (the_reviewer(), Some(the_agent())),
     ])
     .unwrap()
 }

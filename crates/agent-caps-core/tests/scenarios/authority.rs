@@ -543,7 +543,7 @@ fn an_unnamed_read_does_not_count_the_judgments_of_a_policy_below() {
         vec![],
     );
     let before = [
-        agent(Body::AgentStart { agent_type: None }),
+        agent(Body::SessionStart),
         agent(Body::TaskStart),
         agent(Body::Stop),
     ];

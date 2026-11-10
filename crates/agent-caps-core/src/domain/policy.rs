@@ -357,17 +357,34 @@ impl Policy {
 
     /// Every predicate it holds, as the catalog uses it.
     pub(super) fn preds(&self) -> impl Iterator<Item = &Pred> {
-        let Rule::Structural(rule) = &self.compiled.rule;
-        self.compiled.when.iter().chain(std::iter::once(rule))
+        self.when().into_iter().chain(std::iter::once(self.rule()))
     }
 
-    /// What the policy finds on `event`, with `state` already folded over it.
-    pub(super) fn evaluate(&self, slots: &SlotTable, state: &State, event: &Event) -> Finding {
+    /// The `when` predicate as the catalog uses it, when there is one.
+    pub(super) fn when(&self) -> Option<&Pred> {
+        self.compiled.when.as_ref()
+    }
+
+    /// The `rule` predicate as the catalog uses it.
+    pub(super) fn rule(&self) -> &Pred {
+        let Rule::Structural(rule) = &self.compiled.rule;
+        rule
+    }
+
+    /// What the policy finds on `event`, with `state` already folded over it. `authority` is the
+    /// hierarchy of the catalog, which the actor of the event is read in.
+    pub(super) fn evaluate(
+        &self,
+        slots: &SlotTable,
+        authority: &Authority,
+        state: &State,
+        event: &Event,
+    ) -> Finding {
         if event.body.kind() != self.def.subject {
             return Finding::NotApplicable;
         }
         if let Some(when) = &self.compiled.when {
-            match state.holds(slots, when, event) {
+            match state.holds(slots, authority, when, event) {
                 Truth::False => return Finding::NotApplicable,
                 Truth::Unknown => return Finding::Unknown,
                 Truth::True => {}
@@ -378,7 +395,7 @@ impl Policy {
             return Finding::Exempted;
         }
         let Rule::Structural(rule) = &self.compiled.rule;
-        match state.holds(slots, rule, event) {
+        match state.holds(slots, authority, rule, event) {
             Truth::True => Finding::Satisfied,
             Truth::False => Finding::Violated,
             Truth::Unknown => Finding::Unknown,
@@ -394,7 +411,7 @@ fn scope_pred(pred: &Pred, visible: &Cond) -> Pred {
         other => other.clone(),
     };
     match pred {
-        Pred::Now(_) | Pred::ModeIs(_) => pred.clone(),
+        Pred::Now(_) | Pred::ModeIs(_) | Pred::ActorUnder(_) => pred.clone(),
         Pred::Once { event, scope } => Pred::Once {
             event: scope_filter(event, visible),
             scope: scoped(scope),
