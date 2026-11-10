@@ -19,8 +19,8 @@ use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy, TxReport,
 
 use super::common::{
     GUARD, OTHER, agent, at, bind, binding_id, catalog, exempt_n, graph_of, id, inside, listed,
-    mode, outside, push_after_allowed, rejected, src_edit_guard, test_guard, the_agent, the_helper,
-    the_user,
+    mode, outside, push_after_allowed, rebuilt, rejected, src_edit_guard, test_guard, the_agent,
+    the_helper, the_user,
 };
 
 /// The effect of the guard of the scenarios under no mode.
@@ -34,9 +34,11 @@ fn guard_effect(catalog: &Catalog) -> Effect {
 
 /// The graph of `catalog` without the binding `n` of `policy`.
 fn without(catalog: &Catalog, policy: &str, n: u8) -> PolicyGraph {
-    let mut graph = catalog.graph();
-    graph.bindings.retain(|b| b.id != binding_id(id(policy), n));
-    graph
+    rebuilt(
+        catalog.graph(),
+        |b| b.id != binding_id(id(policy), n),
+        |_| {},
+    )
 }
 
 /// The transaction of `event` after `before`.
@@ -75,10 +77,9 @@ fn exempt(n: u8, path: Option<&str>) -> Body {
 #[test]
 fn a_binding_added_by_one_below_does_not_lower_the_rule_above() {
     let before = catalog(vec![test_guard(Level::Force)], vec![]);
-    let mut graph = before.graph();
-    graph
-        .bindings
-        .push(bind(GUARD, 1, Level::Inform, ModeScope::Any, the_agent()));
+    let (policies, mut bindings) = before.graph().clone().into_parts();
+    bindings.push(bind(GUARD, 1, Level::Inform, ModeScope::Any, the_agent()));
+    let graph = PolicyGraph::parse(policies, bindings).unwrap();
     let after = before.change(graph, &the_agent()).unwrap();
     assert_eq!(guard_effect(&after), Effect::On(Level::Force));
 }
@@ -149,12 +150,15 @@ fn a_binding_of_the_one_above_cannot_be_removed_behind_one_of_ones_own() {
             target: Target::Binding(binding_id(id(GUARD), 0)),
         }]))
     );
-    let mut weakened = before.graph();
-    for b in &mut weakened.bindings {
-        if b.id == binding_id(id(GUARD), 0) {
-            b.level = Level::Inform;
-        }
-    }
+    let weakened = rebuilt(
+        before.graph(),
+        |_| true,
+        |b| {
+            if b.id == binding_id(id(GUARD), 0) {
+                b.level = Level::Inform;
+            }
+        },
+    );
     assert_eq!(
         before.change(weakened, &the_agent()),
         Err(ChangeRejected::Loosens(vec![Loosening::Uncovered {

@@ -85,7 +85,7 @@ use super::schema::{At, EventKind, Level};
 use super::state::Clock;
 
 /// How long an adjustment lasts.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lifetime {
     /// The next judgment it covers, and no more: the record of the
     /// [`super::schema::Judgment::Exempted`] judgment uses it up. An exemption only.
@@ -128,7 +128,7 @@ impl Lifetime {
 
 /// A binding added for a while: the policy takes effect at least at the level, under every mode,
 /// by the one who made the adjustment.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TemporaryBinding {
     /// The policy it puts into effect.
     pub policy: PolicyId,
@@ -137,7 +137,7 @@ pub struct TemporaryBinding {
 }
 
 /// What a temporary adjustment changes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Temporary {
     /// The guard does not judge the events the cover covers. It does not change the strength the
     /// guard takes effect at.
@@ -158,7 +158,7 @@ pub enum Temporary {
 }
 
 /// One temporary adjustment, as a claim states it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Adjustment {
     /// Its id, which a cancel names.
     pub id: AdjustmentId,
@@ -388,7 +388,7 @@ impl AdjustIndex {
     }
 
     /// Each policy outside the meta layer with the strongest level a temporary binding can give it
-    /// ([`Reach::ceiling`]) and its author, in the catalog's order: what a lost record of an
+    /// ([`Reach::ceiling`]) and its author, by id (the catalog's order): what a lost record of an
     /// adjustment may have bound.
     pub(super) fn ceilings(&self) -> impl Iterator<Item = (PolicyId, Level, &Principal)> {
         self.policies

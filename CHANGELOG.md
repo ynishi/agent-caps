@@ -116,6 +116,33 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a policy graph is keyed by id (#46). The fields of
+  `PolicyGraph` are private, and a graph is made only by
+  `PolicyGraph::parse(policies, bindings)`, which refuses a second policy or
+  binding with an id already there, even an equal one, and a second policy
+  with a name already there, returning every clash at once
+  (`Vec<GraphError>`, each with its `Clash`: `Policy(id)`, `Binding(id)` or
+  `Name(name)`). Write `PolicyGraph { policies, bindings }` as
+  `PolicyGraph::parse(policies, bindings)?`, and read a graph with
+  `policies()`, `bindings()`, `policy(id)`, `binding(id)` or `into_parts()`.
+  `AcceptError::DuplicateId`, `DuplicateName` and `DuplicateBinding` are gone:
+  a graph cannot hold what they reported, and the clash is reported by
+  `parse` instead. `Catalog::accept` and `Catalog::change` take the graph as
+  before, and `Catalog::graph()` returns `&PolicyGraph`.
+- Breaking, before 1.0: every list follows one order, by id, whatever order
+  the policies and bindings were written in (#46): `Catalog::policies`,
+  `Effective::policies` and `Enforced::policies`, the policies a filter of
+  judgments sees (and so the slots two policies share), and what a judgment
+  reports (the causes of a verdict, the rewards, what was degraded and
+  lowered). No decision changes: the strongest binding and the strongest
+  result still win whatever the order.
+- Breaking, before 1.0: the number a condition compares a field with is a
+  `Number` (#46): `Cond::Num(Field, Cmp, Number)`. `Number::new` refuses NaN
+  and the infinities (`NumberError`) and takes negative numbers. With it,
+  `PolicyDef`, `Binding`, `Fixture`, `Rule`, `Pred`, `Cond`, the types they
+  hold, `Event`, `Body` and `Adjustment` are `Eq`, so a policy equals itself.
+  Two `Body` values compare the score of a `Measured` as a number with NaN
+  equal to NaN: a NaN score equals itself; `0.0` and `-0.0` are equal.
 - Breaking, before 1.0: a rule can limit the sum of an amount used, such as
   the tokens of a task (#42). The new act `Body::Used { meter: Meter, amount:
   Option<Amount> }` (`EventKind::Used`, of `Nature::Act`) is what the platform

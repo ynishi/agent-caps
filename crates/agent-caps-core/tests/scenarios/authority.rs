@@ -544,7 +544,8 @@ fn an_unnamed_read_of_judgments_is_accepted_beside_a_policy_below() {
     for cond in [Some(denied()), None] {
         let written = vec![counting(cond.clone()), agent_guard(Level::Force)];
         let accepted = catalog(written.clone(), vec![]);
-        assert_eq!(accepted.graph().policies, defs(&written), "{cond:?}");
+        let kept: Vec<PolicyDef> = accepted.graph().policies().cloned().collect();
+        assert_eq!(kept, defs(&written), "{cond:?}");
     }
     // At any depth of the predicate, and in the scope of a `once` or a `last` as well.
     let mut deep = counting(None);
@@ -636,7 +637,10 @@ fn a_change_by_one_below_leaves_the_rule_above_as_it_was() {
         vec![],
     );
     let changed = before.change(with_agent, &the_agent()).unwrap();
-    assert_eq!(changed.graph().policies[0], stops_until_denied().def);
+    assert_eq!(
+        changed.graph().policy(id(GUARD)),
+        Some(&stops_until_denied().def)
+    );
     assert_eq!(
         changed.policies()[0],
         before.policies()[0],
@@ -658,7 +662,10 @@ fn a_change_by_one_below_leaves_the_rule_above_as_it_was() {
         vec![],
     );
     let widened = before.change(with_user, &the_user()).unwrap();
-    assert_eq!(widened.graph().policies[0], stops_until_denied().def);
+    assert_eq!(
+        widened.graph().policy(id(GUARD)),
+        Some(&stops_until_denied().def)
+    );
     assert_ne!(widened.policies()[0], before.policies()[0]);
     let counted = [
         agent(Body::TaskStart),
@@ -760,7 +767,8 @@ fn a_last_of_judgments_that_names_the_policies_is_accepted_beside_one_below() {
     for cond in [Some(of(GUARD)), Some(denied()), None] {
         let written = vec![last_in(cond.clone()), agent_guard(Level::Force)];
         let accepted = catalog(written.clone(), vec![]);
-        assert_eq!(accepted.graph().policies, defs(&written), "{cond:?}");
+        let kept: Vec<PolicyDef> = accepted.graph().policies().cloned().collect();
+        assert_eq!(kept, defs(&written), "{cond:?}");
     }
     catalog(
         vec![last_in(Some(of(GUARD))), other_user_guard(Level::Force)],
@@ -894,7 +902,9 @@ fn an_author_or_a_changer_outside_the_hierarchy_is_rejected() {
     assert!(matches!(result.unwrap_err(), ChangeRejected::Invalid(_)));
     // And one who is not of the hierarchy cannot change, even with nothing changed.
     assert_eq!(
-        before.change(before.graph(), &stranger).unwrap_err(),
+        before
+            .change(before.graph().clone(), &stranger)
+            .unwrap_err(),
         ChangeRejected::UnknownPrincipal
     );
 }
@@ -983,20 +993,19 @@ fn a_change_that_mixes_tightening_and_loosening_is_rejected_as_a_whole() {
 /// neither `by` nor below it.
 fn not_covered_by(graph: &PolicyGraph, by: &Principal) -> PolicyGraph {
     let hierarchy = authority();
-    PolicyGraph {
-        policies: graph
-            .policies
-            .iter()
+    PolicyGraph::parse(
+        graph
+            .policies()
             .filter(|def| !hierarchy.covers(by, &def.author))
             .cloned()
             .collect(),
-        bindings: graph
-            .bindings
-            .iter()
+        graph
+            .bindings()
             .filter(|b| !hierarchy.covers(by, &b.author))
             .cloned()
             .collect(),
-    }
+    )
+    .unwrap()
 }
 
 /// FR16, FR18: a graph a catalog accepts, narrowed to what a principal does not cover, is
@@ -1018,12 +1027,12 @@ fn the_narrowed_graph_always_accepts() {
         ],
     );
     let full = accept(graph.clone()).unwrap();
-    assert_eq!(full.graph(), graph);
+    assert_eq!(full.graph(), &graph);
 
     let remaining = |by: &Principal| {
         let narrowed = not_covered_by(&graph, by);
         accept(narrowed.clone()).unwrap();
-        narrowed.policies.len() + narrowed.bindings.len()
+        narrowed.policies().len() + narrowed.bindings().len()
     };
     assert_eq!(remaining(&the_user()), 0);
     // The agent and the helper below it are gone; the user's two policies and their two bindings

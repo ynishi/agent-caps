@@ -72,8 +72,9 @@
 //!
 //! # Invariants
 //!
-//! - Ids and names of policies are unique, and so are the ids of bindings
-//!   ([`AcceptError::DuplicateBinding`]); a binding names a policy of the graph
+//! - Ids and names of policies are unique, and so are the ids of bindings: the
+//!   [`PolicyGraph`] a catalog is accepted from cannot hold a duplicate
+//!   ([`PolicyGraph::parse`], [`super::policy::Clash`]). A binding names a policy of the graph
 //!   ([`AcceptError::UnknownBindingPolicy`]).
 //! - Every author of a policy and of a binding is a principal of the catalog's [`Authority`]
 //!   ([`AcceptError::UnknownAuthor`]), so [`Authority::covers`] is total on the authors.
@@ -102,8 +103,8 @@
 //!   catalog whose authors cover the author of its policy, its own and those above, and no
 //!   others: a rule counts what it may trust. Who is visible is decided here, once, from the
 //!   catalog's [`Authority`], and written into the predicate the catalog keeps for the policy
-//!   (`policy in {the visible}`, all of the filter's own condition beside it, in the catalog's
-//!   order, so two policies of one author share their slots). The policy as written is kept as
+//!   (`policy in {the visible}`, all of the filter's own condition beside it, in id order, so
+//!   two policies of one author share their slots). The policy as written is kept as
 //!   it is: [`Catalog::graph`] and [`super::change::classify`] read it, so a difference between
 //!   graphs is a difference of what was written. State and the transaction of a claim know
 //!   nothing of who: they run the predicate they are given. A judgment of a policy that is not in
@@ -141,18 +142,30 @@
 //!   known gaps. A fixture is folded as a run is, so a claim in it takes effect, or not, as it
 //!   would at run time.
 //!
+//! # Order
+//!
+//! A catalog has one order, the order of its [`PolicyGraph`]: by id, whatever order the
+//! policies and bindings were written in. It is decided there, once, and read everywhere: the
+//! policies of the catalog ([`Catalog::policies`]), the policies a filter of judgments sees
+//! (and so which slots two policies share), the lists of what takes effect ([`Effective`],
+//! [`Enforced`]), and what a judgment reports ([`super::judge::Outcome`]: the causes of a
+//! verdict, the rewards, what was degraded and lowered). No decision depends on it: the
+//! strongest binding and the strongest result win whatever the order.
+//!
 //! # Errors
 //!
 //! [`Catalog::accept`] returns every [`AcceptError`] it finds at once, in [`Rejected`], so a
-//! policy graph can be fixed in one pass.
+//! policy graph can be fixed in one pass. A graph with a duplicate id or name is refused before,
+//! when it is made ([`PolicyGraph::parse`]), with every clash at once.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::collections::btree_map;
 use std::fmt;
 
 use super::adjust::{AdjustIndex, BoundKind, Reach, TooStrong, may_bind_at};
 use super::authority::{Authority, NotWithin, Principal};
 use super::event::Event;
-use super::name::{BindingId, Mode, PolicyId, PolicyName};
+use super::name::{BindingId, Mode, PolicyId};
 use super::policy::{
     Binding, DefLayer, Expect, Level, ModeScope, Polarity, Policy, PolicyDef, PolicyGraph, Rule,
 };
@@ -227,10 +240,6 @@ pub enum AcceptError {
     /// policies of the catalog, and a meta policy depends on nothing that changes. To fix it,
     /// name the policies whose judgments it reads.
     MetaReadsUnscoped(PolicyId),
-    /// Two policies have the id.
-    DuplicateId(PolicyId),
-    /// Two policies have the name.
-    DuplicateName(PolicyName),
     /// A predicate of the policy reads a field it cannot.
     Predicate {
         /// The policy.
@@ -278,8 +287,6 @@ pub enum AcceptError {
         /// What the policy found.
         found: Expect,
     },
-    /// Two bindings have the id.
-    DuplicateBinding(BindingId),
     /// The binding names a policy that does not exist.
     UnknownBindingPolicy {
         /// The binding.
@@ -321,8 +328,6 @@ impl fmt::Display for AcceptError {
                 f,
                 "meta policy {policy} reads judgments without naming the policies"
             ),
-            Self::DuplicateId(id) => write!(f, "two policies have the id {id}"),
-            Self::DuplicateName(name) => write!(f, "two policies have the name {name}"),
             Self::Predicate { policy, error } => write!(f, "policy {policy}: {error}"),
             Self::UnknownBound { reward, bound_by } => {
                 write!(
@@ -353,7 +358,6 @@ impl fmt::Display for AcceptError {
                 f,
                 "fixture `{fixture}` of {policy} expects {expected:?} and found {found:?}"
             ),
-            Self::DuplicateBinding(id) => write!(f, "two bindings have the id {id}"),
             Self::UnknownBindingPolicy { binding, policy } => {
                 write!(f, "binding {binding} names {policy}, which does not exist")
             }
@@ -435,7 +439,7 @@ pub struct PolicyEffect<'a> {
 /// and, event by event, by [`super::judge::judge`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Effective<'a> {
-    /// Every policy of the catalog, in the catalog's order, with its effect.
+    /// Every policy of the catalog, by id, with its effect.
     pub policies: Vec<PolicyEffect<'a>>,
     /// What had to be degraded.
     pub degraded: Vec<Degraded>,
@@ -700,7 +704,7 @@ pub struct EnforcedPolicy<'a> {
 /// by the enforced.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Enforced<'a> {
-    /// Every policy of the catalog, in the catalog's order.
+    /// Every policy of the catalog, by id.
     pub policies: Vec<EnforcedPolicy<'a>>,
     /// What the capabilities lowered, and the rewards that followed. What the bindings degraded
     /// is in [`Effective::degraded`] and is not repeated here.
@@ -897,8 +901,10 @@ impl Reads {
 /// The accepted rules.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Catalog {
+    /// The graph it was accepted from, as written: the one order of the catalog (by id).
+    graph: PolicyGraph,
+    /// The policies of `graph`, in its order, with the predicates the catalog uses.
     policies: Vec<Policy>,
-    bindings: Vec<Binding>,
     slots: SlotTable,
     /// What each policy reads, in the order of `policies`.
     reads: Vec<Reads>,
@@ -948,7 +954,7 @@ impl Catalog {
         check_authors(&graph, &authority, &mut errors);
         check_policies(&graph, &mut errors);
         check_bindings(&graph, &mut errors);
-        let policies = compile_policies(graph.policies, &authority);
+        let policies = compile_policies(&graph, &authority);
         let slots = SlotTable::of(policies.iter().flat_map(Policy::preds));
         let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
         check_reads(&policies, &reads, &authority, &mut errors);
@@ -965,12 +971,12 @@ impl Catalog {
                 };
                 (p.id(), reach, p.author().clone())
             }),
-            graph.bindings.iter().map(|b| (b.id, b.policy)),
+            graph.bindings().map(|b| (b.id, b.policy)),
         );
         if errors.is_empty() {
             Ok(Self {
+                graph,
                 policies,
-                bindings: graph.bindings,
                 slots,
                 reads,
                 index,
@@ -986,27 +992,27 @@ impl Catalog {
         &self.authority
     }
 
-    /// The graph the catalog was accepted from.
-    pub fn graph(&self) -> PolicyGraph {
-        PolicyGraph {
-            policies: self.policies.iter().map(|p| p.def().clone()).collect(),
-            bindings: self.bindings.clone(),
-        }
+    /// The graph the catalog was accepted from, as written.
+    pub fn graph(&self) -> &PolicyGraph {
+        &self.graph
     }
 
-    /// The bindings, in the order they were given.
-    pub(super) fn bindings(&self) -> &[Binding] {
-        &self.bindings
+    /// The bindings, by id.
+    pub(super) fn bindings(&self) -> btree_map::Values<'_, BindingId, Binding> {
+        self.graph.bindings()
     }
 
-    /// The policies, as defined.
+    /// The policies, as defined, by id.
     pub fn policies(&self) -> &[Policy] {
         &self.policies
     }
 
-    /// The policy with the id.
+    /// The policy with the id. The policies are in id order (the graph's), so it is a search.
     pub fn policy(&self, id: PolicyId) -> Option<&Policy> {
-        self.policies.iter().find(|p| p.id() == id)
+        self.policies
+            .binary_search_by_key(&id, Policy::id)
+            .ok()
+            .map(|at| &self.policies[at])
     }
 
     /// The state before any event.
@@ -1018,7 +1024,7 @@ impl Catalog {
         &self.slots
     }
 
-    /// Each policy with what it reads, in the catalog's order.
+    /// Each policy with what it reads, by id.
     pub(super) fn reads(&self) -> impl Iterator<Item = (&Policy, &Reads)> {
         self.policies.iter().zip(&self.reads)
     }
@@ -1054,8 +1060,7 @@ impl Catalog {
                 author: &held.by,
             })
         });
-        self.bindings
-            .iter()
+        self.bindings()
             .filter(|b| !suspended.contains(&b.id))
             .map(InEffect::of)
             .chain(temporary)
@@ -1074,7 +1079,7 @@ impl Catalog {
     /// shows. This is the one place where not knowing the mode is decided, so it never loosens a
     /// rule, and never gives a value no mode gives; [`Catalog::effective_in`] goes through it.
     pub fn effective(&self, mode: &Known<Option<Mode>>) -> Effective<'_> {
-        let bindings: Vec<InEffect<'_>> = self.bindings.iter().map(InEffect::of).collect();
+        let bindings: Vec<InEffect<'_>> = self.bindings().map(InEffect::of).collect();
         self.effective_with(&bindings, mode)
     }
 
@@ -1138,7 +1143,7 @@ impl Catalog {
         let mut strongest = self.effective_under(bindings, &Known::Known(None));
         for candidate in compared_modes([self]).into_iter().skip(1) {
             let other = self.effective_under(bindings, &Known::Known(candidate));
-            // Both list every policy in the catalog's order.
+            // Both list every policy by id.
             for (kept, o) in strongest.policies.iter_mut().zip(other.policies) {
                 kept.effect = kept.effect.max(o.effect);
             }
@@ -1254,7 +1259,7 @@ impl Catalog {
     /// Every mode a binding's scope names (`In` and `Outside`), each once.
     fn modes(&self) -> Vec<&Mode> {
         let mut modes: Vec<&Mode> = Vec::new();
-        for mode in self.bindings.iter().flat_map(|b| b.mode.modes()) {
+        for mode in self.bindings().flat_map(|b| b.mode.modes()) {
             if !modes.contains(&mode) {
                 modes.push(mode);
             }
@@ -1323,13 +1328,11 @@ fn bind_rewards(in_effect: &mut [(&Policy, Option<Level>)]) -> Vec<Degraded> {
 fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<AcceptError>) {
     let author_of = |id: PolicyId| {
         graph
-            .policies
-            .iter()
-            .find(|p| p.id == id)
+            .policy(id)
             .map(|p| &p.author)
             .filter(|author| authority.contains(author))
     };
-    for def in &graph.policies {
+    for def in graph.policies() {
         if !authority.contains(&def.author) {
             errors.push(AcceptError::UnknownAuthor {
                 item: Target::Policy(def.id),
@@ -1353,7 +1356,7 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
             });
         }
     }
-    for b in &graph.bindings {
+    for b in graph.bindings() {
         // The same answer a temporary binding is held to ([`Authority::within`]).
         let item = || Target::Binding(b.id);
         let unknown = || AcceptError::UnknownAuthor {
@@ -1378,20 +1381,23 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
 
 /// The policies of the catalog, each with the predicates the catalog uses: the one place that
 /// decides which judgments a filter that narrows to no policy sees. A policy sees the judgments of the
-/// policies, in the order given, whose authors cover its own ([`Authority::covers`]: its own
+/// policies, by id, whose authors cover its own ([`Authority::covers`]: its own
 /// author and those above). A meta policy is not given this, as it reads no judgment unnarrowed
 /// ([`AcceptError::MetaReadsUnscoped`]); nor is one whose author is not of the hierarchy, which
 /// [`check_authors`] rejects. Every other policy is, whether or not it has such a filter, so that
-/// its predicates are decided by the same three things always.
-fn compile_policies(defs: Vec<PolicyDef>, authority: &Authority) -> Vec<Policy> {
+/// its predicates are decided by the same three things always. The policies come out in the
+/// order of the graph, by id.
+fn compile_policies(graph: &PolicyGraph, authority: &Authority) -> Vec<Policy> {
     let in_hierarchy = |def: &PolicyDef| authority.contains(&def.author);
     let visible_to = |reader: &PolicyDef| -> Vec<PolicyId> {
-        defs.iter()
+        graph
+            .policies()
             .filter(|def| in_hierarchy(def) && authority.covers(&def.author, &reader.author))
             .map(|def| def.id)
             .collect()
     };
-    defs.iter()
+    graph
+        .policies()
         .map(|def| {
             if def.layer == DefLayer::Meta || !in_hierarchy(def) {
                 Policy::new(def.clone())
@@ -1474,16 +1480,9 @@ fn check_actors(policies: &[Policy], authority: &Authority, errors: &mut Vec<Acc
     }
 }
 
+/// Every predicate type-checks, and every reward is bound by a guard of the graph.
 fn check_policies(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
-    let mut ids = HashSet::new();
-    let mut names = HashSet::new();
-    for def in &graph.policies {
-        if !ids.insert(def.id) {
-            errors.push(AcceptError::DuplicateId(def.id));
-        }
-        if !names.insert(&def.name) {
-            errors.push(AcceptError::DuplicateName(def.name.clone()));
-        }
+    for def in graph.policies() {
         let Rule::Structural(rule) = &def.rule;
         for pred in def.when.iter().chain(std::iter::once(rule)) {
             for error in pred.check(def.subject) {
@@ -1494,7 +1493,7 @@ fn check_policies(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
             }
         }
         if let Polarity::Reward { bound_by } = &def.polarity {
-            match graph.policies.iter().find(|p| p.id == *bound_by) {
+            match graph.policy(*bound_by) {
                 None => errors.push(AcceptError::UnknownBound {
                     reward: def.id,
                     bound_by: *bound_by,
@@ -1511,15 +1510,11 @@ fn check_policies(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
     }
 }
 
-/// The ids of the bindings are unique, each names a policy, no reward is bound at Force, a guard
-/// bound at Force has its fixtures, and a meta policy has exactly its one binding.
+/// Each binding names a policy, no reward is bound at Force, a guard bound at Force has its
+/// fixtures, and a meta policy has exactly its one binding.
 fn check_bindings(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
-    let mut ids = HashSet::new();
-    for b in &graph.bindings {
-        if !ids.insert(b.id) {
-            errors.push(AcceptError::DuplicateBinding(b.id));
-        }
-        let Some(def) = graph.policies.iter().find(|p| p.id == b.policy) else {
+    for b in graph.bindings() {
+        let Some(def) = graph.policy(b.policy) else {
             errors.push(AcceptError::UnknownBindingPolicy {
                 binding: b.id,
                 policy: b.policy,
@@ -1546,8 +1541,8 @@ fn check_bindings(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
             });
         }
     }
-    for def in graph.policies.iter().filter(|p| p.layer == DefLayer::Meta) {
-        let mut bindings = graph.bindings.iter().filter(|b| b.policy == def.id);
+    for def in graph.policies().filter(|p| p.layer == DefLayer::Meta) {
+        let mut bindings = graph.bindings().filter(|b| b.policy == def.id);
         let fixed = match (bindings.next(), bindings.next()) {
             (Some(only), None) => only.author == def.author && only.mode == ModeScope::Any,
             _ => false,

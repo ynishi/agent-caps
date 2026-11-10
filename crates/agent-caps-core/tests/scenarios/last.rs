@@ -13,7 +13,9 @@ use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{
     DefLayer, Expect, Finding, Level, Polarity, PolicyDef, Rule,
 };
-use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, PredError, Scope};
+use agent_caps_core::domain::predicate::{
+    By, Cmp, Cond, EventFilter, Lit, Number, NumberError, Pred, PredError, Scope,
+};
 use agent_caps_core::domain::schema::{EventKind, Field, FieldType};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
@@ -62,8 +64,25 @@ fn latest_bench_score() -> Pred {
     Pred::Last {
         select: anyone(bench_scores()),
         scope: Scope::Session,
-        test: Cond::Num(Field::Score, Cmp::Ge, 0.8),
+        test: at_least(0.8),
     }
+}
+
+/// `score >= n`.
+fn at_least(n: f64) -> Cond {
+    Cond::Num(Field::Score, Cmp::Ge, Number::new(n).unwrap())
+}
+
+/// UC16, FR1: the number a condition compares a score with is finite: NaN and the infinities
+/// cannot be written, a negative number can, and a condition equals itself.
+#[test]
+fn a_condition_cannot_compare_with_nan_or_an_infinity() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(matches!(Number::new(bad), Err(NumberError::NotFinite(_))));
+    }
+    assert_eq!(Number::new(-0.25).map(Number::get), Ok(-0.25));
+    let pred = latest_bench_score();
+    assert_eq!(pred, pred.clone());
 }
 
 /// Force: at the end of a turn, the latest bench score must be 0.8 or more.
@@ -237,7 +256,7 @@ fn a_last_whose_test_does_not_fit_its_events_is_rejected() {
         cond: Some(Cond::Eq(Field::Tool, Lit::Text("Bash".to_owned()))),
     };
     assert_eq!(
-        with(ill_filter, Cond::Num(Field::Score, Cmp::Ge, 0.8)),
+        with(ill_filter, at_least(0.8)),
         error(PredError::OtherKind {
             field: Field::Tool,
             read_from: EventKind::Measured,

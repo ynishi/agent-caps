@@ -15,8 +15,7 @@ use super::common::{
 
 /// FR2, UC12: a guard bound at Force without fixtures is not accepted, and neither is a reward
 /// bound at Force. FR14: a Meta policy has its one binding, by its author, under every mode, and
-/// no other. FR42: a binding names a policy, has an id of its own, and is by the policy's author
-/// or one below it.
+/// no other. FR42: a binding names a policy and is by the policy's author or one below it.
 #[test]
 fn accept_reports_every_broken_invariant() {
     let mut bad_pred = test_guard(Level::Advise);
@@ -80,8 +79,8 @@ fn accept_reports_every_broken_invariant() {
         }]
     );
 
-    // A binding with an id another has, one that names no policy, and one by the root on a
-    // policy of the principal below it.
+    // A binding that names no policy, and one by the root on a policy of the principal below it.
+    // A binding with an id another has cannot be put in a graph at all (see `graph.rs`).
     let mut agents = test_guard(Level::Advise);
     agents.id = id(OTHER);
     agents.name = "agents".parse().unwrap();
@@ -89,7 +88,6 @@ fn accept_reports_every_broken_invariant() {
     let errors = rejected(
         vec![test_guard(Level::Advise), agents],
         vec![
-            bind(GUARD, 0, Level::Inform, ModeScope::Any, the_user()),
             bind(REWARD, 1, Level::Inform, ModeScope::Any, the_user()),
             bind(OTHER, 1, Level::Inform, ModeScope::Any, the_user()),
         ],
@@ -101,7 +99,6 @@ fn accept_reports_every_broken_invariant() {
                 item: Target::Binding(binding_id(id(OTHER), 1)),
                 referenced: id(OTHER),
             },
-            AcceptError::DuplicateBinding(binding_id(id(GUARD), 0)),
             AcceptError::UnknownBindingPolicy {
                 binding: binding_id(id(REWARD), 1),
                 policy: id(REWARD),
