@@ -2,14 +2,17 @@
 //! between the rules before and after and by the hierarchy of the catalog.
 //!
 //! ```text
-//! Catalog::change(&self, after, by)
-//!   1. accept `after` with the catalog's Authority      invariants, types, fixtures, references
-//!   2. any difference in a Meta policy or its binding: rejected, whoever `by` is
+//! Catalog::change(&self, after: Sources, by)
+//!   1. accept `after` with the catalog's Authority      owners, composition, invariants, types,
+//!                                                       fixtures, references
+//!   2. any difference in a Meta policy or its binding, or in the sets that hold them: rejected,
+//!      whoever `by` is
 //!   3. `by` must be a principal of the hierarchy
-//!   4. what is written: for what `by` does not cover (authored by neither `by` nor anyone
-//!      below it), no policy removed, none changed in a way that cannot be read as stricter
-//!      (classify), no binding removed, lowered or rescoped, and nothing new in its name, a
-//!      policy or a binding
+//!   4. what is written, in the composed graphs and the sets: for what `by` does not cover
+//!      (authored, or owned, by neither `by` nor anyone below it), no policy removed, none
+//!      changed in a way that cannot be read as stricter (classify), no binding removed, lowered
+//!      or rescoped, no set removed or changed in its graph, name or owner, and nothing new in its
+//!      name, a policy, a binding or a set
 //!   5. what takes effect: under every compared mode, how the rules move from before to after
 //!      (rule_moves, with the readers of a moved policy's judgments in both catalogs); every
 //!      author a loosening asks must be covered by `by` (Authority::may_loosen)
@@ -40,6 +43,19 @@
 //!   scope tightens. One that goes with its policy is the policy's removal. A new one in such a
 //!   name is refused, so nobody writes in another's name; a binding kept with its id, its author
 //!   and its policy is not new.
+//! - Step 4 looks at each set too ([`super::set`]), as an item whose author is its owner, with
+//!   the same question of who is covered: a set whose owner `by` does not cover is added,
+//!   removed, given another graph, renamed or given another owner only as a loosening
+//!   ([`Target::Set`]), since whatever the set holds and is called is its owner's to say. A set
+//!   is the one with its id ([`SetId`]), so a renamed set is changed, not
+//!   removed and added. A set and an item of it that both loosen are
+//!   both reported; a difference is reported once per item. A set of another owner is a value
+//!   that owner keeps: a change of it in any way, one that only tightens included, asks for the
+//!   owner's cover, and one who wants to tighten adds to a set of its own, which loses nothing.
+//!   A swap of a set ([`Sources::replaced`](super::set::Sources::replaced)), a new version
+//!   included, is one change and one difference: a version by one who covers the set's owner
+//!   that only tightens is judged by what it tightens, not as the removal of the old one and the
+//!   addition of the new.
 //! - Step 5 compares what takes effect. The strongest binding wins, so the strength of a policy
 //!   that `by` does not cover goes down only when a binding that carried it is removed, weakened
 //!   or stops holding, and the authors asked are those of such bindings, read from the catalog
@@ -57,13 +73,18 @@
 //! # Limits that are chosen
 //!
 //! - The hierarchy belongs to the catalog. [`Catalog::change`] cannot be given another; to
-//!   change the hierarchy, accept the graph again with the new one. Whether that loosens
+//!   change the hierarchy, accept the sources again with the new one. Whether that loosens
 //!   anything is for whoever keeps the hierarchy to ask, and is not judged here.
 //! - The code allows several roots, and two roots do not cover each other, so neither's work
 //!   is changed by the other. The requirements ledger describes the placement of one user with
 //!   the agents below; that several roots are allowed is wider than it.
-//! - Composing shared sets into one graph is the application's: this module is given the graph
-//!   composed, and the ids of the bindings let a project remove or replace a binding of a set.
+//! - Sets are composed by the core, by adding only ([`Sources::compose`]): a project's set adds
+//!   to a shared one and never replaces or lowers what it holds, and weakening a shared rule for
+//!   one project is a version of the shared set that its owner gives it. The owner of a set,
+//!   like `by`, is the caller's to guarantee; a catalog checks that it agrees with the authors
+//!   of what the set holds ([`super::set`]).
+//! - A set that holds a meta policy enters only when a catalog is accepted: a change that adds,
+//!   removes or changes it differs in a meta policy, and step 2 refuses it whoever `by` is.
 //! - What the agent adds for a task and the end of the task, when its policies are removed, are
 //!   the application's: this module judges a change, and does not make one.
 
@@ -72,7 +93,8 @@ use std::fmt;
 use super::authority::{NotCovered, Principal};
 use super::catalog::{Catalog, Rejected, Target, compared_modes};
 use super::name::{Mode, PolicyId};
-use super::policy::{Binding, DefLayer, PolicyDef, PolicyGraph};
+use super::policy::{Binding, DefLayer, PolicyDef};
+use super::set::{SetId, Sources};
 use super::state::Known;
 use super::tx::checks::{Point, rule_moves, rules_verdict};
 use super::tx::{FindingDetail, Verdict};
@@ -138,8 +160,9 @@ pub fn classify(before: &PolicyDef, after: &PolicyDef) -> Direction {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Loosening {
     /// A policy `by` does not cover is removed or changed in a way that cannot be read as
-    /// stricter, a binding `by` does not cover is removed, lowered, rescoped or taken over, or a
-    /// new policy or binding is in the name of one `by` does not cover.
+    /// stricter, a binding `by` does not cover is removed, lowered, rescoped or taken over, a set
+    /// whose owner `by` does not cover is removed or given another graph, name or owner, or a new
+    /// policy, binding or set is in the name of one `by` does not cover.
     Uncovered {
         /// The item.
         target: Target,
@@ -215,9 +238,13 @@ impl fmt::Display for ChangeRejected {
 impl std::error::Error for ChangeRejected {}
 
 impl Catalog {
-    /// The catalog of `after`, when `by` may make the change from this catalog to it: see the
-    /// module doc for the rule. The hierarchy is the catalog's own.
-    pub fn change(&self, after: PolicyGraph, by: &Principal) -> Result<Catalog, ChangeRejected> {
+    /// The catalog of the sets `after`, when `by` may make the change from this catalog to it:
+    /// see the module doc for the rule. Adding, removing and replacing a set are changes of the
+    /// sources ([`Sources::with`](super::set::Sources::with),
+    /// [`Sources::without`](super::set::Sources::without),
+    /// [`Sources::replaced`](super::set::Sources::replaced) of [`Catalog::sources`]), each judged
+    /// as one change. The hierarchy is the catalog's own.
+    pub fn change(&self, after: Sources, by: &Principal) -> Result<Catalog, ChangeRejected> {
         let authority = self.authority();
         let next = Catalog::accept(after, authority.clone()).map_err(ChangeRejected::Invalid)?;
         let meta = meta_differences(self, &next);
@@ -231,26 +258,21 @@ impl Catalog {
         let mut loosenings = Vec::new();
 
         // What is written: what `by` does not cover is kept, and nothing new is in its name.
-        for old in self.policies().iter().filter(|p| uncovered(p.author())) {
-            let loosens = next
-                .policy(old.id())
-                .is_none_or(|new| classify(old.def(), new.def()) == Direction::Loosens);
-            if loosens {
-                loosenings.push(Loosening::Uncovered {
-                    target: Target::Policy(old.id()),
-                });
-            }
-        }
-        for new in next.policies().iter().filter(|p| uncovered(p.author())) {
-            let was_uncovered = self
-                .policy(new.id())
-                .is_some_and(|old| uncovered(old.author()));
-            if !was_uncovered {
-                loosenings.push(Loosening::Uncovered {
-                    target: Target::Policy(new.id()),
-                });
-            }
-        }
+        let removed_or_loosened = self.policies().iter().filter(|old| {
+            uncovered(old.author())
+                && next
+                    .policy(old.id())
+                    .is_none_or(|new| classify(old.def(), new.def()) == Direction::Loosens)
+        });
+        let new_policies = next.policies().iter().filter(|new| {
+            uncovered(new.author())
+                && !self
+                    .policy(new.id())
+                    .is_some_and(|old| uncovered(old.author()))
+        });
+        let policies = removed_or_loosened
+            .chain(new_policies)
+            .map(|p| Target::Policy(p.id()));
         // A binding in the name of one `by` does not cover is kept, at its level or above, under
         // the same scope: an equal binding of `by`'s own beside it would hide its removal or its
         // weakening from what takes effect, and leave the strength to a binding `by` may drop.
@@ -267,8 +289,26 @@ impl Catalog {
         let new_in_another_name = next.bindings().filter(|new| {
             uncovered(&new.author) && !self.bindings().any(|old| same_item(old, new))
         });
-        for binding in unkept.chain(new_in_another_name) {
-            let target = Target::Binding(binding.id);
+        let bindings = unkept
+            .chain(new_in_another_name)
+            .map(|b| Target::Binding(b.id));
+        // A set is an item whose author is its owner: one in the name of an owner `by` does not
+        // cover is kept as it is, its graph, name and owner, and none is new in such a name. Its
+        // items are judged as well, each by its own author, and both are reported: they say what
+        // else loosens.
+        let unkept_sets = self
+            .sources()
+            .iter()
+            .filter(|old| uncovered(&old.owner) && next.sources().get(&old.id) != Some(*old));
+        let new_sets = next.sources().iter().filter(|new| {
+            uncovered(&new.owner)
+                && !self
+                    .sources()
+                    .get(&new.id)
+                    .is_some_and(|old| uncovered(&old.owner))
+        });
+        let sets = unkept_sets.chain(new_sets).map(|s| Target::Set(s.id));
+        for target in policies.chain(bindings).chain(sets) {
             if !loosenings
                 .iter()
                 .any(|l| matches!(l, Loosening::Uncovered { target: t } if *t == target))
@@ -306,7 +346,7 @@ impl Catalog {
 
 /// The ids of the meta policies that differ between the two catalogs: one that is added,
 /// removed, or changed in any field, that changes its layer, or whose binding differs in any
-/// field (its id, level, scope or author).
+/// field (its id, level, scope or author), or that enters or leaves a set.
 fn meta_differences(before: &Catalog, after: &Catalog) -> Vec<PolicyId> {
     let bindings_of = |catalog: &Catalog, id: PolicyId| -> Vec<Binding> {
         catalog
@@ -332,5 +372,41 @@ fn meta_differences(before: &Catalog, after: &Catalog) -> Vec<PolicyId> {
             ids.push(id);
         }
     }
+    // A set that holds a meta policy enters only when a catalog is accepted, so a meta policy, or
+    // a binding of one, that enters or leaves a set differs too, even when another set holds the
+    // same item and the composed graphs agree.
+    let metas = [before, after].into_iter().flat_map(|catalog| {
+        catalog
+            .policies()
+            .iter()
+            .filter(|p| p.layer() == DefLayer::Meta)
+            .map(|p| p.id())
+    });
+    let sets = || {
+        before
+            .sources()
+            .iter()
+            .chain(after.sources().iter())
+            .map(|s| s.id)
+    };
+    for id in metas {
+        let moved = sets().any(|set| held(before, set, id) != held(after, set, id));
+        if moved && !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
     ids
+}
+
+/// The policy `id` and its bindings as the set `set` of the catalog holds them: nothing when the
+/// catalog has no such set.
+fn held(catalog: &Catalog, set: SetId, id: PolicyId) -> (Option<&PolicyDef>, Vec<&Binding>) {
+    catalog
+        .sources()
+        .get(&set)
+        .map(|s| {
+            let bindings = s.graph.bindings().filter(|b| b.policy == id).collect();
+            (s.graph.policy(id), bindings)
+        })
+        .unwrap_or_default()
 }

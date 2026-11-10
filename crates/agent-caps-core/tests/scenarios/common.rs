@@ -1,8 +1,8 @@
 //! Helpers shared by the scenarios: ids, events, principals, fixtures, bindings, temporary
-//! adjustments, and the two entry
-//! points every scenario goes through (`Catalog::accept` for a graph, `Catalog::fold` plus
-//! `judge` for a verdict). Nothing here decides anything the domain decides. A helper that only one
-//! module uses lives in that module.
+//! adjustments, and the two entry points every scenario goes through (`Catalog::accept` for a
+//! graph, given as one set of policies per author, `Catalog::fold` plus `judge` for a verdict).
+//! Nothing here decides anything the domain decides. A helper that only one module uses lives in
+//! that module.
 //!
 //! A scenario writes a policy with the level its own author puts it into effect at under every
 //! mode ([`Written`]); the graph is that policy and that one binding ([`base_of`]), plus the
@@ -24,6 +24,7 @@ use agent_caps_core::domain::policy::{
 };
 use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector};
 use agent_caps_core::domain::schema::{At, EventKind, Field, KindSet};
+use agent_caps_core::domain::set::{SetId, SetName, Source, Sources};
 use agent_caps_core::domain::state::Known;
 
 pub const GUARD: &str = "00000000-0000-7000-8000-000000000001";
@@ -462,9 +463,83 @@ pub fn rebuilt(
     PolicyGraph::parse(policies, bindings).unwrap()
 }
 
-/// `Catalog::accept` of the graph with the hierarchy of the scenarios.
+/// The fixed id the scenarios give the set first named `name`: a stable hash of the name (64-bit
+/// FNV-1a, its low 48 bits) as the last group of a UUID, read by `SetId`'s own parse. Sets keep it
+/// when renamed. The order of two ids says nothing of their names, so a scenario that reads an
+/// order of sets sorts what it expects ([`set_pair`]).
+pub fn set_id(name: &str) -> SetId {
+    let hash = name.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    format!("5e700000-0000-7000-8000-{:012x}", hash & 0xffff_ffff_ffff)
+        .parse()
+        .unwrap()
+}
+
+/// The ids of the sets named `a` and `b`, the lower first: the order a conflict names two sets in.
+pub fn set_pair(a: &str, b: &str) -> [SetId; 2] {
+    let mut pair = [set_id(a), set_id(b)];
+    pair.sort();
+    pair
+}
+
+/// The name of a set of policies.
+pub fn set_name(name: &str) -> SetName {
+    name.parse().unwrap()
+}
+
+/// The set named `name`, with the fixed id of that name, of `owner`, holding `graph`.
+pub fn set(name: &str, owner: Principal, graph: PolicyGraph) -> Source {
+    Source {
+        id: set_id(name),
+        name: set_name(name),
+        owner,
+        graph,
+    }
+}
+
+/// The graph as sets of policies, one per author, each owned by its author, named by the author's
+/// key and given the fixed id of that name ([`set_id`]): what the application gives when each
+/// principal keeps its own file. A scenario
+/// that gives everything to the user has a catalog of one set; one where the agent adds to the
+/// user's rules has the user's set and the agent's beside it, so a change of the agent's own work
+/// leaves the user's set as it is.
+pub fn by_author(graph: PolicyGraph) -> Sources {
+    let (policies, bindings) = graph.into_parts();
+    let mut owners: Vec<Principal> = policies
+        .iter()
+        .map(|p| p.author.clone())
+        .chain(bindings.iter().map(|b| b.author.clone()))
+        .collect();
+    owners.sort();
+    owners.dedup();
+    let sets = owners
+        .into_iter()
+        .map(|owner| {
+            let graph = PolicyGraph::parse(
+                policies
+                    .iter()
+                    .filter(|p| p.author == owner)
+                    .cloned()
+                    .collect(),
+                bindings
+                    .iter()
+                    .filter(|b| b.author == owner)
+                    .cloned()
+                    .collect(),
+            )
+            .unwrap();
+            let id = owner.key().to_owned();
+            set(&id, owner, graph)
+        })
+        .collect();
+    Sources::new(sets).unwrap()
+}
+
+/// `Catalog::accept` of the graph, as one set per author ([`by_author`]), with the hierarchy of
+/// the scenarios.
 pub fn accept(graph: PolicyGraph) -> Result<Catalog, Rejected> {
-    Catalog::accept(graph, authority())
+    Catalog::accept(by_author(graph), authority())
 }
 
 pub fn catalog(policies: Vec<Written>, bindings: Vec<Binding>) -> Catalog {

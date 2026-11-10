@@ -23,6 +23,7 @@
 //! };
 //! use agent_caps::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector};
 //! use agent_caps::domain::schema::{At, EventKind, Field};
+//! use agent_caps::domain::set::{Source, Sources};
 //!
 //! // Who is who is the caller's arrangement: here, the agent's work is below the user's.
 //! let (user, agent) = (Principal::new("user"), Principal::new("agent"));
@@ -80,7 +81,16 @@
 //! // The graph holds each policy and binding by its id: a second one with an id, or a second
 //! // policy with a name, is refused here, with every clash at once.
 //! let policies = PolicyGraph::parse(vec![guard], vec![binding]).unwrap();
-//! let catalog = Catalog::accept(policies, authority).unwrap();
+//! // A catalog is accepted from sets of policies, each with its owner: here one set, the user's.
+//! // A shared set and a project's own are two sources, composed by adding only.
+//! // The set's id is a surrogate key the store gives, as a policy's is; its name is for people.
+//! let set = Source {
+//!     id: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5d".parse().unwrap(),
+//!     name: "mine".parse().unwrap(),
+//!     owner: user.clone(),
+//!     graph: policies,
+//! };
+//! let catalog = Catalog::accept(Sources::new(vec![set]).unwrap(), authority).unwrap();
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];
 //! let state = catalog.fold(&history);
@@ -111,6 +121,8 @@
 //! # Map
 //!
 //! - [`domain::catalog`]: the accepted policies, their bindings and invariants.
+//! - [`domain::set`]: sets of policies, each with its owner, and the one graph they compose to,
+//!   by adding only.
 //! - [`domain::authority`]: the hierarchy of who writes policies, and who may loosen whose.
 //! - [`domain::change`]: whether one who changes a catalog may, judged by the difference.
 //! - [`domain::predicate`]: the structural rule language.
@@ -156,6 +168,10 @@
 //!
 //! - Only structural rules: a rule answered by a classifier is not part of the model yet.
 //! - Temporal operators do not nest, and there is no regex.
+//! - Sets of policies compose by adding only: a project cannot weaken a shared rule, and a shared
+//!   rule is weakened for one project only by a version of the shared set its owner gives it
+//!   ([`domain::set`]). When one principal writes both sets, which set an item comes from carries
+//!   no difference of authority.
 //! - A rule that counts judgments without narrowing them to named policies (`policy == id`,
 //!   `policy in {ids}`, alone or within an `all`, or in an `any` every branch of which does)
 //!   counts only those of the policies in the catalog whose authors cover its own: those of one

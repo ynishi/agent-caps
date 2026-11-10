@@ -37,8 +37,9 @@
 //!   [`super::catalog`] and [`super::change`]).
 //! - A [`ModeSet`] is not empty and holds no mode twice: [`ModeSet::new`] refuses otherwise.
 //! - A [`PolicyGraph`] holds its policies and bindings by id, no id twice and no policy name
-//!   twice: [`PolicyGraph::parse`] refuses otherwise ([`Clash`]), through one insert. Its order
-//!   is by id, the one order of everything a catalog lists.
+//!   twice: [`PolicyGraph::parse`] refuses otherwise ([`Clash`]), through one insert, and so does
+//!   the composition of sets ([`super::set`]), which takes an equal item of two sets once. Its
+//!   order is by id, the one order of everything a catalog lists.
 //! - A [`Policy`] is made only by [`super::catalog::Catalog::accept`], which checks the graph as a
 //!   whole (see there). The [`PolicyDef`] it is made from is plain data with no rule of its own.
 //! - A [`Policy`] keeps its [`PolicyDef`] as written, and the predicates the catalog uses. The
@@ -243,8 +244,9 @@ pub struct PolicyDef {
 
 /// What a catalog is accepted from: the policies, and the bindings that put them into effect,
 /// each keyed by its id. No two policies share an id or a name, and no two bindings share an id:
-/// [`PolicyGraph::parse`] is the only way to make one with items, so a graph that exists cannot
-/// hold a duplicate, and code that combines graphs does not check for one again.
+/// [`PolicyGraph::parse`] and [`super::set::Sources::compose`] are the only ways to make one with
+/// items, both through one insert, so a graph that exists cannot hold a duplicate, and code that
+/// reads a graph does not check for one again.
 ///
 /// The graph has one order, by id, whatever order the items were given in: its policies and its
 /// bindings are read in it, and so is every list a catalog makes of them (see
@@ -263,15 +265,28 @@ pub struct PolicyGraph {
 }
 
 /// One item that may enter a graph, given to the one insert.
-enum Item {
+pub(super) enum Item {
     // Boxed: a policy is several times the size of a binding.
     Policy(Box<PolicyDef>),
     Binding(Binding),
 }
 
+/// Where an item given to the one insert comes from, as against the items already there: what
+/// decides whether an equal item with an id already there is a clash or the same item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Origin {
+    /// The same graph as written ([`PolicyGraph::parse`]): a second item with an id already
+    /// there is a clash even when the two are equal, since it is a slip of the one who wrote it.
+    Written,
+    /// Another set of policies than the items there ([`super::set::Sources::compose`]): an equal
+    /// item is the same item, held by both, and enters once.
+    Joined,
+}
+
 /// Why an item cannot enter a graph: the graph already has one with its id, or a policy with its
-/// name. A second item with an id already there is a clash even when the two are equal, since in
-/// one graph it is a slip of the one who wrote it.
+/// name. A second item with an id already there is a clash, unless it is equal and comes from
+/// another set ([`super::set::Sources::compose`]); in one graph it is a slip of the one who wrote
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Clash {
     /// A second policy has the id.
@@ -334,7 +349,12 @@ impl PolicyGraph {
             .map(|def| Item::Policy(Box::new(def)))
             .chain(bindings.into_iter().map(Item::Binding));
         let mut clashes: Vec<Clash> = items
-            .flat_map(|item| graph.insert(item).err().unwrap_or_default())
+            .flat_map(|item| {
+                graph
+                    .insert(item, Origin::Written)
+                    .err()
+                    .unwrap_or_default()
+            })
             .collect();
         if clashes.is_empty() {
             return Ok(graph);
@@ -349,12 +369,15 @@ impl PolicyGraph {
 
     /// Puts `item` in the graph, unless an item with its id is there already, or, for a policy,
     /// a policy of another id has its name: the one place that decides whether an item may enter
-    /// a graph. The id and the name of a policy are checked apart, and every clash is returned.
+    /// a graph. An item with an id already there is the same item, and enters once, only when it
+    /// is equal and comes from another set (`origin`, [`Origin::Joined`]). The id and the name of
+    /// a policy are checked apart, and every clash is returned.
     ///
     /// A key that is free is taken even when the item clashes on the other, so a later item is
     /// compared with every id and name given before it. A graph with a clash is never returned
-    /// ([`PolicyGraph::parse`]), so this leaves no graph that holds one.
-    fn insert(&mut self, item: Item) -> Result<(), Vec<Clash>> {
+    /// ([`PolicyGraph::parse`], [`super::set::Sources::compose`]), so this leaves no graph that
+    /// holds one.
+    pub(super) fn insert(&mut self, item: Item, origin: Origin) -> Result<(), Vec<Clash>> {
         let mut clashes = Vec::new();
         match item {
             Item::Policy(def) => {
@@ -368,6 +391,7 @@ impl PolicyGraph {
                     }
                 }
                 match self.policies.entry(def.id) {
+                    Entry::Occupied(there) if origin == Origin::Joined && *there.get() == *def => {}
                     Entry::Occupied(_) => clashes.push(Clash::Policy(def.id)),
                     Entry::Vacant(slot) => {
                         slot.insert(*def);
@@ -375,6 +399,7 @@ impl PolicyGraph {
                 }
             }
             Item::Binding(binding) => match self.bindings.entry(binding.id) {
+                Entry::Occupied(there) if origin == Origin::Joined && *there.get() == binding => {}
                 Entry::Occupied(_) => clashes.push(Clash::Binding(binding.id)),
                 Entry::Vacant(slot) => {
                     slot.insert(binding);
@@ -406,6 +431,38 @@ impl PolicyGraph {
     /// The binding with the id.
     pub fn binding(&self, id: BindingId) -> Option<&Binding> {
         self.bindings.get(&id)
+    }
+
+    /// Every item, the policies by id, then the bindings by id: what the one insert takes, for a
+    /// graph composed of several ([`super::set::Sources::compose`]).
+    pub(super) fn items(&self) -> impl Iterator<Item = Item> + '_ {
+        self.policies
+            .values()
+            .map(|def| Item::Policy(Box::new(def.clone())))
+            .chain(self.bindings.values().cloned().map(Item::Binding))
+    }
+
+    /// Whether the graph holds an item where `clash` is, without copying it ([`Self::item_at`]).
+    pub(super) fn holds(&self, clash: &Clash) -> bool {
+        match clash {
+            Clash::Policy(id) => self.policies.contains_key(id),
+            Clash::Name(name) => self.names.contains_key(name),
+            Clash::Binding(id) => self.bindings.contains_key(id),
+        }
+    }
+
+    /// The item the graph holds where `clash` is: the policy with the id or the name, or the
+    /// binding with the id.
+    pub(super) fn item_at(&self, clash: &Clash) -> Option<Item> {
+        let policy = |id: &PolicyId| self.policies.get(id);
+        let def = match clash {
+            Clash::Policy(id) => policy(id),
+            Clash::Name(name) => self.names.get(name).and_then(policy),
+            Clash::Binding(id) => {
+                return self.bindings.get(id).cloned().map(Item::Binding);
+            }
+        };
+        def.map(|def| Item::Policy(Box::new(def.clone())))
     }
 
     /// The policies and the bindings, each by id: what [`PolicyGraph::parse`] takes, for a caller

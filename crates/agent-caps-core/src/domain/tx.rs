@@ -88,8 +88,9 @@ use super::authority::{Authority, NotCovered, Principal};
 use super::catalog::{AcceptError, Catalog, Rejected};
 use super::event::Event;
 use super::name::{AdjustmentId, PolicyId};
-use super::policy::{Expect, Finding, PolicyGraph};
+use super::policy::{Expect, Finding};
 use super::schema::Nature;
+use super::set::Sources;
 use super::state::{SlotId, State, StateChange};
 
 /// One point of view on the difference a claim makes. The domain's own checks and the ones a
@@ -297,12 +298,18 @@ pub struct TxReport {
 }
 
 impl Catalog {
-    /// The catalog of `graph` under the hierarchy `authority`, when it keeps every invariant of
-    /// [`super::catalog`]. The structure is checked first; the fixtures, only of a graph whose
-    /// structure holds, are then folded by [`Catalog::fold`], the same transaction as a run.
-    /// The catalog keeps the hierarchy.
-    pub fn accept(graph: PolicyGraph, authority: Authority) -> Result<Self, Rejected> {
-        let catalog = Self::accept_structure(graph, authority)?;
+    /// The catalog of the sets `sources` under the hierarchy `authority`, when it keeps every
+    /// invariant of [`super::catalog`]. The structure is checked first: every item of a set is by
+    /// its owner or one below ([`Authority::within`]), the sets compose
+    /// ([`Sources::compose`](super::set::Sources::compose)), and the composed graph holds. The
+    /// fixtures, only of a graph whose structure holds, are then folded by [`Catalog::fold`], the
+    /// same transaction as a run. The catalog keeps the sources and the hierarchy.
+    ///
+    /// A single graph is accepted as one set:
+    /// `Sources::new(vec![Source { id, name, owner, graph }])`, with an owner every author of the graph
+    /// is below or is.
+    pub fn accept(sources: Sources, authority: Authority) -> Result<Self, Rejected> {
+        let catalog = Self::accept_structure(sources, authority)?;
         let errors = fixture_errors(&catalog);
         if errors.is_empty() {
             Ok(catalog)

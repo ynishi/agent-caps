@@ -16,8 +16,10 @@ pub enum NameError {
     BindingId(String),
     /// An adjustment id that is not a UUID in its hyphenated form.
     AdjustmentId(String),
-    /// A name (of a policy, a mode or a meter) that is empty or has a character other than an ASCII
-    /// letter, a digit, `-` or `_`.
+    /// A set id that is not a UUID in its hyphenated form.
+    SetId(String),
+    /// A name (of a policy, a mode, a meter or a set of policies) that is empty or has a character
+    /// other than an ASCII letter, a digit, `-` or `_`.
     Name(String),
     /// Command words that are none, or that have an empty word.
     Words,
@@ -28,7 +30,10 @@ pub enum NameError {
 impl fmt::Display for NameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PolicyId(text) | Self::BindingId(text) | Self::AdjustmentId(text) => {
+            Self::PolicyId(text)
+            | Self::BindingId(text)
+            | Self::AdjustmentId(text)
+            | Self::SetId(text) => {
                 write!(f, "`{text}` is not a hyphenated UUID")
             }
             Self::Name(text) => write!(
@@ -66,7 +71,10 @@ impl fmt::Display for PolicyId {
 }
 
 /// The surrogate key of a binding, unique in a catalog. The policy graph gives it, as it gives the
-/// id of a policy, so a graph composed of shared sets can name the binding it removes or replaces.
+/// id of a policy, so a change of a catalog can tell a binding kept from one removed or new. It is
+/// no handle to replace a binding by: two sets of policies with a binding of one id hold the same
+/// binding or conflict ([`super::set`]), and a binding of one set is changed only by a new version
+/// of that set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BindingId(u128);
 
@@ -109,8 +117,9 @@ impl fmt::Display for AdjustmentId {
     }
 }
 
-/// The value of the hyphenated form `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, in either case.
-fn parse_uuid(text: &str) -> Option<u128> {
+/// The value of the hyphenated form `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, in either case. The
+/// one form of every surrogate key, the id of a set of policies ([`super::set::SetId`]) included.
+pub(super) fn parse_uuid(text: &str) -> Option<u128> {
     let groups: Vec<&str> = text.split('-').collect();
     let fits = groups.len() == 5
         && groups
@@ -124,7 +133,7 @@ fn parse_uuid(text: &str) -> Option<u128> {
 }
 
 /// Writes `value` in the hyphenated form, in lower case.
-fn write_uuid(f: &mut fmt::Formatter<'_>, value: u128) -> fmt::Result {
+pub(super) fn write_uuid(f: &mut fmt::Formatter<'_>, value: u128) -> fmt::Result {
     let hex = format!("{value:032x}");
     let part = |range: std::ops::Range<usize>| hex.get(range).unwrap_or_default();
     write!(
@@ -138,8 +147,9 @@ fn write_uuid(f: &mut fmt::Formatter<'_>, value: u128) -> fmt::Result {
     )
 }
 
-/// Whether `text` is a name: one or more ASCII letters, digits, `-` or `_`.
-fn is_name(text: &str) -> bool {
+/// Whether `text` is a name: one or more ASCII letters, digits, `-` or `_`. The one rule of a name,
+/// read by the id of a set of policies ([`super::set::SetId`]) too.
+pub(super) fn is_name(text: &str) -> bool {
     !text.is_empty()
         && text
             .chars()

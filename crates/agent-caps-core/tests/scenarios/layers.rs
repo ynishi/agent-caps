@@ -125,7 +125,7 @@ fn the_verdict_takes_the_strongest_and_ignores_the_order() {
     assert_eq!(verdict(&other, &events), violated());
 }
 
-/// L2, UC7, UC8, FR42: the base binds Inform, the project Advise, the bugfix mode Force; the
+/// L2, UC27, UC8, FR42: the base binds Inform, the project Advise, the bugfix mode Force; the
 /// strongest that holds wins. The guard has its fixtures, so it may be bound at a stopping level.
 #[test]
 fn the_strongest_binding_that_holds_wins() {
@@ -147,7 +147,7 @@ fn the_strongest_binding_that_holds_wins() {
     assert_eq!(level_of(&outcome(&catalog, &other), GUARD), Level::Advise);
 }
 
-/// L2, UC7, UC8, FR42: the project leaves the guard no binding under every mode, so it is off;
+/// L2, UC27, UC8, FR42: the project leaves the guard no binding under every mode, so it is off;
 /// a binding inside the bugfix mode puts it into effect there.
 #[test]
 fn a_binding_inside_a_mode_turns_on_a_policy_with_no_other() {
@@ -166,7 +166,7 @@ fn a_binding_inside_a_mode_turns_on_a_policy_with_no_other() {
     assert_eq!(on.verdict, violated());
 }
 
-/// L2, UC7, UC8: the bindings are combined by what they say, not by where they stand in the graph.
+/// L2, UC27, UC8: the bindings are combined by what they say, not by where they stand in the graph.
 #[test]
 fn the_order_of_the_bindings_in_the_graph_does_not_matter() {
     let project_first = vec![

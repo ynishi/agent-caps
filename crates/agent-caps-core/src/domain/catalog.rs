@@ -2,15 +2,19 @@
 //! their predicates need, and what each policy reads.
 //!
 //! The catalog is accepted whole, every time: [`Catalog::accept`] is the only way to make one,
-//! and a catalog that exists keeps every invariant below. There is no operation that changes one
-//! policy of an accepted catalog; a changed graph is accepted again, and
-//! [`Catalog::change`] (see [`super::change`]) accepts it and judges whether the one who made
-//! the change may.
+//! and a catalog that exists keeps every invariant below. It is accepted from its sets of
+//! policies, [`Sources`], and keeps them: the graph it reads is the one they compose to
+//! ([`Sources::compose`], [`super::set`]). There is no operation that changes one policy of an
+//! accepted catalog; changed sources are accepted again, and [`Catalog::change`] (see
+//! [`super::change`]) accepts them and judges whether the one who made the change may. A catalog
+//! of one set is sources of one set, `Sources::new(vec![Source { id, name, owner, graph }])`.
 //!
 //! ```text
-//! Catalog::accept (super::tx)
-//!   accept_structure        every invariant but the fixtures: authors, types, rewards,
-//!                           bindings, and what each policy reads (`Reads`)
+//! Catalog::accept(sources, authority) (super::tx)
+//!   accept_structure        the owners: every item of a set is by its owner or one below
+//!                           (Authority::within); the composition (Sources::compose); then
+//!                           every invariant but the fixtures, of the composed graph: authors,
+//!                           types, rewards, bindings, and what each policy reads (`Reads`)
 //!   the fixtures            folded by the same transaction as a run (Catalog::fold)
 //! ```
 //!
@@ -19,7 +23,7 @@
 //! decides at run time.
 //!
 //! The catalog keeps the [`Authority`] it was accepted with, and so the hierarchy one change is
-//! judged by is always the catalog's own. To change the hierarchy, accept the graph again with
+//! judged by is always the catalog's own. To change the hierarchy, accept the sources again with
 //! the new one; whether that loosens anything is a question for whoever keeps the hierarchy,
 //! not one this module judges.
 //!
@@ -73,9 +77,14 @@
 //! # Invariants
 //!
 //! - Ids and names of policies are unique, and so are the ids of bindings: the
-//!   [`PolicyGraph`] a catalog is accepted from cannot hold a duplicate
-//!   ([`PolicyGraph::parse`], [`super::policy::Clash`]). A binding names a policy of the graph
-//!   ([`AcceptError::UnknownBindingPolicy`]).
+//!   [`PolicyGraph`] of a set cannot hold a duplicate ([`PolicyGraph::parse`],
+//!   [`super::policy::Clash`]), and two sets compose only when they hold the same item under
+//!   each id they share, and no two policies of one name ([`AcceptError::Conflict`]). A binding
+//!   names a policy of the composed graph ([`AcceptError::UnknownBindingPolicy`]), whichever set
+//!   holds it.
+//! - The owner of every set is a principal of the hierarchy ([`AcceptError::UnknownOwner`]), and
+//!   every item of a set is by its owner or one below it ([`AcceptError::NotWithinOwner`]), so a
+//!   set holds only what its owner may loosen ([`super::set`]).
 //! - Every author of a policy and of a binding is a principal of the catalog's [`Authority`]
 //!   ([`AcceptError::UnknownAuthor`]), so [`Authority::covers`] is total on the authors.
 //! - The author of a meta policy is a root of the hierarchy ([`AcceptError::MetaAuthorNotRoot`]):
@@ -156,7 +165,11 @@
 //!
 //! [`Catalog::accept`] returns every [`AcceptError`] it finds at once, in [`Rejected`], so a
 //! policy graph can be fixed in one pass. A graph with a duplicate id or name is refused before,
-//! when it is made ([`PolicyGraph::parse`]), with every clash at once.
+//! when it is made ([`PolicyGraph::parse`]), with every clash at once. What each set says of its
+//! own items needs no composition, and is checked of every set before the sets are composed: an
+//! owner or an author outside the hierarchy, and an item not within its set's owner. So sets
+//! that do not compose are reported in one pass with those errors; the rest is checked on the
+//! composed graph, which then does not exist.
 
 use std::collections::HashMap;
 use std::collections::btree_map;
@@ -174,15 +187,18 @@ use super::predicate::{
     state_readings,
 };
 use super::schema::EventKind;
+use super::set::{JoinConflict, SetId, Sources};
 use super::state::{Known, SlotId, SlotTable, State, matched};
 
-/// One item of a policy graph: a policy, or a binding of one.
+/// One item of a catalog: a policy, a binding of one, or a set of them ([`super::set`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Target {
     /// The policy.
     Policy(PolicyId),
     /// The binding.
     Binding(BindingId),
+    /// The set of policies, as a whole: its graph, its name and its owner.
+    Set(SetId),
 }
 
 impl fmt::Display for Target {
@@ -190,6 +206,7 @@ impl fmt::Display for Target {
         match self {
             Self::Policy(id) => write!(f, "policy {id}"),
             Self::Binding(id) => write!(f, "binding {id}"),
+            Self::Set(id) => write!(f, "set {id}"),
         }
     }
 }
@@ -197,6 +214,29 @@ impl fmt::Display for Target {
 /// One reason a policy graph was not accepted.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcceptError {
+    /// Two sets hold different items under one id, or two policies of one name
+    /// ([`Sources::compose`]). To fix it, make the two items equal, give them their own ids and
+    /// names, or leave one out.
+    Conflict(JoinConflict),
+    /// The owner of the set is not a principal of the hierarchy. Its items are not checked
+    /// against it.
+    UnknownOwner {
+        /// The set.
+        set: SetId,
+        /// The owner it names.
+        owner: Principal,
+    },
+    /// An item of the set is by a principal that is neither the set's owner nor below it
+    /// ([`Authority::within`]). To fix it, move the item to a set of its author or of one above,
+    /// or name the owner the application says the set belongs to.
+    NotWithinOwner {
+        /// The set.
+        set: SetId,
+        /// The item.
+        item: Target,
+        /// The owner of the set.
+        owner: Principal,
+    },
     /// The author of the item is not a principal of the hierarchy.
     UnknownAuthor {
         /// The item.
@@ -309,6 +349,17 @@ pub enum AcceptError {
 impl fmt::Display for AcceptError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Conflict(conflict) => write!(f, "{conflict}"),
+            Self::UnknownOwner { set, owner } => {
+                write!(
+                    f,
+                    "set {set} is owned by {owner}, who is not in the hierarchy"
+                )
+            }
+            Self::NotWithinOwner { set, item, owner } => write!(
+                f,
+                "{item} of set {set} is by one who is neither its owner {owner} nor below it"
+            ),
             Self::UnknownAuthor { item, author } => {
                 write!(f, "{item} is by {author}, who is not in the hierarchy")
             }
@@ -901,7 +952,9 @@ impl Reads {
 /// The accepted rules.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Catalog {
-    /// The graph it was accepted from, as written: the one order of the catalog (by id).
+    /// The sets it was accepted from, as given: what a change is made to.
+    sources: Sources,
+    /// The graph `sources` compose to, as written: the one order of the catalog (by id).
     graph: PolicyGraph,
     /// The policies of `graph`, in its order, with the predicates the catalog uses.
     policies: Vec<Policy>,
@@ -943,14 +996,23 @@ impl<'a> InEffect<'a> {
 }
 
 impl Catalog {
-    /// The catalog of `graph` under the hierarchy `authority`, when it keeps every invariant of
-    /// the module doc but the one on fixtures, which [`Catalog::accept`] checks after it. The
-    /// catalog keeps the hierarchy.
+    /// The catalog of `sources` under the hierarchy `authority`, when they compose
+    /// ([`Sources::compose`]), every item of a set is within the set's owner, and the composed
+    /// graph keeps every invariant of the module doc but the one on fixtures, which
+    /// [`Catalog::accept`] checks after it. The catalog keeps the sources and the hierarchy.
     pub(super) fn accept_structure(
-        graph: PolicyGraph,
+        sources: Sources,
         authority: Authority,
     ) -> Result<Self, Rejected> {
         let mut errors = Vec::new();
+        check_owners(&sources, &authority, &mut errors);
+        let graph = match sources.compose() {
+            Ok(graph) => graph,
+            Err(conflicts) => {
+                errors.extend(conflicts.into_iter().map(AcceptError::Conflict));
+                return Err(Rejected(errors));
+            }
+        };
         check_authors(&graph, &authority, &mut errors);
         check_policies(&graph, &mut errors);
         check_bindings(&graph, &mut errors);
@@ -975,6 +1037,7 @@ impl Catalog {
         );
         if errors.is_empty() {
             Ok(Self {
+                sources,
                 graph,
                 policies,
                 slots,
@@ -992,7 +1055,13 @@ impl Catalog {
         &self.authority
     }
 
-    /// The graph the catalog was accepted from, as written.
+    /// The sets the catalog was accepted from, as given: what a change starts from
+    /// ([`Sources::with`], [`Sources::without`], [`Sources::replaced`]).
+    pub fn sources(&self) -> &Sources {
+        &self.sources
+    }
+
+    /// The graph the sets compose to, as written ([`Sources::compose`]).
     pub fn graph(&self) -> &PolicyGraph {
         &self.graph
     }
@@ -1323,8 +1392,53 @@ fn bind_rewards(in_effect: &mut [(&Policy, Option<Level>)]) -> Vec<Degraded> {
     degraded
 }
 
-/// The authors are of the hierarchy, a meta policy is by a root, and nothing refers below its
-/// author. A reference is checked only when both authors are of the hierarchy.
+/// Every owner and every author is of the hierarchy, and every item of a set, policy and binding,
+/// is by its owner or one below ([`Authority::within`], the one answer, which a binding and a
+/// temporary binding are held to as well). Checked of each set's own graph, so it needs no
+/// composition and is reported with any conflict of the sets.
+fn check_owners(sources: &Sources, authority: &Authority, errors: &mut Vec<AcceptError>) {
+    for source in sources.iter() {
+        let known_owner = authority.contains(&source.owner);
+        if !known_owner {
+            errors.push(AcceptError::UnknownOwner {
+                set: source.id,
+                owner: source.owner.clone(),
+            });
+        }
+        let policies = source
+            .graph
+            .policies()
+            .map(|p| (Target::Policy(p.id), &p.author));
+        let bindings = source
+            .graph
+            .bindings()
+            .map(|b| (Target::Binding(b.id), &b.author));
+        for (item, author) in policies.chain(bindings) {
+            let error = match authority.within(author, &source.owner) {
+                Ok(()) => continue,
+                Err(NotWithin::UnknownPrincipal(_)) => AcceptError::UnknownAuthor {
+                    item,
+                    author: author.clone(),
+                },
+                // An owner the hierarchy lacks is reported once, above, not for each item.
+                Err(NotWithin::NotBelow { .. }) if !known_owner => continue,
+                Err(NotWithin::NotBelow { .. }) => AcceptError::NotWithinOwner {
+                    set: source.id,
+                    item,
+                    owner: source.owner.clone(),
+                },
+            };
+            // An item two sets hold the same is reported once.
+            if !errors.contains(&error) {
+                errors.push(error);
+            }
+        }
+    }
+}
+
+/// A meta policy is by a root, and nothing refers below its author. An author that is not of the
+/// hierarchy is reported by [`check_owners`], before the sets are composed; a reference is checked
+/// only when both authors are of the hierarchy.
 fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<AcceptError>) {
     let author_of = |id: PolicyId| {
         graph
@@ -1334,10 +1448,6 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
     };
     for def in graph.policies() {
         if !authority.contains(&def.author) {
-            errors.push(AcceptError::UnknownAuthor {
-                item: Target::Policy(def.id),
-                author: def.author.clone(),
-            });
             continue;
         }
         if def.layer == DefLayer::Meta && !authority.is_root(&def.author) {
@@ -1358,23 +1468,15 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
     }
     for b in graph.bindings() {
         // The same answer a temporary binding is held to ([`Authority::within`]).
-        let item = || Target::Binding(b.id);
-        let unknown = || AcceptError::UnknownAuthor {
-            item: item(),
-            author: b.author.clone(),
-        };
-        match author_of(b.policy) {
-            Some(owner) => match authority.within(&b.author, owner) {
-                Ok(()) => {}
-                Err(NotWithin::UnknownPrincipal(_)) => errors.push(unknown()),
-                Err(NotWithin::NotBelow { .. }) => errors.push(AcceptError::ReferencesBelow {
-                    item: item(),
-                    referenced: b.policy,
-                }),
-            },
-            // The policy is missing or its author is unknown, which is reported on its own.
-            None if !authority.contains(&b.author) => errors.push(unknown()),
-            None => {}
+        // An unknown author of the binding is reported by `check_owners`; a policy missing or of
+        // an unknown author, on its own.
+        if let Some(owner) = author_of(b.policy)
+            && let Err(NotWithin::NotBelow { .. }) = authority.within(&b.author, owner)
+        {
+            errors.push(AcceptError::ReferencesBelow {
+                item: Target::Binding(b.id),
+                referenced: b.policy,
+            });
         }
     }
 }
