@@ -30,8 +30,11 @@
 //!   effect of a policy under a mode = the strongest level of its bindings whose scope
 //!                                      does not fail to hold, or Off with none
 //!   then each reward is held to its guard (Degraded)
+//! + a state's temporary adjustments (Catalog::effective_in)
+//!   bindings of the catalog a held adjustment suspends do not hold; each binding one adds holds
+//!   under every mode, by the one who made it; the strongest still wins
 //! ───────────────────────────────────────────────
-//! Meta      fixed: one binding, by its author, under every mode; no exemption
+//! Meta      fixed: one binding, by its author, under every mode; no adjustment
 //! ```
 //!
 //! The strongest binding wins, whatever the order of the bindings and whoever wrote them, so
@@ -119,9 +122,13 @@
 //!   off; both are reported as [`Degraded`], never done silently.
 //! - Every predicate reads each field from its own kind of event, with an operand of its type;
 //!   so does the filter of a `Since` scope.
-//! - An exemption that arrives as an event takes effect only if it names a guard of the catalog
-//!   and reads its target and the filter of a `Within(Since(..))` as a predicate would
-//!   ([`Catalog::apply`]).
+//! - A temporary adjustment that arrives as an event takes effect only if the catalog's index
+//!   admits it ([`super::adjust`]): it names policies and bindings of the catalog outside the
+//!   meta layer, an exemption names a guard and reads its cover as a predicate would, a
+//!   temporary binding is no stronger than its policy may be bound (no Force for a reward or for
+//!   a guard without the fixtures of a stopping guard) and is made by one within the work of the
+//!   policy's author, as a binding of the catalog is ([`Authority::within`]), and so on. One
+//!   that is not is aborted, with the reason ([`super::adjust::Inadmissible`]).
 //! - A meta policy has exactly one binding, written by its own author under every mode
 //!   ([`ModeScope::Any`]), and no other ([`AcceptError::MetaBinding`]): nothing can lower it,
 //!   raise it, or make it depend on the mode.
@@ -141,7 +148,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
-use super::authority::{Authority, Principal};
+use super::adjust::{AdjustIndex, BoundKind, Reach, TooStrong, may_bind_at};
+use super::authority::{Authority, NotWithin, Principal};
 use super::event::Event;
 use super::name::{BindingId, Mode, PolicyId, PolicyName};
 use super::policy::{
@@ -152,7 +160,7 @@ use super::predicate::{
     state_readings,
 };
 use super::schema::EventKind;
-use super::state::{GuardIndex, Known, SlotId, SlotTable, State, matched};
+use super::state::{Known, SlotId, SlotTable, State, matched};
 
 /// One item of a policy graph: a policy, or a binding of one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -788,6 +796,14 @@ pub(super) fn enforce_in<'a>(
     Enforced { policies, lowered }
 }
 
+/// `effective` held to the capabilities by kind of event, where no event is judged: the one rule
+/// of [`Catalog::enforced`] and [`Catalog::enforced_in`].
+fn enforce_by_kind<'a>(effective: &Effective<'a>, caps: &Capabilities) -> Enforced<'a> {
+    enforce_in(effective, caps, |policy| {
+        Some(caps.cap_kind(policy.subject()))
+    })
+}
+
 /// What one policy reads, from its predicates (`when` and `rule`) as the catalog uses them: the
 /// one value the run-time checks of a claim ([`super::tx`]) read (its slots and modes), and the
 /// check of references here reads (the judgments it reads).
@@ -880,8 +896,38 @@ pub struct Catalog {
     slots: SlotTable,
     /// What each policy reads, in the order of `policies`.
     reads: Vec<Reads>,
-    guards: GuardIndex,
+    index: AdjustIndex,
     authority: Authority,
+}
+
+/// The scope of a binding that a temporary adjustment adds, and of what a lost record of one may
+/// have added: every mode.
+static ANY_MODE: ModeScope = ModeScope::Any;
+
+/// One binding as the effect reads it: a binding of the catalog, or one a temporary adjustment
+/// adds, with its author (for a temporary one, who made the adjustment).
+#[derive(Debug, Clone, Copy)]
+pub(super) struct InEffect<'a> {
+    /// The policy it puts into effect.
+    pub(super) policy: PolicyId,
+    /// The level.
+    pub(super) level: Level,
+    /// Where it holds, as to the mode.
+    pub(super) mode: &'a ModeScope,
+    /// Its author.
+    pub(super) author: &'a Principal,
+}
+
+impl<'a> InEffect<'a> {
+    /// The binding of the catalog as the effect reads it.
+    pub(super) fn of(binding: &'a Binding) -> Self {
+        Self {
+            policy: binding.policy,
+            level: binding.level,
+            mode: &binding.mode,
+            author: &binding.author,
+        }
+    }
 }
 
 impl Catalog {
@@ -901,11 +947,19 @@ impl Catalog {
         let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
         check_reads(&policies, &reads, &authority, &mut errors);
         check_actors(&policies, &reads, &authority, &mut errors);
-        let guards = GuardIndex::new(
-            policies
-                .iter()
-                .filter(|p| p.is_guard() && p.layer() != DefLayer::Meta)
-                .map(|p| (p.id(), p.subject())),
+        let index = AdjustIndex::new(
+            policies.iter().map(|p| {
+                let reach = match p.polarity() {
+                    _ if p.layer() == DefLayer::Meta => Reach::Meta,
+                    Polarity::Guard => Reach::Guard {
+                        subject: p.subject(),
+                        stops: has_stopping_fixtures(p.def()),
+                    },
+                    Polarity::Reward { .. } => Reach::Reward,
+                };
+                (p.id(), reach, p.author().clone())
+            }),
+            graph.bindings.iter().map(|b| (b.id, b.policy)),
         );
         if errors.is_empty() {
             Ok(Self {
@@ -913,7 +967,7 @@ impl Catalog {
                 bindings: graph.bindings,
                 slots,
                 reads,
-                guards,
+                index,
                 authority,
             })
         } else {
@@ -958,36 +1012,124 @@ impl Catalog {
         &self.slots
     }
 
-    /// The guards an exemption may name.
-    pub(super) fn guards(&self) -> &GuardIndex {
-        &self.guards
-    }
-
     /// Each policy with what it reads, in the catalog's order.
     pub(super) fn reads(&self) -> impl Iterator<Item = (&Policy, &Reads)> {
         self.policies.iter().zip(&self.reads)
     }
 
+    /// The index of what an adjustment may name, which decides whether one may take effect.
+    pub(super) fn index(&self) -> &AdjustIndex {
+        &self.index
+    }
+
+    /// The bindings in effect in `state`: those of the catalog but the ones a held adjustment
+    /// suspends, then those the held adjustments add, each under every mode and by the one who
+    /// made it. When the state has lost a record that may have been an adjustment or a cancel,
+    /// no suspension is taken to hold, since one may have been cancelled. The one list both the
+    /// effect ([`Catalog::effective_in`]) and the authors of a lowering read.
+    pub(super) fn bindings_in<'a>(&'a self, state: &'a State) -> Vec<InEffect<'a>> {
+        let suspended: Vec<BindingId> = if state.adjustments_lost() {
+            Vec::new()
+        } else {
+            state
+                .adjustments()
+                .iter()
+                .flat_map(|held| held.adjustment.suspended())
+                .copied()
+                .collect()
+        };
+        let temporary = state.adjustments().iter().flat_map(|held| {
+            held.adjustment.added().iter().map(|t| InEffect {
+                policy: t.policy,
+                level: t.level,
+                mode: &ANY_MODE,
+                author: &held.by,
+            })
+        });
+        self.bindings
+            .iter()
+            .filter(|b| !suspended.contains(&b.id))
+            .map(InEffect::of)
+            .chain(temporary)
+            .collect()
+    }
+
     /// What the catalog comes to under `mode`: every policy with its effect, and what had to be
     /// degraded. A policy takes effect at the strongest level of its bindings that hold under
     /// `mode` ([`ModeScope::holds`]), and is off with none; then each reward is held to its
-    /// guard. No event is judged; this is the catalog alone.
+    /// guard. No event is judged; this is the catalog alone, with no temporary adjustment (see
+    /// [`Catalog::effective_in`]).
     ///
     /// When the mode is not known, each mode it may be (no mode, and every mode a binding's scope
     /// names) is computed to the end, rewards bound to their guards, and each policy takes the
     /// strongest effect any of them gives; what was degraded is what the strongest effect still
     /// shows. This is the one place where not knowing the mode is decided, so it never loosens a
-    /// rule, and never gives a value no mode gives.
+    /// rule, and never gives a value no mode gives; [`Catalog::effective_in`] goes through it.
     pub fn effective(&self, mode: &Known<Option<Mode>>) -> Effective<'_> {
+        let bindings: Vec<InEffect<'_>> = self.bindings.iter().map(InEffect::of).collect();
+        self.effective_with(&bindings, mode)
+    }
+
+    /// What the catalog comes to in `state`: [`Catalog::effective`] under the state's mode, with
+    /// the state's temporary adjustments. The bindings of the catalog that a held adjustment
+    /// suspends do not hold, and each binding a held adjustment adds holds under every mode, by
+    /// the one who made it; the strongest wins and a policy with none is off, as in the catalog.
+    /// This is the one place that adds the temporary adjustments to what takes effect, and what a
+    /// judgment and the transaction of a claim read.
+    ///
+    /// When a record that may have been an adjustment or a cancel was lost
+    /// ([`State::adjustments_lost`]), what is held is not all there is: no suspension is taken to
+    /// hold, and every policy outside the meta layer takes effect at least as strongly as a
+    /// temporary binding could make it (a guard with the fixtures of a stopping guard at Force, any
+    /// other guard and a reward at Advise), with rewards then held to their guards as always. That
+    /// is decided here and nowhere else, apart from the choice of the strongest mode, which
+    /// [`Catalog::effective`] makes. A meta policy is never touched.
+    pub fn effective_in(&self, state: &State) -> Effective<'_> {
+        self.effective_in_with(&self.bindings_in(state), state)
+    }
+
+    /// [`Catalog::effective_in`] with the bindings in effect in `state` already made
+    /// ([`Catalog::bindings_in`]), for a caller that reads them too.
+    pub(super) fn effective_in_with(
+        &self,
+        bindings: &[InEffect<'_>],
+        state: &State,
+    ) -> Effective<'_> {
+        if !state.adjustments_lost() {
+            return self.effective_with(bindings, state.mode());
+        }
+        // The strength under the mark: what a temporary binding could give each policy.
+        let mut possible = bindings.to_vec();
+        possible.extend(
+            self.index
+                .ceilings()
+                .map(|(policy, level, author)| InEffect {
+                    policy,
+                    level,
+                    mode: &ANY_MODE,
+                    author,
+                }),
+        );
+        self.effective_with(&possible, state.mode())
+    }
+
+    /// What the catalog comes to under `mode` with `bindings` in effect: the rule of
+    /// [`Catalog::effective`], an unknown mode included.
+    pub(super) fn effective_with(
+        &self,
+        bindings: &[InEffect<'_>],
+        mode: &Known<Option<Mode>>,
+    ) -> Effective<'_> {
         let Known::Unknown = mode else {
-            return self.effective_under(mode);
+            return self.effective_under(bindings, mode);
         };
         // Each mode it may be is computed to the end, rewards bound to their guards; then each
         // policy takes the strongest effect any of them gives. So the answer is never a value no
-        // mode gives (a reward is never held to a guard level of another mode).
-        let mut strongest = self.effective_under(&Known::Known(None));
+        // mode gives (a reward is never held to a guard level of another mode). A temporary
+        // binding holds under every mode, so it names none.
+        let mut strongest = self.effective_under(bindings, &Known::Known(None));
         for candidate in compared_modes([self]).into_iter().skip(1) {
-            let other = self.effective_under(&Known::Known(candidate));
+            let other = self.effective_under(bindings, &Known::Known(candidate));
             // Both list every policy in the catalog's order.
             for (kept, o) in strongest.policies.iter_mut().zip(other.policies) {
                 kept.effect = kept.effect.max(o.effect);
@@ -1026,13 +1168,16 @@ impl Catalog {
     /// What the catalog comes to under one known mode, read binding by binding. It is called with
     /// a known mode only ([`Catalog::effective`] decides an unknown one), so a scope never reads
     /// as unknown here.
-    fn effective_under(&self, mode: &Known<Option<Mode>>) -> Effective<'_> {
+    fn effective_under(
+        &self,
+        bindings: &[InEffect<'_>],
+        mode: &Known<Option<Mode>>,
+    ) -> Effective<'_> {
         let mut in_effect: Vec<(&Policy, Option<Level>)> = self
             .policies
             .iter()
             .map(|policy| {
-                let strongest = self
-                    .bindings
+                let strongest = bindings
                     .iter()
                     .filter(|b| b.policy == policy.id() && b.mode.holds(mode) != Truth::False)
                     .map(|b| b.level)
@@ -1066,10 +1211,18 @@ impl Catalog {
     /// (`cap_kind(..).at_least()`), the same in a judgment and in the list. When they judge the
     /// same kind and an event is being judged, it is the guard's level on that event, so a guard
     /// that was not lowered on it does not lower its reward ([`Lowering::RewardFollowsGuard`]).
+    ///
+    /// This is the catalog as written, with no temporary adjustment; what a state comes to, its
+    /// adjustments included, is [`Catalog::enforced_in`].
     pub fn enforced(&self, mode: &Known<Option<Mode>>, caps: &Capabilities) -> Enforced<'_> {
-        enforce_in(&self.effective(mode), caps, |policy| {
-            Some(caps.cap_kind(policy.subject()))
-        })
+        enforce_by_kind(&self.effective(mode), caps)
+    }
+
+    /// What the catalog is enforced at in `state` on a platform with `caps`:
+    /// [`Catalog::enforced`] from [`Catalog::effective_in`], so with the state's temporary
+    /// adjustments and its mode. The list an adapter shows while adjustments are in effect.
+    pub fn enforced_in(&self, state: &State, caps: &Capabilities) -> Enforced<'_> {
+        enforce_by_kind(&self.effective_in(state), caps)
     }
 
     /// What `caps` lower, mode by mode: [`Enforced::lowered`] under each compared mode (no mode,
@@ -1193,19 +1346,24 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
         }
     }
     for b in &graph.bindings {
+        // The same answer a temporary binding is held to ([`Authority::within`]).
         let item = || Target::Binding(b.id);
-        if !authority.contains(&b.author) {
-            errors.push(AcceptError::UnknownAuthor {
-                item: item(),
-                author: b.author.clone(),
-            });
-        } else if let Some(above) = author_of(b.policy)
-            && !authority.covers(above, &b.author)
-        {
-            errors.push(AcceptError::ReferencesBelow {
-                item: item(),
-                referenced: b.policy,
-            });
+        let unknown = || AcceptError::UnknownAuthor {
+            item: item(),
+            author: b.author.clone(),
+        };
+        match author_of(b.policy) {
+            Some(owner) => match authority.within(&b.author, owner) {
+                Ok(()) => {}
+                Err(NotWithin::UnknownPrincipal(_)) => errors.push(unknown()),
+                Err(NotWithin::NotBelow { .. }) => errors.push(AcceptError::ReferencesBelow {
+                    item: item(),
+                    referenced: b.policy,
+                }),
+            },
+            // The policy is missing or its author is unknown, which is reported on its own.
+            None if !authority.contains(&b.author) => errors.push(unknown()),
+            None => {}
         }
     }
 }
@@ -1360,21 +1518,24 @@ fn check_bindings(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
             });
             continue;
         };
-        if b.level.stops() {
-            let error = match def.polarity {
-                Polarity::Reward { .. } => Some(AcceptError::RewardForce {
+        // The rule a temporary binding keeps too. A meta guard is held to it as any guard is.
+        let kind = match def.polarity {
+            Polarity::Reward { .. } => BoundKind::Reward,
+            Polarity::Guard => BoundKind::Guard {
+                stops: has_stopping_fixtures(def),
+            },
+        };
+        if let Err(too_strong) = may_bind_at(kind, b.level) {
+            errors.push(match too_strong {
+                TooStrong::RewardForce => AcceptError::RewardForce {
                     policy: def.id,
                     binding: b.id,
-                }),
-                Polarity::Guard if !has_stopping_fixtures(def) => {
-                    Some(AcceptError::MissingFixtures {
-                        policy: def.id,
-                        binding: b.id,
-                    })
-                }
-                Polarity::Guard => None,
-            };
-            errors.extend(error);
+                },
+                TooStrong::MissingFixtures => AcceptError::MissingFixtures {
+                    policy: def.id,
+                    binding: b.id,
+                },
+            });
         }
     }
     for def in graph.policies.iter().filter(|p| p.layer == DefLayer::Meta) {

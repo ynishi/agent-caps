@@ -7,16 +7,17 @@
 //! earlier commit. The `Task` scope, in which one test is enough for the whole task, is stated in
 //! the `commit_after_test` module.
 
+use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::event::{Body, Event};
-use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
-    ACTS, GUARD, OTHER, Written, agent, at, bash, catalog, commit_filter, edit, exemption, fixture,
-    id, outcome, test_guard, tested_in, the_agent, the_user, unreadable, verdict, violated, words,
+    ACTS, GUARD, OTHER, Written, agent, at, bash, catalog, commit_filter, edit, exempt_n,
+    exemption, fixture, id, outcome, test_guard, tested_in, the_agent, the_user, unreadable,
+    verdict, violated, words,
 };
 
 fn test_run() -> Event {
@@ -302,7 +303,8 @@ fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind
     };
     let claims = [
         EventKind::ModeSwitch,
-        EventKind::Exempt,
+        EventKind::Adjust,
+        EventKind::Cancel,
         EventKind::Judged,
         EventKind::Measured,
     ];
@@ -439,12 +441,7 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
     let until = at(
         the_user(),
         0,
-        Body::Exempt(Exempt {
-            guard: id(GUARD),
-            target: None,
-            lifetime: Lifetime::Until(At::from_millis(10)),
-            reason: "briefly".parse().unwrap(),
-        }),
+        exempt_n(1, GUARD, None, Lifetime::Until(At::from_millis(10))),
     );
     let mut events = start().to_vec();
     events.extend([until, warned, at(the_agent(), 20, Body::Stop)]);

@@ -112,8 +112,10 @@ event_kinds! {
     ModeSwitch,
     /// An oracle measured a score.
     Measured,
-    /// A guard was exempted for a while.
-    Exempt,
+    /// A temporary adjustment was made.
+    Adjust,
+    /// A temporary adjustment was cancelled.
+    Cancel,
     /// A policy was judged.
     Judged,
     /// A record could not be read.
@@ -151,9 +153,12 @@ impl EventKind {
             | Self::Unreadable => Nature::Act,
             // A spawn is observed on the platform, but where it places its child is its
             // spawner's choice, and that can change how a rule takes effect: it is a claim.
-            Self::Spawn | Self::ModeSwitch | Self::Measured | Self::Exempt | Self::Judged => {
-                Nature::Claim
-            }
+            Self::Spawn
+            | Self::ModeSwitch
+            | Self::Measured
+            | Self::Adjust
+            | Self::Cancel
+            | Self::Judged => Nature::Claim,
         }
     }
 }

@@ -5,11 +5,11 @@
 //! and every binding's, and a policy that moves either way asks the authors of the rules that read
 //! its judgments. A claim and a change are judged by the same function.
 
+use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::authority::NotCovered;
 use agent_caps_core::domain::catalog::{AcceptError, Catalog, Effect, Target};
 use agent_caps_core::domain::change::{ChangeRejected, Loosening};
 use agent_caps_core::domain::event::{Body, Event};
-use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::policy::{DefLayer, Level, ModeScope, PolicyGraph};
 use agent_caps_core::domain::predicate::{Cond, Lit, Scope};
 use agent_caps_core::domain::schema::Field;
@@ -18,8 +18,8 @@ use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy, TxReport, Verdict};
 
 use super::common::{
-    GUARD, OTHER, agent, at, bind, binding_id, catalog, graph_of, id, inside, listed, mode,
-    outside, push_after_allowed, rejected, src_edit_guard, test_guard, the_agent, the_helper,
+    GUARD, OTHER, agent, at, bind, binding_id, catalog, exempt_n, graph_of, id, inside, listed,
+    mode, outside, push_after_allowed, rejected, src_edit_guard, test_guard, the_agent, the_helper,
     the_user,
 };
 
@@ -59,15 +59,15 @@ fn helper_switch(name: &str) -> Event {
     at(the_helper(), 0, Body::ModeSwitch { to: mode(name) })
 }
 
-/// An exemption of the guard of the scenarios for the task, of the events on `target` when one is
-/// given.
-fn exempt(target: Option<&str>) -> Body {
-    Body::Exempt(Exempt {
-        guard: id(GUARD),
-        target: target.map(|path| Cond::Eq(Field::Path, Lit::Text(path.to_owned()))),
-        lifetime: Lifetime::Within(Scope::Task),
-        reason: "for the task".parse().unwrap(),
-    })
+/// The `n`th adjustment, an exemption of the guard of the scenarios for the task, of the events on
+/// `path` when one is given.
+fn exempt(n: u8, path: Option<&str>) -> Body {
+    exempt_n(
+        n,
+        GUARD,
+        path.map(|path| Cond::Eq(Field::Path, Lit::Text(path.to_owned()))),
+        Lifetime::Within(Scope::Task),
+    )
 }
 
 /// FR42, UC20: a binding that one below adds to the user's guard does not lower it: the
@@ -295,7 +295,7 @@ fn an_exemption_of_a_guard_off_now_asks_the_authors_of_its_bindings() {
         vec![bind(GUARD, 1, Level::Force, inside("bugfix"), the_agent())],
     );
     assert_eq!(guard_effect(&catalog), Effect::Off);
-    let report = admit(&catalog, &[], &agent(exempt(None)));
+    let report = admit(&catalog, &[], &agent(exempt(1, None)));
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(
         report.uncovered,
@@ -315,7 +315,7 @@ fn an_exemption_of_a_guard_off_now_asks_the_authors_of_its_bindings() {
         }
     );
     assert_eq!(
-        admit(&catalog, &[], &at(the_user(), 0, exempt(None))).decision,
+        admit(&catalog, &[], &at(the_user(), 0, exempt(1, None))).decision,
         TxDecision::Commit
     );
 }
@@ -325,13 +325,13 @@ fn an_exemption_of_a_guard_off_now_asks_the_authors_of_its_bindings() {
 #[test]
 fn a_wider_exemption_beside_a_narrow_one_loosens_too() {
     let catalog = catalog(vec![src_edit_guard()], vec![]);
-    let narrow = at(the_user(), 0, exempt(Some("src/a.rs")));
+    let narrow = at(the_user(), 0, exempt(1, Some("src/a.rs")));
     let before = [agent(Body::TaskStart), narrow.clone()];
     assert_eq!(
         admit(&catalog, &before[..1], &narrow).decision,
         TxDecision::Commit
     );
-    for claim in [exempt(None), exempt(Some("src/a.rs"))] {
+    for claim in [exempt(2, None), exempt(2, Some("src/a.rs"))] {
         let report = admit(&catalog, &before, &agent(claim));
         assert_eq!(report.decision, TxDecision::Abort, "{report:?}");
         assert!(matches!(

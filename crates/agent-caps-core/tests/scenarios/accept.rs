@@ -1,16 +1,16 @@
 //! `Catalog::accept`: it reports every broken invariant of a policy graph at once, and a fixture
 //! that fails rejects the catalog unless it is marked as a known gap.
 
+use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::catalog::{AcceptError, Target};
 use agent_caps_core::domain::event::Body;
-use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::policy::{DefLayer, Expect, Fixture, Level, ModeScope, Rule};
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::Field;
 
 use super::common::{
-    GUARD, OTHER, REWARD, accept, agent, bind, binding_id, clippy_reward, fixture, graph_of, id,
-    inside, lost_line, rejected, test_guard, the_agent, the_user, user,
+    GUARD, OTHER, REWARD, accept, agent, bind, binding_id, clippy_reward, exempt_n, fixture,
+    graph_of, id, inside, lost_line, rejected, test_guard, the_agent, the_user, user,
 };
 
 /// FR2, UC12: a guard bound at Force without fixtures is not accepted, and neither is a reward
@@ -171,12 +171,7 @@ fn a_fixture_that_fails_rejects_the_catalog_unless_it_is_a_known_gap() {
 /// same exemption from the root covers the guard.
 #[test]
 fn a_loosening_claim_in_a_fixture_takes_effect_as_it_would_at_run_time() {
-    let exempt = Body::Exempt(Exempt {
-        guard: id(GUARD),
-        target: None,
-        lifetime: Lifetime::Within(Scope::Task),
-        reason: "in the example".parse().unwrap(),
-    });
+    let exempt = exempt_n(1, GUARD, None, Lifetime::Within(Scope::Task));
     let with = |claim, expect| {
         let mut guard = test_guard(Level::Force);
         guard.fixtures.push(fixture(

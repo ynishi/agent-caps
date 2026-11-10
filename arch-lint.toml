@@ -47,8 +47,8 @@ deny = [
     "super::event", "super::event::**", "crate::domain::event", "crate::domain::event::**",
     "super::state", "super::state::**", "crate::domain::state", "crate::domain::state::**",
     "super::predicate", "super::predicate::**", "crate::domain::predicate", "crate::domain::predicate::**",
-    "super::exempt", "super::exempt::**", "crate::domain::exempt", "crate::domain::exempt::**",
+    "super::adjust", "super::adjust::**", "crate::domain::adjust", "crate::domain::adjust::**",
     "super::judge", "super::judge::**", "crate::domain::judge", "crate::domain::judge::**",
     "super::tx", "super::tx::**", "crate::domain::tx", "crate::domain::tx::**",
 ]
-message = "authority is the lowest layer of the domain: it knows nothing of policies, catalogs, changes, events, exemptions, judgments, state, predicates or transactions, so who may loosen whose work can change without them."
+message = "authority is the lowest layer of the domain: it knows nothing of policies, catalogs, changes, events, adjustments, judgments, state, predicates or transactions, so who may loosen whose work can change without them."

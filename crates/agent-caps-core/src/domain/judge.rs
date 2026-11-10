@@ -169,13 +169,14 @@ impl Outcome {
 /// Judges `event` by every policy in effect on a platform with `caps`. `state` must already be
 /// folded over `event`.
 ///
-/// What is in effect is [`Catalog::effective`] (the strength as written), held to the
-/// capabilities as [`Catalog::enforced`] states, with the cap of this event
+/// What is in effect is [`Catalog::effective_in`] (the strength as written, with the state's
+/// temporary adjustments), held to the
+/// capabilities as [`Catalog::enforced_in`] states, with the cap of this event
 /// ([`Capabilities::cap`]) in place of the cap of its kind. Whether a guard stops is decided by
 /// the enforced level. A claim's transaction does not take the capabilities: they are the
 /// platform's fact, and what a claim loosens is judged by the written strength.
 pub fn judge(catalog: &Catalog, state: &State, event: &Event, caps: &Capabilities) -> Outcome {
-    let effective = catalog.effective(state.mode());
+    let effective = catalog.effective_in(state);
     let kind = event.body.kind();
     let cap = Cap::Fixed(caps.cap(event));
     let enforced = enforce_in(&effective, caps, |policy| {

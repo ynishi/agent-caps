@@ -2,15 +2,17 @@
 //! difference it makes, as a whole or not at all.
 //!
 //! An event is an act or a claim by its kind's [`Nature`]. An act is what rules judge, and it is
-//! folded as it is. A claim (an exemption, a mode switch, a record a rule reads) may change how
-//! the rules take effect, so it is applied to a copy of the state, and the difference is judged
-//! from several points of view before it is kept.
+//! folded as it is. A claim (a temporary adjustment or its cancel, a mode switch, a record a rule
+//! reads) may change how the rules take effect, so it is applied to a copy of the state, and the
+//! difference is judged from several points of view before it is kept.
 //!
 //! ```text
 //! Catalog::apply_with(state, event, &TxPolicy)
 //!   carried = state.carry(event.at)              what the past brings; always kept
 //!   act   → carried.step(event)                  not judged
-//!   claim → after   = carried.clone().step(event)  applied to a copy
+//!   claim → carried.admits(event)                  an adjustment or a cancel that cannot take
+//!                                                  effect: carried, Abort, TxReport::inadmissible
+//!           after   = carried.clone().step(event)  applied to a copy
 //!           changes = State::changes(carried, after)
 //!           each check.judge(input) → Vec<CheckFinding>     the domain's checks, then the extra ones
 //!           floor   = every Loosens finding: Authority::may_loosen(by, authors) is Ok
@@ -50,10 +52,16 @@
 //! - The domain's checks are always applied, so no policy can leave one out to get past the
 //!   floor. The move of a state atom is looked at by one check ([`checks::ModeCheck`] the mode
 //!   as rules read it with `ModeIs`, [`checks::SlotCheck`] a slot, [`checks::SpawnCheck`] the
-//!   actor); how the rules take effect, their strength and their exemptions, is
-//!   [`checks::RuleCheck`]'s, read from the whole state before and after, whichever
-//!   [`StateChange`] moved it. A check never decides who may loosen. (The spawn check reads `Event::by` to make the place a spawn is
-//!   compared with, which is a fact of the claim and not a question of trust.)
+//!   actor); how the rules take effect, their strength (with the temporary adjustments,
+//!   [`Catalog::effective_in`](super::catalog::Catalog::effective_in)), the bindings suspended
+//!   and the exemptions, is [`checks::RuleCheck`]'s, read from the whole state before and after,
+//!   whichever [`StateChange`] moved it: a mode switch, an adjustment added, used up, cancelled,
+//!   or ended because the claim closes the scope it lasts within (compared with the state after
+//!   as the next event finds it). So a cancel is judged by its result alone. An adjustment that
+//!   runs out by time is not judged: its lifetime is its maker's choice, and the time of an
+//!   event the adapter's to give ([`super::state`]). A check never decides who may loosen.
+//!   (The spawn check reads `Event::by` to make the place a spawn is compared with, which is a
+//!   fact of the claim and not a question of trust.)
 //! - One function decides every claim: [`Catalog::apply`], [`Catalog::apply_with`],
 //!   [`Catalog::fold`], [`Catalog::fold_with`], [`Catalog::admit`] and the check of the fixtures
 //!   in [`Catalog::accept`] all go through it, so an example is folded as a run is.
@@ -68,6 +76,7 @@ use std::fmt;
 
 use checks::RuleMove;
 
+use super::adjust::Inadmissible;
 use super::authority::{Authority, NotCovered, Principal};
 use super::catalog::{AcceptError, Catalog, Rejected};
 use super::event::Event;
@@ -251,6 +260,10 @@ pub struct TxReport {
     /// What the floor found: for each loosening finding whose authors the claim's author does
     /// not cover, why. Empty when the floor commits.
     pub uncovered: Vec<NotCovered>,
+    /// Why the claim, an adjustment or a cancel, cannot take effect whoever makes it, when it
+    /// cannot ([`State`]'s one answer). Such a claim is aborted with no finding: it changes
+    /// nothing, and saying it committed would tell its maker it took effect.
+    pub inadmissible: Option<Inadmissible>,
 }
 
 impl Catalog {
@@ -268,10 +281,12 @@ impl Catalog {
         }
     }
 
-    /// The state after `event`, with [`TxPolicy::standard`]. An exemption that does not
-    /// type-check against the guard it names (its target is read from the guard's subject, and
-    /// the filter of a `Within(Since(..))` from its own kind), or that names no guard outside the
-    /// meta layer, takes no effect.
+    /// The state after `event`, with [`TxPolicy::standard`]. A temporary adjustment or a cancel
+    /// that cannot take effect ([`Inadmissible`]: a duplicate id, a policy or binding the catalog
+    /// lacks or of the meta layer, a cover or filter that does not type-check, a temporary
+    /// binding stronger than its policy may be bound or by one not within its author's work, a
+    /// rebinding for the next judgment or one that changes nothing, a cancel of an id not held)
+    /// is aborted, and [`Catalog::admit`] reports why.
     pub fn apply(&self, state: State, event: &Event) -> State {
         self.apply_with(state, event, &TxPolicy::standard())
     }
@@ -320,13 +335,23 @@ fn transact(
             decision: TxDecision::Commit,
             findings: Vec::new(),
             uncovered: Vec::new(),
+            inadmissible: None,
         };
-        let kept = carried.step(table, event, catalog.guards(), catalog.authority());
+        let kept = carried.step(table, event, catalog.index(), catalog.authority());
         return (kept, report);
+    }
+    if let Err(reason) = carried.admits(event, catalog.index(), catalog.authority()) {
+        let report = TxReport {
+            decision: TxDecision::Abort,
+            findings: Vec::new(),
+            uncovered: Vec::new(),
+            inadmissible: Some(reason),
+        };
+        return (carried, report);
     }
     let after = carried
         .clone()
-        .step(table, event, catalog.guards(), catalog.authority());
+        .step(table, event, catalog.index(), catalog.authority());
     let changes = State::changes(table, &carried, &after);
     let input = TxInput {
         catalog,
@@ -362,6 +387,7 @@ fn transact(
         decision,
         findings,
         uncovered,
+        inadmissible: None,
     };
     match decision {
         TxDecision::Commit => (after, report),

@@ -10,6 +10,8 @@
 //! events ─ Catalog::fold / apply ─▶ State      (an act is folded; a claim is a transaction)
 //! Catalog::effective(mode) ─▶ Effective        (as written: every policy On(the strongest level of
 //!                                               its bindings that hold) or Off, Degraded)
+//! Catalog::effective_in(&State) ─▶ Effective   (the same with the state's temporary adjustments:
+//!                                               bindings added and suspended for a while)
 //! Catalog::enforced(mode, &Capabilities) ─▶ Enforced
 //!                                              (as the platform holds it: levels capped, Lowering)
 //! judge(&Catalog, &State, &Event, &Capabilities) ─▶ Outcome
@@ -23,8 +25,9 @@
 //! read the written strength only, which does not depend on the platform.
 //!
 //! Dependencies between the modules run one way: `name`, `schema` and `authority` ◀ `predicate`
-//! ◀ `exempt` ◀ `event` ◀ `state` ◀ `policy` ◀ `catalog` ◀ `judge`, `change` and `tx`. `event`
-//! reads `authority` for the principal an event is by. `authority` knows nothing of the others,
+//! ◀ `adjust` ◀ `event` ◀ `state` ◀ `policy` ◀ `catalog` ◀ `judge`, `change` and `tx`. `event`
+//! reads `authority` for the principal an event is by, and `adjust` reads it for whether the maker
+//! of a temporary binding is within its policy's author's work. `authority` knows nothing of the others,
 //! and `arch-lint.toml` keeps it so. `catalog` does not use `tx`: the transaction is built on the
 //! catalog, and [`catalog::Catalog::accept`], which folds the fixtures with it, lives in `tx`.
 //! `change` reads `tx` too: a change of the catalog and a claim are judged by the one function of
@@ -44,6 +47,11 @@
 //!   mode scope holds ([`policy::Binding`]). A policy takes effect at the strongest level of its
 //!   bindings that hold, and is off with none, so adding a binding never lowers a policy.
 //! - Catalog: the accepted set of policies with their bindings ([`catalog`]).
+//! - Temporary adjustment: a claim that changes how the rules take effect for a lifetime
+//!   ([`adjust`]): an exemption, which keeps a guard from judging the events it covers, or
+//!   bindings added and bindings of the catalog suspended. It is seen in the state
+//!   ([`state::State::adjustments`]), ends with its lifetime or a cancel, and is judged by its
+//!   result, as a cancel is.
 //! - Capabilities: the highest level a platform can enforce, given as data in the words of an
 //!   event filter and supplied with each judgment ([`catalog::Capabilities`]). A policy written
 //!   above it is enforced at it, and each judgment records both levels ([`event::Body::Judged`]).
@@ -57,22 +65,22 @@
 //!   ([`event::Body::Spawn`]) is a claim: where it places its child is judged as a transaction
 //!   ([`tx`]).
 //! - Act and claim: the two natures of an event ([`schema::Nature`]). An act (a tool use, the end
-//!   of a turn) is observed on the platform, and is what rules judge. A claim (an exemption, a
-//!   mode switch, a spawn, a record of a judgment or a score) is stated by someone, and may
-//!   change how the rules take effect.
+//!   of a turn) is observed on the platform, and is what rules judge. A claim (a temporary
+//!   adjustment or its cancel, a mode switch, a spawn, a record of a judgment or a score) is
+//!   stated by someone, and may change how the rules take effect.
 //! - Transaction: how a claim takes effect ([`tx`]): applied to a copy of the state, judged by
 //!   the difference from each point of view (a check), and kept as a whole or not at all. A
 //!   loosening one takes effect only from one who covers the authors of what it loosens.
-//! - Evidence: what the caller appends (records of judgments, mode switches, exemptions,
-//!   scores). With the platform's transcript, it is what the state is folded from.
+//! - Evidence: what the caller appends (records of judgments, mode switches, temporary
+//!   adjustments and their cancels, scores). With the platform's transcript, it is what the state is folded from.
 //! - Slot: what one temporal operator (`once`, `count`, `last`) remembers between events.
 //! - Unknown: what could not be seen. A stopping guard that cannot tell denies.
 
+pub mod adjust;
 pub mod authority;
 pub mod catalog;
 pub mod change;
 pub mod event;
-pub mod exempt;
 mod glob;
 pub mod judge;
 pub mod name;

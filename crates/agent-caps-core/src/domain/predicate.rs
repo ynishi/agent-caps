@@ -196,9 +196,9 @@ pub struct EventFilter {
 /// - To let only a call that succeeded close the interval, restrict the filter to
 ///   `ok == true`. A call that failed, or that was stopped and never ran, does not match, and
 ///   the interval it belongs to goes on.
-/// - `Lifetime::Within(Since(g))` (see [`super::exempt::Lifetime`]) ends an exemption after the
-///   next `g`. Until the next event after `g`, the exemption still shows as in effect, so `g`
-///   itself is judged with it.
+/// - `Lifetime::Within(Since(g))` (see [`super::adjust::Lifetime`]) ends a temporary adjustment
+///   after the next `g`. Until the next event after `g`, the adjustment still shows as in effect,
+///   so `g` itself is judged with it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scope {
     /// From [`EventKind::SessionStart`].

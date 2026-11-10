@@ -15,9 +15,9 @@
 //! folded over it, and it enters the history when it is read back from the transcript, with
 //! its result. An act that was stopped never runs, so it is not in the history.
 
+use super::adjust::Adjustment;
 use super::authority::Principal;
-use super::exempt::Exempt;
-use super::name::{CommandWords, Mode, PolicyId};
+use super::name::{AdjustmentId, CommandWords, Mode, PolicyId};
 use super::predicate::{Cond, Lit, Truth};
 use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
 
@@ -81,8 +81,16 @@ pub enum Body {
         /// The score.
         score: f64,
     },
-    /// A guard is exempted for a while.
-    Exempt(Exempt),
+    /// A temporary adjustment is made: an exemption, or bindings added and suspended, for its
+    /// lifetime ([`super::adjust`]). It is held, with who made it, when it may take effect and its
+    /// transaction keeps it.
+    Adjust(Adjustment),
+    /// The temporary adjustment in effect with the id ends. A cancel is judged by its result: what
+    /// ending that adjustment loosens or tightens.
+    Cancel {
+        /// The adjustment.
+        id: AdjustmentId,
+    },
     /// A policy was judged. The record of a judgment is written in the name of the judged
     /// policy's author ([`super::judge::Outcome::evidence`]).
     Judged {
@@ -157,7 +165,8 @@ impl Body {
             Self::Stop => EventKind::Stop,
             Self::ModeSwitch { .. } => EventKind::ModeSwitch,
             Self::Measured { .. } => EventKind::Measured,
-            Self::Exempt(_) => EventKind::Exempt,
+            Self::Adjust(_) => EventKind::Adjust,
+            Self::Cancel { .. } => EventKind::Cancel,
             Self::Judged { .. } => EventKind::Judged,
             Self::Unreadable { .. } => EventKind::Unreadable,
         }

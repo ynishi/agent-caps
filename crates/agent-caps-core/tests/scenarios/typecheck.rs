@@ -2,13 +2,14 @@
 //! field from another kind of event, and an exemption that arrives as an event takes effect only
 //! if it type-checks against the guard it names.
 
+use agent_caps_core::domain::adjust::{Inadmissible, Lifetime};
 use agent_caps_core::domain::catalog::AcceptError;
-use agent_caps_core::domain::event::Body;
-use agent_caps_core::domain::exempt::Lifetime;
+use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::Verdict;
 use agent_caps_core::domain::policy::{Level, Rule};
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, PredError, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field};
+use agent_caps_core::domain::tx::TxPolicy;
 
 use super::common::{
     GUARD, agent, catalog, commit_filter, edit, exemption, id, rejected, src_edit_guard,
@@ -77,10 +78,22 @@ fn an_ill_typed_exemption_takes_no_effect() {
         on_a.clone(),
         Cond::Eq(Field::ModeTo, Lit::Text("x".to_owned())),
     ]);
-    assert_eq!(
-        judged(exemption(Some(ill_target), Lifetime::Next)),
-        violated()
-    );
+    let ill = exemption(Some(ill_target), Lifetime::Next);
+    assert_eq!(judged(ill.clone()), violated());
+    // Its transaction is aborted and says why.
+    let reason = |claim: &Event| {
+        catalog
+            .admit(
+                &catalog.fold([&agent(Body::TaskStart)]),
+                claim,
+                &TxPolicy::standard(),
+            )
+            .inadmissible
+    };
+    assert!(matches!(
+        reason(&ill),
+        Some(Inadmissible::ExemptionError(_))
+    ));
     // The same for the filter of the scope it lasts within.
     let within = |filter| exemption(Some(on_a.clone()), Lifetime::Within(Scope::Since(filter)));
     let good = EventFilter {
@@ -92,5 +105,9 @@ fn an_ill_typed_exemption_takes_no_effect() {
         cond: Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
     };
     assert_eq!(judged(within(good)), Verdict::Allow);
-    assert_eq!(judged(within(bad)), violated());
+    assert_eq!(judged(within(bad.clone())), violated());
+    assert!(matches!(
+        reason(&within(bad)),
+        Some(Inadmissible::SinceFilterError(_))
+    ));
 }

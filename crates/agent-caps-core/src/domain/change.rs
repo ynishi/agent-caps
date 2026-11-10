@@ -280,10 +280,9 @@ impl Catalog {
         // What takes effect: the same moves, with the same authors, as a claim's.
         for mode in compared_modes([self, &next]) {
             let known = Known::Known(mode.clone());
-            let point = |catalog| Point {
+            let point = |catalog| Point::Catalog {
                 catalog,
                 mode: &known,
-                exemptions: &[],
             };
             let moves = rule_moves(&point(self), &point(&next));
             if let Verdict::Loosens { authors, detail } = rules_verdict(&[self, &next], moves)
