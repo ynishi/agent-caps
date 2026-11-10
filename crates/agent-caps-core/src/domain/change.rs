@@ -43,6 +43,12 @@
 //!   scope tightens. One that goes with its policy is the policy's removal. A new one in such a
 //!   name is refused, so nobody writes in another's name; a binding kept with its id, its author
 //!   and its policy is not new.
+//! - Step 4 looks at each classifier `by` does not cover too, as it looks at a policy
+//!   ([`classify_classifier`], [`Target::Classifier`]): one
+//!   removed, or changed in its bound or its calibration record, is taken to loosen (a record
+//!   that suffices is what lets a guard stop, and a bound is what it is held to, so neither can
+//!   be read as stricter), and one new in the name of an author `by` does not cover is refused.
+//!   What the guards that read it come to is step 5's, from the strength they take effect at.
 //! - Step 4 looks at each set too ([`super::set`]), as an item whose author is its owner, with
 //!   the same question of who is covered: a set whose owner `by` does not cover is added,
 //!   removed, given another graph, renamed or given another owner only as a loosening
@@ -58,8 +64,9 @@
 //!   addition of the new.
 //! - Step 5 compares what takes effect. The strongest binding wins, so the strength of a policy
 //!   that `by` does not cover goes down only when a binding that carried it is removed, weakened
-//!   or stops holding, and the authors asked are those of such bindings, read from the catalog
-//!   before. Adding a binding never lowers a policy. A policy that moves, either way, moves every
+//!   or stops holding, or when a guard at Force comes to read a classifier whose record no longer
+//!   meets its bound ([`Degraded::Uncalibrated`](super::catalog::Degraded::Uncalibrated)), and
+//!   the authors asked are those of the bindings that carried it, read from the catalog before. Adding a binding never lowers a policy. A policy that moves, either way, moves every
 //!   other policy that reads its judgments, so their authors are asked too.
 //! - The compared modes are no mode, and every mode a binding's scope names in the catalog
 //!   before or in `after`. A mode that neither names behaves as no mode, so it adds nothing. An
@@ -93,7 +100,7 @@ use std::fmt;
 use super::authority::{NotCovered, Principal};
 use super::catalog::{Catalog, Rejected, Target, compared_modes};
 use super::name::{Mode, PolicyId};
-use super::policy::{Binding, DefLayer, PolicyDef};
+use super::policy::{Binding, Classifier, DefLayer, PolicyDef};
 use super::set::{SetId, Sources};
 use super::state::Known;
 use super::tx::checks::{Point, rule_moves, rules_verdict};
@@ -156,13 +163,59 @@ pub fn classify(before: &PolicyDef, after: &PolicyDef) -> Direction {
     }
 }
 
+/// The direction of the difference between the declaration of a classifier `before` and `after`,
+/// either of which is `None` when the classifier is not declared then: the classifier's side of
+/// [`classify`].
+///
+/// A declaration added tightens: until a guard reads it, nothing takes effect differently. One
+/// removed loosens, and so does one changed in any field but its name, the key it is found by: a
+/// bound or a calibration record decides whether a guard may stop ([`Calibration::admit`]), so a
+/// change of either cannot be read as stricter, and the author is the one who may say so. Every
+/// field of [`Classifier`] is read, so a field added to it stops this from compiling until its
+/// direction is decided.
+///
+/// A new declaration in the name of an author `by` does not cover is refused by
+/// [`Catalog::change`], as a new policy is, whatever this says.
+///
+/// [`Calibration::admit`]: super::policy::Calibration::admit
+pub fn classify_classifier(before: Option<&Classifier>, after: Option<&Classifier>) -> Direction {
+    match (before, after) {
+        (None, None) => Direction::Neutral,
+        (None, Some(_)) => Direction::Tightens,
+        (Some(_), None) => Direction::Loosens,
+        (Some(before), Some(after)) => {
+            let Classifier {
+                name: _,
+                author: before_author,
+                bound: before_bound,
+                record: before_record,
+            } = before;
+            let Classifier {
+                name: _,
+                author: after_author,
+                bound: after_bound,
+                record: after_record,
+            } = after;
+            if before_author == after_author
+                && before_bound == after_bound
+                && before_record == after_record
+            {
+                Direction::Neutral
+            } else {
+                Direction::Loosens
+            }
+        }
+    }
+}
+
 /// One way a change loosens what `by` does not cover.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Loosening {
     /// A policy `by` does not cover is removed or changed in a way that cannot be read as
-    /// stricter, a binding `by` does not cover is removed, lowered, rescoped or taken over, a set
-    /// whose owner `by` does not cover is removed or given another graph, name or owner, or a new
-    /// policy, binding or set is in the name of one `by` does not cover.
+    /// stricter, a binding `by` does not cover is removed, lowered, rescoped or taken over, a
+    /// classifier declaration `by` does not cover is removed or changed, a set whose owner `by`
+    /// does not cover is removed or given another graph, name or owner, or a new policy,
+    /// binding, classifier or set is in the name of one `by` does not cover.
     Uncovered {
         /// The item.
         target: Target,
@@ -292,6 +345,23 @@ impl Catalog {
         let bindings = unkept
             .chain(new_in_another_name)
             .map(|b| Target::Binding(b.id));
+        // A classifier declaration in the name of one `by` does not cover is kept as it is, and
+        // none is new in such a name: policies' rule, with the direction `classify_classifier` says.
+        let unkept_classifiers = self.graph().classifiers().filter(|old| {
+            uncovered(&old.author)
+                && classify_classifier(Some(old), next.graph().classifier(&old.name))
+                    == Direction::Loosens
+        });
+        let new_classifiers = next.graph().classifiers().filter(|new| {
+            uncovered(&new.author)
+                && !self
+                    .graph()
+                    .classifier(&new.name)
+                    .is_some_and(|old| uncovered(&old.author))
+        });
+        let classifiers = unkept_classifiers
+            .chain(new_classifiers)
+            .map(|c| Target::Classifier(c.name.clone()));
         // A set is an item whose author is its owner: one in the name of an owner `by` does not
         // cover is kept as it is, its graph, name and owner, and none is new in such a name. Its
         // items are judged as well, each by its own author, and both are reported: they say what
@@ -308,7 +378,7 @@ impl Catalog {
                     .is_some_and(|old| uncovered(&old.owner))
         });
         let sets = unkept_sets.chain(new_sets).map(|s| Target::Set(s.id));
-        for target in policies.chain(bindings).chain(sets) {
+        for target in policies.chain(bindings).chain(classifiers).chain(sets) {
             if !loosenings
                 .iter()
                 .any(|l| matches!(l, Loosening::Uncovered { target: t } if *t == target))

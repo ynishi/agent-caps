@@ -14,6 +14,9 @@
 //! PolicyDef   what must hold or is recommended    (when, rule, subject, fixtures, author)
 //! Binding     that policy, at a level, under a mode scope, by an author
 //!   effect of a policy = the strongest level of its bindings that hold, or Off
+//! Classifier  the judge of a rule that code cannot express, by name and version
+//!             (bound: Calibration, record: Option<CalibrationRecord>, author)
+//!   a guard that reads one is at Force only while Calibration::admit says Ok
 //! ```
 //!
 //! A level is how much the one who acts is trusted with a rule, not when the rule is checked:
@@ -38,10 +41,16 @@
 //!   who may change whose, follows the [`Authority`] the catalog keeps (see
 //!   [`super::catalog`] and [`super::change`]).
 //! - A [`ModeSet`] is not empty and holds no mode twice: [`ModeSet::new`] refuses otherwise.
-//! - A [`PolicyGraph`] holds its policies and bindings by id, no id twice and no policy name
-//!   twice: [`PolicyGraph::parse`] refuses otherwise ([`Clash`]), through one insert, and so does
-//!   the composition of sets ([`super::set`]), which takes an equal item of two sets once. Its
-//!   order is by id, the one order of everything a catalog lists.
+//! - A [`PolicyGraph`] holds its policies and bindings by id, and its classifiers by name, no id
+//!   twice, no policy name twice and no classifier name twice: [`PolicyGraph::parse`] refuses
+//!   otherwise ([`Clash`]), through one insert, and so does the composition of sets
+//!   ([`super::set`]), which takes an equal item of two sets once. Its order is by id (a
+//!   classifier's by name), the one order of everything a catalog lists.
+//! - A [`Calibration`] decides whether a [`CalibrationRecord`] suffices, in one place
+//!   ([`Calibration::admit`]); nothing else compares a record with a bound.
+//! - A classifier is declared in one set and read by name from the others: its declaration holds
+//!   the last record, so two sets that declare one differ, and so conflict
+//!   ([`super::set::Sources::compose`]), when either updates the record.
 //! - A [`Policy`] is made only by [`super::catalog::Catalog::accept`], which checks the graph as a
 //!   whole (see there). The [`PolicyDef`] it is made from is plain data with no rule of its own.
 //! - A [`Policy`] keeps its [`PolicyDef`] as written, and the predicates the catalog uses. The
@@ -55,7 +64,7 @@ use std::fmt;
 
 use super::authority::{Authority, Principal};
 use super::event::Event;
-use super::name::{BindingId, Mode, PolicyId, PolicyName};
+use super::name::{BindingId, ClassifierName, Mode, PolicyId, PolicyName};
 use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Selector, Truth, reads_unnarrowed};
 use super::schema::{EventKind, Field};
 use super::state::{Known, SlotTable, State};
@@ -172,7 +181,159 @@ pub struct Binding {
     pub author: Principal,
 }
 
-/// How a policy judges. New ways (a classifier's answer) are added as the model grows.
+/// How much calibration a classifier needs before a guard that reads it may stop: the bound a
+/// declaration gives, against which its last [`CalibrationRecord`] is held. Whether a record
+/// suffices is [`Calibration::admit`]'s to say. Made only by [`Calibration::new`], which refuses
+/// a bound that asks for no evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Calibration {
+    min_cases: u32,
+    max_false_stops: u32,
+}
+
+/// The result of the last calibration of a classifier, as the loop that calibrates it counts it:
+/// how many cases it judged and how many of its stops were false. A count, not a rate or a
+/// chance-corrected agreement: such a measure is the calibration loop's own, outside the domain,
+/// which gives the domain the counts. Made only by [`CalibrationRecord::new`], which refuses
+/// counts that cannot be.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CalibrationRecord {
+    cases: u32,
+    false_stops: u32,
+}
+
+/// Why a [`Calibration`] or a [`CalibrationRecord`] could not be made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalibrationError {
+    /// A bound that asks for no case: a guard would be admitted with no evidence at all, which
+    /// defeats the calibration the bound stands for (FR26).
+    NoCases,
+    /// A record with more false stops than cases: a false stop is a case, so the counts cannot be.
+    FalseStopsExceedCases {
+        /// The cases given.
+        cases: u32,
+        /// The false stops given.
+        false_stops: u32,
+    },
+}
+
+impl fmt::Display for CalibrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoCases => f.write_str("a calibration bound needs at least one case"),
+            Self::FalseStopsExceedCases { cases, false_stops } => write!(
+                f,
+                "a record of {cases} cases cannot hold {false_stops} false stops"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CalibrationError {}
+
+impl CalibrationRecord {
+    /// The record of `cases` judged and `false_stops` among them, when there are no more false
+    /// stops than cases.
+    pub fn new(cases: u32, false_stops: u32) -> Result<Self, CalibrationError> {
+        if false_stops > cases {
+            return Err(CalibrationError::FalseStopsExceedCases { cases, false_stops });
+        }
+        Ok(Self { cases, false_stops })
+    }
+
+    /// The cases judged.
+    pub fn cases(&self) -> u32 {
+        self.cases
+    }
+
+    /// The stops among them that were false.
+    pub fn false_stops(&self) -> u32 {
+        self.false_stops
+    }
+}
+
+/// Why a record does not suffice for a bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Shortfall {
+    /// The record has too few cases or too many false stops; its counts are given.
+    Short {
+        /// The cases the record holds.
+        cases: u32,
+        /// The false stops the record holds.
+        false_stops: u32,
+    },
+    /// The declaration has no record.
+    Missing,
+}
+
+impl Calibration {
+    /// The bound of at least `min_cases` cases and at most `max_false_stops` false stops, when it
+    /// asks for at least one case.
+    pub fn new(min_cases: u32, max_false_stops: u32) -> Result<Self, CalibrationError> {
+        if min_cases == 0 {
+            return Err(CalibrationError::NoCases);
+        }
+        Ok(Self {
+            min_cases,
+            max_false_stops,
+        })
+    }
+
+    /// The fewest cases the record must be made of.
+    pub fn min_cases(&self) -> u32 {
+        self.min_cases
+    }
+
+    /// The most false stops the record may hold: stops of the classifier that were wrong.
+    pub fn max_false_stops(&self) -> u32 {
+        self.max_false_stops
+    }
+
+    /// Whether `record` suffices for this bound: `Ok` when it holds at least `min_cases` cases and
+    /// at most `max_false_stops` false stops, [`Shortfall::Short`] with its counts when it does
+    /// not, and [`Shortfall::Missing`] with no record. The one place that decides it, so a
+    /// shortfall is never made elsewhere and a guard is never taken for calibrated by a second
+    /// comparison.
+    ///
+    /// It is a fact of the catalog, which a lost transcript does not change, so there is no
+    /// "cannot be read" and FR20 does not apply to it.
+    pub fn admit(&self, record: Option<&CalibrationRecord>) -> Result<(), Shortfall> {
+        let Some(record) = record else {
+            return Err(Shortfall::Missing);
+        };
+        if record.cases < self.min_cases || record.false_stops > self.max_false_stops {
+            return Err(Shortfall::Short {
+                cases: record.cases,
+                false_stops: record.false_stops,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The declaration of a classifier: the judge of a rule that code cannot express, by name and
+/// version, with the bound its calibration must meet and the last record of it. It is an item of
+/// the policy graph, with an author, as a policy is; a guard that reads the classifier takes
+/// effect at Force only while its record meets its bound ([`Calibration::admit`]), and is
+/// otherwise enforced at Advise and reported ([`super::catalog::Degraded::Uncalibrated`]).
+///
+/// The record is part of the declaration, so it changes as the declaration does, by a permanent
+/// change from one who covers the author ([`super::change`]); a lost transcript does not touch it.
+/// A classifier is declared in one set and read by name from the others, since two sets that
+/// declare one hold the same item only while the record is the same.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Classifier {
+    /// Its name, with the version in it (`commit-why@3`).
+    pub name: ClassifierName,
+    /// Who declared it. A policy reads only the declarations of its own author and above.
+    pub author: Principal,
+    /// The bound its calibration must meet.
+    pub bound: Calibration,
+    /// The last calibration of it; `None` when it has not been calibrated.
+    pub record: Option<CalibrationRecord>,
+}
+
+/// How a policy judges. New ways are added as the model grows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Rule {
@@ -245,22 +406,26 @@ pub struct PolicyDef {
 }
 
 /// What a catalog is accepted from: the policies, and the bindings that put them into effect,
-/// each keyed by its id. No two policies share an id or a name, and no two bindings share an id:
-/// [`PolicyGraph::parse`] and [`super::set::Sources::compose`] are the only ways to make one with
-/// items, both through one insert, so a graph that exists cannot hold a duplicate, and code that
-/// reads a graph does not check for one again.
+/// each keyed by its id, and the classifiers they read, each keyed by its name. No two policies
+/// share an id or a name, no two bindings share an id, and no two classifiers share a name:
+/// [`PolicyGraph::parse`], [`PolicyGraph::parse_with`] and [`super::set::Sources::compose`] are
+/// the only ways to make one with items, all through one insert, so a graph that exists cannot
+/// hold a duplicate, and code that reads a graph does not check for one again.
 ///
-/// The graph has one order, by id, whatever order the items were given in: its policies and its
-/// bindings are read in it, and so is every list a catalog makes of them (see
-/// [`super::catalog`]). Two graphs with the same items are equal, and a policy equals itself,
-/// since every value in it has an equality that is total ([`super::predicate::Number`]).
+/// The graph has one order, by id (a classifier's by name), whatever order the items were given
+/// in: its policies, its bindings and its classifiers are read in it, and so is every list a
+/// catalog makes of them (see [`super::catalog`]). Two graphs with the same items are equal, and
+/// a policy equals itself, since every value in it has an equality that is total
+/// ([`super::predicate::Number`]).
 ///
-/// What the items say of each other (a binding names a policy that exists, a reward a guard) is
-/// checked when a catalog accepts the graph, with everything else that needs the hierarchy.
+/// What the items say of each other (a binding names a policy that exists, a reward a guard, a
+/// rule a classifier) is checked when a catalog accepts the graph, with everything else that needs
+/// the hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PolicyGraph {
     policies: BTreeMap<PolicyId, PolicyDef>,
     bindings: BTreeMap<BindingId, Binding>,
+    classifiers: BTreeMap<ClassifierName, Classifier>,
     /// Each policy's name, with its id: kept by the one insert beside `policies`, and the names
     /// of exactly its policies in every graph `parse` returns.
     names: BTreeMap<PolicyName, PolicyId>,
@@ -271,6 +436,7 @@ pub(super) enum Item {
     // Boxed: a policy is several times the size of a binding.
     Policy(Box<PolicyDef>),
     Binding(Binding),
+    Classifier(Classifier),
 }
 
 /// Where an item given to the one insert comes from, as against the items already there: what
@@ -285,10 +451,10 @@ pub(super) enum Origin {
     Joined,
 }
 
-/// Why an item cannot enter a graph: the graph already has one with its id, or a policy with its
-/// name. A second item with an id already there is a clash, unless it is equal and comes from
-/// another set ([`super::set::Sources::compose`]); in one graph it is a slip of the one who wrote
-/// it.
+/// Why an item cannot enter a graph: the graph already has one with its id, a policy with its
+/// name, or a classifier with its name. A second item with an id (or a classifier's name) already
+/// there is a clash, unless it is equal and comes from another set
+/// ([`super::set::Sources::compose`]); in one graph it is a slip of the one who wrote it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Clash {
     /// A second policy has the id.
@@ -297,6 +463,8 @@ pub enum Clash {
     Binding(BindingId),
     /// A second policy has the name.
     Name(PolicyName),
+    /// A second classifier has the name.
+    Classifier(ClassifierName),
 }
 
 impl fmt::Display for Clash {
@@ -305,6 +473,7 @@ impl fmt::Display for Clash {
             Self::Policy(id) => write!(f, "two policies have the id {id}"),
             Self::Binding(id) => write!(f, "two bindings have the id {id}"),
             Self::Name(name) => write!(f, "two policies have the name {name}"),
+            Self::Classifier(name) => write!(f, "two classifiers have the name {name}"),
         }
     }
 }
@@ -333,9 +502,10 @@ impl fmt::Display for GraphError {
 impl std::error::Error for GraphError {}
 
 impl PolicyGraph {
-    /// The graph of `policies` and `bindings`, when no two policies share an id or a name and no
-    /// two bindings share an id. Otherwise every clash found, each once, in the order of
-    /// [`Clash`]: the policies' ids, then the bindings' ids, each by id, then the names.
+    /// The graph of `policies` and `bindings`, with no classifier ([`PolicyGraph::parse_with`]),
+    /// when no two policies share an id or a name and no two bindings share an id. Otherwise
+    /// every clash found, each once, in the order of [`Clash`]: the policies' ids, then the
+    /// bindings' ids, each by id, then the names.
     ///
     /// An id given twice is a clash of the id, and a name given with two different ids a clash
     /// of the name, so what is found does not depend on the order the items were given in. The
@@ -345,11 +515,24 @@ impl PolicyGraph {
         policies: Vec<PolicyDef>,
         bindings: Vec<Binding>,
     ) -> Result<Self, Vec<GraphError>> {
+        Self::parse_with(policies, bindings, Vec::new())
+    }
+
+    /// The graph of `policies`, `bindings` and `classifiers`: [`PolicyGraph::parse`] with the
+    /// classifiers declared, when no two share a name. A classifier given twice under one name is
+    /// a clash of the name, even when the two are equal, since in one graph it is a slip; the
+    /// clashes come in the order of [`Clash`], the classifiers' names last.
+    pub fn parse_with(
+        policies: Vec<PolicyDef>,
+        bindings: Vec<Binding>,
+        classifiers: Vec<Classifier>,
+    ) -> Result<Self, Vec<GraphError>> {
         let mut graph = Self::default();
         let items = policies
             .into_iter()
             .map(|def| Item::Policy(Box::new(def)))
-            .chain(bindings.into_iter().map(Item::Binding));
+            .chain(bindings.into_iter().map(Item::Binding))
+            .chain(classifiers.into_iter().map(Item::Classifier));
         let mut clashes: Vec<Clash> = items
             .flat_map(|item| {
                 graph
@@ -369,11 +552,12 @@ impl PolicyGraph {
             .collect())
     }
 
-    /// Puts `item` in the graph, unless an item with its id is there already, or, for a policy,
-    /// a policy of another id has its name: the one place that decides whether an item may enter
-    /// a graph. An item with an id already there is the same item, and enters once, only when it
-    /// is equal and comes from another set (`origin`, [`Origin::Joined`]). The id and the name of
-    /// a policy are checked apart, and every clash is returned.
+    /// Puts `item` in the graph, unless an item with its id is there already (a classifier's id is
+    /// its name), or, for a policy, a policy of another id has its name: the one place that
+    /// decides whether an item may enter a graph. An item with an id already there is the same
+    /// item, and enters once, only when it is equal and comes from another set (`origin`,
+    /// [`Origin::Joined`]). The id and the name of a policy are checked apart, and every clash is
+    /// returned.
     ///
     /// A key that is free is taken even when the item clashes on the other, so a later item is
     /// compared with every id and name given before it. A graph with a clash is never returned
@@ -407,6 +591,14 @@ impl PolicyGraph {
                     slot.insert(binding);
                 }
             },
+            Item::Classifier(classifier) => match self.classifiers.entry(classifier.name.clone()) {
+                Entry::Occupied(there)
+                    if origin == Origin::Joined && *there.get() == classifier => {}
+                Entry::Occupied(_) => clashes.push(Clash::Classifier(classifier.name)),
+                Entry::Vacant(slot) => {
+                    slot.insert(classifier);
+                }
+            },
         }
         if clashes.is_empty() {
             Ok(())
@@ -435,13 +627,25 @@ impl PolicyGraph {
         self.bindings.get(&id)
     }
 
-    /// Every item, the policies by id, then the bindings by id: what the one insert takes, for a
-    /// graph composed of several ([`super::set::Sources::compose`]).
+    /// The classifiers, by name.
+    pub fn classifiers(&self) -> btree_map::Values<'_, ClassifierName, Classifier> {
+        self.classifiers.values()
+    }
+
+    /// The classifier with the name.
+    pub fn classifier(&self, name: &ClassifierName) -> Option<&Classifier> {
+        self.classifiers.get(name)
+    }
+
+    /// Every item, the policies by id, then the bindings by id, then the classifiers by name:
+    /// what the one insert takes, for a graph composed of several
+    /// ([`super::set::Sources::compose`]).
     pub(super) fn items(&self) -> impl Iterator<Item = Item> + '_ {
         self.policies
             .values()
             .map(|def| Item::Policy(Box::new(def.clone())))
             .chain(self.bindings.values().cloned().map(Item::Binding))
+            .chain(self.classifiers.values().cloned().map(Item::Classifier))
     }
 
     /// Whether the graph holds an item where `clash` is, without copying it ([`Self::item_at`]).
@@ -450,11 +654,12 @@ impl PolicyGraph {
             Clash::Policy(id) => self.policies.contains_key(id),
             Clash::Name(name) => self.names.contains_key(name),
             Clash::Binding(id) => self.bindings.contains_key(id),
+            Clash::Classifier(name) => self.classifiers.contains_key(name),
         }
     }
 
-    /// The item the graph holds where `clash` is: the policy with the id or the name, or the
-    /// binding with the id.
+    /// The item the graph holds where `clash` is: the policy with the id or the name, the
+    /// binding with the id, or the classifier with the name.
     pub(super) fn item_at(&self, clash: &Clash) -> Option<Item> {
         let policy = |id: &PolicyId| self.policies.get(id);
         let def = match clash {
@@ -463,16 +668,21 @@ impl PolicyGraph {
             Clash::Binding(id) => {
                 return self.bindings.get(id).cloned().map(Item::Binding);
             }
+            Clash::Classifier(name) => {
+                return self.classifiers.get(name).cloned().map(Item::Classifier);
+            }
         };
         def.map(|def| Item::Policy(Box::new(def.clone())))
     }
 
-    /// The policies and the bindings, each by id: what [`PolicyGraph::parse`] takes, for a caller
-    /// that makes another graph from this one.
-    pub fn into_parts(self) -> (Vec<PolicyDef>, Vec<Binding>) {
+    /// The policies and the bindings, each by id, and the classifiers, by name: exactly what
+    /// [`PolicyGraph::parse_with`] takes, so that a caller that makes another graph from this one
+    /// loses no item.
+    pub fn into_parts(self) -> (Vec<PolicyDef>, Vec<Binding>, Vec<Classifier>) {
         (
             self.policies.into_values().collect(),
             self.bindings.into_values().collect(),
+            self.classifiers.into_values().collect(),
         )
     }
 }

@@ -113,8 +113,62 @@ and this project adheres to
   instead of per kind of event, the level a policy was written at and the level
   it was enforced at recorded with each judgment, and a catalog checked against
   the capabilities. FR31 and the use cases UC11, UC17 and UC24 cite FR40.
+- A rule that code cannot express can be judged by a classifier (#1, UC23,
+  FR26, FR52). The classifier's answer is a recorded claim, `Body::Classified
+  { classifier: ClassifierName, answer: f64 }` (`EventKind::Classified`, of
+  `Nature::Claim`; `Field::Classifier` and `Field::Answer`), which an ordinary
+  rule reads with `Last`, counted only from one who covers the rule's author as
+  any record a rule reads is, so an answer the agent writes counts neither way.
+  `ClassifierName` is a name that may hold `@`, so the version is part of it
+  (`commit-why@3`; `NameError::Classifier`). Two `Body` values compare the
+  answer as a number with NaN equal to NaN, as a score.
+- The declaration of a classifier is an item of the policy graph:
+  `Classifier { name, author, bound: Calibration, record:
+  Option<CalibrationRecord> }`, made with `PolicyGraph::parse_with` and read
+  with `classifiers()` and `classifier(name)`. `Calibration::new(min_cases,
+  max_false_stops)` refuses a bound of no case, and
+  `CalibrationRecord::new(cases, false_stops)` a record with more false
+  stops than cases (`CalibrationError`); their fields are read with getters.
+  `Calibration::admit(record)` is the one place that says whether a record
+  suffices (`Err(Shortfall)`, `Short { cases, false_stops }` or `Missing`).
+  The declaration composes as a policy does (FR48): the same declaration in
+  two sets is one item, and two different ones under a name are a
+  `Clash::Classifier`; declare a classifier in one set and read it by name
+  from the others.
+- A policy that judges `Classified` events reads the classifier its `when`
+  narrows to, by the same rule, and is refused, lowered and reported as a
+  policy with a filter is.
+- A policy reads a classifier with a filter of `Classified` events that
+  narrows to its name with `classifier == name`. The catalog refuses a filter
+  that does not (`AcceptError::UnnamedClassifier`), a name no set declares
+  (`UndeclaredClassifier`), a declaration of an author below the policy's own
+  (`ReferencesBelow`, with `Target::Classifier`) and a Meta policy that reads
+  one (`MetaReadsClassifier`).
+- A guard at Force that reads a classifier takes effect at Force only while
+  the record of each classifier it reads meets the bound of its declaration;
+  otherwise it is Advise, and `Effective::degraded` reports one
+  `Degraded::Uncalibrated { guard, classifier, shortfall, to }` for each
+  classifier that falls short. Decided in `Catalog::effective`, so `effective`,
+  `effective_in`, `enforced`, `judge` and `Catalog::change` agree. A reward
+  bound to a lowered guard follows it.
+- `Catalog::change` judges a classifier declaration as it judges a policy
+  (`change::classify_classifier`): a declaration removed, or changed in its
+  bound or its record, is a loosening that needs one who covers its author.
 
 ### Changed
+
+- Breaking, before 1.0: the classifier adds variants and a field type.
+  `Body::Classified`, `EventKind::Classified`, `Field::Classifier` and
+  `Field::Answer`, `Degraded::Uncalibrated`, `Clash::Classifier`,
+  `Target::Classifier`, `NameError::Classifier`, and `AcceptError::
+  UnnamedClassifier`, `UndeclaredClassifier` and `MetaReadsClassifier` are
+  new variants, and a `match` on one of these enums that has no wildcard arm
+  stops compiling. `AcceptError::ReferencesBelow { item,
+  referenced }` now holds a `Target` in `referenced` (`Target::Policy(id)` for
+  what it held before), so that it can name a classifier.
+  `PolicyGraph::into_parts` returns the classifiers too, `(Vec<PolicyDef>,
+  Vec<Binding>, Vec<Classifier>)`, so that `parse_with` takes back exactly
+  what it gave; a caller that destructures the pair adds the third.
 
 - Knowledge, a document meant for the agent's context, is no longer seen as
   part of the Core domain (#12). Putting it into the agent's context is a
