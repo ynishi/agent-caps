@@ -21,7 +21,9 @@
 //!
 //! The domain holds no roles. Who an event or a policy comes from is a principal, and where it
 //! sits is the [`authority::Authority`] the caller gives; nothing here treats one principal
-//! differently from another except by that hierarchy.
+//! differently from another except by that hierarchy. A rule for a role is a condition on the
+//! acting principal ([`predicate::Pred::ActorUnder`]), with the role a principal of the
+//! hierarchy, not a kind of event.
 //!
 //! # Glossary
 //!
@@ -31,10 +33,16 @@
 //! - Principal and authority: who wrote a policy or made an event, and the hierarchy that says
 //!   whose work whom may loosen ([`authority`]); a change of a catalog is judged by it
 //!   ([`change`]), and so is a claim ([`tx`]).
+//! - Actor and spawn: who acts is the event's principal, and where it sits is read from the
+//!   hierarchy of actors, which is the [`authority::Authority`] plus the leaves that spawns add
+//!   ([`state`]). A rule reads it with [`predicate::Pred::ActorUnder`]. The two hierarchies stay
+//!   apart: only the authority's says whose rules one may loosen. A spawn
+//!   ([`event::Body::Spawn`]) is a claim: where it places its child is judged as a transaction
+//!   ([`tx`]).
 //! - Act and claim: the two natures of an event ([`schema::Nature`]). An act (a tool use, the end
 //!   of a turn) is observed on the platform, and is what rules judge. A claim (an exemption, a
-//!   mode switch, a record of a judgment or a score) is stated by someone, and may change how
-//!   the rules take effect.
+//!   mode switch, a spawn, a record of a judgment or a score) is stated by someone, and may
+//!   change how the rules take effect.
 //! - Transaction: how a claim takes effect ([`tx`]): applied to a copy of the state, judged by
 //!   the difference from each point of view (a check), and kept as a whole or not at all. A
 //!   loosening one takes effect only from one who covers the authors of what it loosens.

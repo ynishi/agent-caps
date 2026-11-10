@@ -1,14 +1,19 @@
 //! The structural rule language: what a policy says about an event and the events before it.
 //!
 //! ```text
-//! Pred := Now(Cond) | ModeIs(mode)
+//! Pred := Now(Cond) | ModeIs(mode) | ActorUnder(principal)
 //!       | Once(filter, scope) | Count(filter, scope) cmp n | Last(field, scope) == lit
 //!       | All[Pred…] | Any[Pred…] | Not Pred
 //! Cond := field == lit | field in {lit…} | glob(field, pattern) | words(field, words)
 //!       | num(field) cmp n | All[Cond…] | Any[Cond…] | Not Cond
 //! filter := kind [where Cond]
-//! scope  := Session | Agent | Mode | Task | Since(filter)
+//! scope  := Session | Mode | Task | Since(filter)
 //! ```
+//!
+//! `ModeIs` and `ActorUnder` read the state rather than the events of a scope: the mode in
+//! effect, and where the judged event's actor sits in the hierarchy of actors. How a policy
+//! reads such an atom, in a direction a transaction can use, is answered in one place,
+//! `state_readings`, for every atom that reads the state.
 //!
 //! # Invariants
 //!
@@ -25,6 +30,7 @@
 //! - A field is read only from its own kind of event, with an operand of its type. The catalog
 //!   checks this ([`Pred::check`]) before it accepts a policy.
 
+use super::authority::Principal;
 use super::name::{CommandWords, GlobPattern, Mode, PolicyId};
 use super::schema::{EventKind, Field, FieldType};
 
@@ -158,7 +164,7 @@ pub struct EventFilter {
 /// closes, and the interval starts again before the next event). The state folds both in one
 /// place, so every scope, the four fixed ones and [`Scope::Since`], is handled by one rule.
 ///
-/// `Session`, `Agent` and `Task` assume their start events are not lost to an unreadable record
+/// `Session` and `Task` assume their start events are not lost to an unreadable record
 /// (a known gap: a lost start leaves the scope looking as if it had not started again).
 /// [`Scope::Mode`] and [`Scope::Since`] do not: when a lost record may have been a mode switch,
 /// or the event a `Since` looks for, the scope's slots become unknown.
@@ -196,8 +202,6 @@ pub struct EventFilter {
 pub enum Scope {
     /// From [`EventKind::SessionStart`].
     Session,
-    /// From [`EventKind::AgentStart`].
-    Agent,
     /// From the last mode switch that took effect, a switch to the mode already in effect
     /// included.
     Mode,
@@ -214,6 +218,12 @@ pub enum Pred {
     Now(Cond),
     /// The mode in effect is this one.
     ModeIs(Mode),
+    /// The actor of the judged event (its `by`) is the principal or sits below it in the
+    /// hierarchy of actors: the principals of the [`Authority`](super::authority::Authority)
+    /// and the leaves that spawns added to them. The principal must be one of the authority's
+    /// (a leaf's name is new at every start, so a rule cannot name it). An actor the hierarchy
+    /// does not know, or one placed after a lost record, is unknown, not "not under".
+    ActorUnder(Principal),
     /// Such an event happened within the scope, the judged event included.
     Once {
         /// The event looked for.
@@ -395,7 +405,8 @@ impl Pred {
     fn check_into(&self, subject: EventKind, errors: &mut Vec<PredError>) {
         match self {
             Self::Now(cond) => cond.check_into(subject, errors),
-            Self::ModeIs(_) => {}
+            // Whether the principal is one of the hierarchy is the catalog's to check.
+            Self::ModeIs(_) | Self::ActorUnder(_) => {}
             Self::Once { event, scope } | Self::Count { event, scope, .. } => {
                 event.check_into(errors);
                 scope.check_into(errors);
@@ -426,7 +437,7 @@ impl Pred {
 
     fn temporals_into(&self, out: &mut Vec<Temporal>) {
         let found = match self {
-            Self::Now(_) | Self::ModeIs(_) => None,
+            Self::Now(_) | Self::ModeIs(_) | Self::ActorUnder(_) => None,
             Self::Once { event, scope } => Some(Temporal::Once(event.clone(), scope.clone())),
             Self::Count { event, scope, .. } => Some(Temporal::Count(event.clone(), scope.clone())),
             Self::Last { field, scope, .. } => Some(Temporal::Last(*field, scope.clone())),
@@ -446,6 +457,86 @@ impl Pred {
         {
             out.push(temporal);
         }
+    }
+}
+
+/// Where a predicate stands in a policy. It decides whether the direction an atom that reads the
+/// state is read in can be told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Site {
+    /// The `when` of a guard. The guard applies where it holds, so an atom under an even number
+    /// of `Not`s that holds more often makes the guard apply to more.
+    GuardWhen,
+    /// The `rule` of a guard: what must hold of an event the guard applies to. An atom in it
+    /// that holds more often can let an event pass or stop it, depending on the rest.
+    GuardRule,
+    /// Either predicate of a reward. A reward's `Hit` is recorded as a judgment, which guards may
+    /// read, so a reward is not neutral and its direction is not read.
+    Reward,
+}
+
+/// The direction in which a policy reads an atom that reads the state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reading {
+    /// The atom holding more often makes the policy apply to more, and holding less often makes
+    /// it apply to less: the guard's `when`, under an even number of `Not`s.
+    Positive,
+    /// The direction cannot be told: the atom is under an odd number of `Not`s, or in a guard's
+    /// `rule`, or in a reward.
+    Unreadable,
+}
+
+/// An atom of a predicate that reads the state rather than the events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StateAtom<'a> {
+    /// `ModeIs(mode)`.
+    Mode(&'a Mode),
+    /// `ActorUnder(principal)`.
+    Actor(&'a Principal),
+}
+
+/// Every atom of `pred` that reads the state, each once, with the direction `pred` reads it in
+/// when it stands at `site`: the one place that answers this, for every such atom. An atom read
+/// in two directions is `Unreadable`.
+pub(super) fn state_readings(pred: &Pred, site: Site) -> Vec<(StateAtom<'_>, Reading)> {
+    let mut out = Vec::new();
+    readings_into(pred, site, false, &mut out);
+    out
+}
+
+fn readings_into<'a>(
+    pred: &'a Pred,
+    site: Site,
+    negated: bool,
+    out: &mut Vec<(StateAtom<'a>, Reading)>,
+) {
+    let atom = match pred {
+        Pred::ModeIs(mode) => StateAtom::Mode(mode),
+        Pred::ActorUnder(principal) => StateAtom::Actor(principal),
+        Pred::All(preds) | Pred::Any(preds) => {
+            for pred in preds {
+                readings_into(pred, site, negated, out);
+            }
+            return;
+        }
+        Pred::Not(pred) => return readings_into(pred, site, !negated, out),
+        Pred::Now(_) | Pred::Once { .. } | Pred::Count { .. } | Pred::Last { .. } => return,
+    };
+    let reading = if site == Site::GuardWhen && !negated {
+        Reading::Positive
+    } else {
+        Reading::Unreadable
+    };
+    note_reading(out, atom, reading);
+}
+
+/// Notes that `key` is read in `reading`, each key once: read in two directions, it is
+/// `Unreadable`. The one rule for merging readings, of one predicate or of a whole policy.
+pub(super) fn note_reading<K: PartialEq>(out: &mut Vec<(K, Reading)>, key: K, reading: Reading) {
+    match out.iter_mut().find(|(seen, _)| *seen == key) {
+        Some((_, seen)) if reading == Reading::Unreadable => *seen = Reading::Unreadable,
+        Some(_) => {}
+        None => out.push((key, reading)),
     }
 }
 
@@ -666,7 +757,7 @@ mod tests {
                 kind: EventKind::Stop,
                 cond: None,
             },
-            scope: Scope::Agent,
+            scope: Scope::Task,
         };
         let pred = Pred::All(vec![
             once.clone(),
@@ -676,11 +767,56 @@ mod tests {
                     kind: EventKind::Stop,
                     cond: None,
                 },
-                scope: Scope::Agent,
+                scope: Scope::Task,
                 cmp: Cmp::Ge,
                 n: 2,
             },
         ]);
         assert_eq!(pred.temporals().len(), 2);
+    }
+
+    #[test]
+    fn a_state_atom_is_read_positively_only_in_a_guards_when_under_an_even_number_of_nots() {
+        let reviewer = Principal::new("reviewer");
+        let under = || Pred::ActorUnder(reviewer.clone());
+        let not = |pred| Pred::Not(Box::new(pred));
+        let reading = |pred: &Pred, site| {
+            let found = state_readings(pred, site);
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].0, StateAtom::Actor(&reviewer));
+            found[0].1
+        };
+        assert_eq!(reading(&under(), Site::GuardWhen), Reading::Positive);
+        assert_eq!(
+            reading(&not(not(under())), Site::GuardWhen),
+            Reading::Positive
+        );
+        assert_eq!(
+            reading(&Pred::Any(vec![under()]), Site::GuardWhen),
+            Reading::Positive
+        );
+        assert_eq!(reading(&not(under()), Site::GuardWhen), Reading::Unreadable);
+        assert_eq!(reading(&under(), Site::GuardRule), Reading::Unreadable);
+        assert_eq!(reading(&under(), Site::Reward), Reading::Unreadable);
+        // In both directions at once, it is not read.
+        let both = Pred::All(vec![under(), not(under())]);
+        assert_eq!(reading(&both, Site::GuardWhen), Reading::Unreadable);
+    }
+
+    #[test]
+    fn the_atoms_that_read_the_state_are_found_through_the_temporal_operators_untouched() {
+        let mode: Mode = "strict".parse().unwrap();
+        let once = Pred::Once {
+            event: EventFilter {
+                kind: EventKind::Stop,
+                cond: None,
+            },
+            scope: Scope::Task,
+        };
+        let pred = Pred::All(vec![once, Pred::ModeIs(mode.clone())]);
+        assert_eq!(
+            state_readings(&pred, Site::GuardWhen),
+            vec![(StateAtom::Mode(&mode), Reading::Positive)]
+        );
     }
 }

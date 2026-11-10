@@ -68,11 +68,11 @@ fn an_ill_typed_exemption_takes_no_effect() {
         judged(exemption(Some(on_a.clone()), Lifetime::Next)),
         Verdict::Allow
     );
-    // The target reads the type of an agent from a tool use, though it would hold on this
+    // The target reads the mode a switch went to from a tool use, though it would hold on this
     // event through its other branch.
     let ill_target = Cond::Any(vec![
         on_a.clone(),
-        Cond::Eq(Field::AgentType, Lit::Text("x".to_owned())),
+        Cond::Eq(Field::ModeTo, Lit::Text("x".to_owned())),
     ]);
     assert_eq!(
         judged(exemption(Some(ill_target), Lifetime::Next)),

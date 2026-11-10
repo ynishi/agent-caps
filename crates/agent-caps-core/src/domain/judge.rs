@@ -146,7 +146,7 @@ pub fn judge(catalog: &Catalog, state: &State, event: &Event) -> Outcome {
     let mut guards = Vec::new();
     let mut rewards = Vec::new();
     for (policy, level) in effective.on() {
-        let finding = policy.evaluate(catalog.slots(), state, event);
+        let finding = policy.evaluate(catalog.slots(), catalog.authority(), state, event);
         if finding == Finding::NotApplicable {
             continue;
         }

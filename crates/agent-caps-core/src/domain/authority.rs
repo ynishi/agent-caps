@@ -8,8 +8,10 @@
 //!
 //! [`Authority::may_loosen`] is the one question of whether something that loosens may be done:
 //! a change of a catalog ([`super::change`]) and a claim in the evidence ([`super::tx`]) both ask
-//! it, and nothing else in the domain looks at who did what. Nobody asks it of what only
-//! tightens: that is open to anyone.
+//! it, and nothing else in the domain decides who may do what. (A rule may read where the actor
+//! sits in the hierarchy of actors, which is this hierarchy plus the leaves that spawns add, and
+//! a spawn is compared with a place under its spawner; neither says who may loosen anything.)
+//! Nobody asks it of what only tightens: that is open to anyone.
 //!
 //! ```text
 //! user            root
