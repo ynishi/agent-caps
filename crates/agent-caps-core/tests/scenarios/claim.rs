@@ -8,7 +8,7 @@ use agent_caps_core::domain::catalog::{Capabilities, Catalog};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Verdict, judge};
-use agent_caps_core::domain::policy::{Change, Level};
+use agent_caps_core::domain::policy::Level;
 use agent_caps_core::domain::predicate::Scope;
 use agent_caps_core::domain::state::Known;
 use agent_caps_core::domain::tx::{
@@ -17,7 +17,8 @@ use agent_caps_core::domain::tx::{
 };
 
 use super::common::{
-    GUARD, OTHER, agent, at, catalog, edit, id, in_mode, mode, src_edit_guard, test_guard, the_user,
+    GUARD, OTHER, agent, at, bind, catalog, edit, id, inside, mode, src_edit_guard, test_guard,
+    the_user,
 };
 
 /// One outside the scenarios' hierarchy.
@@ -42,7 +43,7 @@ fn src_and_fix() -> Catalog {
     stop.name = "stop-guard".parse().unwrap();
     catalog(
         vec![src_edit_guard(), stop],
-        vec![in_mode("fix", OTHER, Change::Level(Level::Force))],
+        vec![bind(OTHER, 1, Level::Force, inside("fix"), the_user())],
     )
 }
 

@@ -1,17 +1,23 @@
-//! Helpers shared by the scenarios: ids, events, principals, fixtures, and the two entry points
-//! every scenario goes through (`Catalog::accept` for a graph, `Catalog::fold` plus `judge` for a
-//! verdict). Nothing here decides anything the domain decides. A helper that only one module uses
-//! lives in that module.
+//! Helpers shared by the scenarios: ids, events, principals, fixtures, bindings, and the two entry
+//! points every scenario goes through (`Catalog::accept` for a graph, `Catalog::fold` plus
+//! `judge` for a verdict). Nothing here decides anything the domain decides. A helper that only one
+//! module uses lives in that module.
+//!
+//! A scenario writes a policy with the level its own author puts it into effect at under every
+//! mode ([`Written`]); the graph is that policy and that one binding ([`base_of`]), plus the
+//! bindings the scenario gives.
+
+use std::ops::{Deref, DerefMut};
 
 use agent_caps_core::domain::authority::{Authority, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Catalog, Effect, Rejected};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Outcome, Verdict, judge};
-use agent_caps_core::domain::name::{CommandWords, GlobPattern, Mode, PolicyId};
+use agent_caps_core::domain::name::{BindingId, CommandWords, GlobPattern, Mode, PolicyId};
 use agent_caps_core::domain::policy::{
-    Change, DefLayer, Expect, Fixture, Level, Override, OverrideLayer, Polarity, PolicyDef,
-    PolicyGraph, RewardLevel, Rule,
+    Binding, DefLayer, Expect, Fixture, Level, ModeScope, ModeSet, Polarity, PolicyDef,
+    PolicyGraph, Rule,
 };
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field, KindSet};
@@ -140,24 +146,74 @@ pub fn authority() -> Authority {
     .unwrap()
 }
 
-/// An override of the policy in the layer, written by `author`.
-pub fn over(layer: OverrideLayer, policy: &str, change: Change, author: Principal) -> Override {
-    Override {
-        layer,
+/// A policy as a scenario writes it, with the level of the binding its own author puts it into
+/// effect at under every mode (`None`: no such binding, so it is off unless another binding puts it
+/// into effect). It reads as the policy it holds.
+#[derive(Debug, Clone)]
+pub struct Written {
+    pub def: PolicyDef,
+    pub level: Option<Level>,
+}
+
+impl Deref for Written {
+    type Target = PolicyDef;
+
+    fn deref(&self) -> &PolicyDef {
+        &self.def
+    }
+}
+
+impl DerefMut for Written {
+    fn deref_mut(&mut self) -> &mut PolicyDef {
+        &mut self.def
+    }
+}
+
+/// The policy, put into effect at the level by its author under every mode.
+pub fn written(def: PolicyDef, level: Level) -> Written {
+    Written {
+        def,
+        level: Some(level),
+    }
+}
+
+/// The id of a binding of the policy: the policy's id with its first group made `b` and `n`, so
+/// `n` tells the bindings of one policy apart. `0` is the binding of [`base_of`].
+pub fn binding_id(policy: PolicyId, n: u8) -> BindingId {
+    let text = policy.to_string();
+    format!("b{n:07x}{}", &text[8..]).parse().unwrap()
+}
+
+/// The `n`th binding of the policy, at the level, under the mode scope, by `author`.
+pub fn bind(policy: &str, n: u8, level: Level, mode: ModeScope, author: Principal) -> Binding {
+    Binding {
+        id: binding_id(id(policy), n),
         policy: id(policy),
-        change,
+        level,
+        mode,
         author,
     }
 }
 
-/// A project override of the policy, written by the user.
-pub fn project(policy: &str, change: Change) -> Override {
-    over(OverrideLayer::Project, policy, change, the_user())
+/// The binding a written policy's author puts it into effect with, under every mode.
+pub fn base_of(written: &Written) -> Option<Binding> {
+    written.level.map(|level| Binding {
+        id: binding_id(written.id, 0),
+        policy: written.id,
+        level,
+        mode: ModeScope::Any,
+        author: written.author.clone(),
+    })
 }
 
-/// An override of the policy by the mode, written by the user.
-pub fn in_mode(name: &str, policy: &str, change: Change) -> Override {
-    over(OverrideLayer::Mode(mode(name)), policy, change, the_user())
+/// Only while the mode is in effect.
+pub fn inside(name: &str) -> ModeScope {
+    ModeScope::In(mode(name))
+}
+
+/// Only while none of the modes is in effect.
+pub fn outside(names: &[&str]) -> ModeScope {
+    ModeScope::Outside(ModeSet::new(names.iter().map(|n| mode(n)).collect()).unwrap())
 }
 
 /// `cargo test` passed within the scope.
@@ -211,8 +267,14 @@ pub fn fixture(name: &str, events: Vec<Event>, expect: Expect) -> Fixture {
     }
 }
 
-/// A stopping guard: the end of a turn needs `cargo test` to have passed within the task.
-pub fn test_guard(level: Level) -> PolicyDef {
+/// A stopping guard: the end of a turn needs `cargo test` to have passed within the task. Its
+/// author binds it at `level`.
+pub fn test_guard(level: Level) -> Written {
+    written(test_guard_def(), level)
+}
+
+/// The test guard as a policy, with no binding.
+pub fn test_guard_def() -> PolicyDef {
     PolicyDef {
         id: id(GUARD),
         name: "test-before-stop".parse().unwrap(),
@@ -220,8 +282,7 @@ pub fn test_guard(level: Level) -> PolicyDef {
         subject: EventKind::Stop,
         when: None,
         rule: Rule::Structural(tested()),
-        polarity: Polarity::Guard { level },
-        enabled: true,
+        polarity: Polarity::Guard,
         fixtures: vec![
             fixture(
                 "untested",
@@ -244,7 +305,7 @@ pub fn test_guard(level: Level) -> PolicyDef {
 
 /// The test guard on a commit instead of on the end of a turn, at Force: a `git commit` needs
 /// `cargo test` to have passed within the task.
-pub fn commit_after_test_guard() -> PolicyDef {
+pub fn commit_after_test_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.subject = EventKind::ToolUse;
     guard.when = Some(Pred::Now(Cond::Words(Field::Command, words("git commit"))));
@@ -269,7 +330,7 @@ pub fn commit_after_test_guard() -> PolicyDef {
 
 /// The test guard on an edit instead of on the end of a turn, at Force: no edit under `src/`
 /// before the tests pass.
-pub fn src_edit_guard() -> PolicyDef {
+pub fn src_edit_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.subject = EventKind::ToolUse;
     guard.when = Some(Pred::Now(Cond::Glob(
@@ -298,7 +359,7 @@ pub fn src_edit_guard() -> PolicyDef {
 /// The root's advising guard on a `git push` (it has no fixtures, so it does not stop), whose rule
 /// reads the judgments of the policy `read`: the last of them within the session was an
 /// `allowed`. A rule that reads another's judgments.
-pub fn push_after_allowed(read: &str) -> PolicyDef {
+pub fn push_after_allowed(read: &str) -> Written {
     let mut guard = test_guard(Level::Advise);
     guard.id = id(OTHER);
     guard.name = "push-after-allowed".parse().unwrap();
@@ -316,35 +377,38 @@ pub fn push_after_allowed(read: &str) -> PolicyDef {
     guard
 }
 
-/// A reward within the guard: run clippy before stopping.
-pub fn clippy_reward(level: RewardLevel) -> PolicyDef {
-    PolicyDef {
-        id: id(REWARD),
-        name: "clippy-before-stop".parse().unwrap(),
-        layer: DefLayer::Base,
-        subject: EventKind::Stop,
-        when: None,
-        rule: Rule::Structural(Pred::Once {
-            event: EventFilter {
-                kind: EventKind::ToolUse,
-                cond: Some(Cond::Words(Field::Command, words("cargo clippy"))),
+/// A reward within the guard: run clippy before stopping. Its author binds it at `level`.
+pub fn clippy_reward(level: Level) -> Written {
+    written(
+        PolicyDef {
+            id: id(REWARD),
+            name: "clippy-before-stop".parse().unwrap(),
+            layer: DefLayer::Base,
+            subject: EventKind::Stop,
+            when: None,
+            rule: Rule::Structural(Pred::Once {
+                event: EventFilter {
+                    kind: EventKind::ToolUse,
+                    cond: Some(Cond::Words(Field::Command, words("cargo clippy"))),
+                },
+                scope: Scope::Task,
+            }),
+            polarity: Polarity::Reward {
+                bound_by: id(GUARD),
             },
-            scope: Scope::Task,
-        }),
-        polarity: Polarity::Reward {
-            level,
-            bound_by: id(GUARD),
+            fixtures: vec![],
+            author: the_user(),
         },
-        enabled: true,
-        fixtures: vec![],
-        author: the_user(),
-    }
+        level,
+    )
 }
 
-pub fn graph_of(policies: Vec<PolicyDef>, overrides: Vec<Override>) -> PolicyGraph {
+/// The graph of the written policies, each with its base binding, and the bindings given.
+pub fn graph_of(policies: Vec<Written>, bindings: Vec<Binding>) -> PolicyGraph {
+    let base: Vec<Binding> = policies.iter().filter_map(base_of).collect();
     PolicyGraph {
-        policies,
-        overrides,
+        policies: policies.into_iter().map(|w| w.def).collect(),
+        bindings: base.into_iter().chain(bindings).collect(),
     }
 }
 
@@ -353,12 +417,12 @@ pub fn accept(graph: PolicyGraph) -> Result<Catalog, Rejected> {
     Catalog::accept(graph, authority())
 }
 
-pub fn catalog(policies: Vec<PolicyDef>, overrides: Vec<Override>) -> Catalog {
-    accept(graph_of(policies, overrides)).unwrap()
+pub fn catalog(policies: Vec<Written>, bindings: Vec<Binding>) -> Catalog {
+    accept(graph_of(policies, bindings)).unwrap()
 }
 
-pub fn rejected(policies: Vec<PolicyDef>, overrides: Vec<Override>) -> Vec<AcceptError> {
-    accept(graph_of(policies, overrides)).unwrap_err().0
+pub fn rejected(policies: Vec<Written>, bindings: Vec<Binding>) -> Vec<AcceptError> {
+    accept(graph_of(policies, bindings)).unwrap_err().0
 }
 
 /// Every policy of the catalog with what it comes to under the mode, in the catalog's order.

@@ -1,5 +1,6 @@
 //! The values with a rule of their own that the rest of the domain refers to: the id and name of a
-//! policy, a mode, the words of a command, a shell pattern and the reason of an exemption.
+//! policy, the id of a binding, a mode, the words of a command, a shell pattern and the reason of
+//! an exemption.
 //!
 //! Each is made only through its constructor, so a value of the type always keeps its rule.
 
@@ -11,6 +12,8 @@ use std::str::FromStr;
 pub enum NameError {
     /// A policy id that is not a UUID in its hyphenated form.
     PolicyId(String),
+    /// A binding id that is not a UUID in its hyphenated form.
+    BindingId(String),
     /// A name (of a policy or a mode) that is empty or has a character other than an ASCII
     /// letter, a digit, `-` or `_`.
     Name(String),
@@ -23,7 +26,9 @@ pub enum NameError {
 impl fmt::Display for NameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PolicyId(text) => write!(f, "`{text}` is not a hyphenated UUID"),
+            Self::PolicyId(text) | Self::BindingId(text) => {
+                write!(f, "`{text}` is not a hyphenated UUID")
+            }
             Self::Name(text) => write!(
                 f,
                 "`{text}` is not a name: one or more ASCII letters, digits, `-` or `_`"
@@ -46,34 +51,67 @@ impl FromStr for PolicyId {
 
     /// Reads the hyphenated form `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, in either case.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let bad = || NameError::PolicyId(text.to_owned());
-        let groups: Vec<&str> = text.split('-').collect();
-        let fits = groups.len() == 5
-            && groups.iter().zip([8, 4, 4, 4, 12]).all(|(group, len)| {
-                group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit())
-            });
-        if !fits {
-            return Err(bad());
-        }
-        let hex: String = groups.concat();
-        u128::from_str_radix(&hex, 16).map(Self).map_err(|_| bad())
+        parse_uuid(text)
+            .map(Self)
+            .ok_or_else(|| NameError::PolicyId(text.to_owned()))
     }
 }
 
 impl fmt::Display for PolicyId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let hex = format!("{:032x}", self.0);
-        let part = |range: std::ops::Range<usize>| hex.get(range).unwrap_or_default();
-        write!(
-            f,
-            "{}-{}-{}-{}-{}",
-            part(0..8),
-            part(8..12),
-            part(12..16),
-            part(16..20),
-            part(20..32)
-        )
+        write_uuid(f, self.0)
     }
+}
+
+/// The surrogate key of a binding, unique in a catalog. The policy graph gives it, as it gives the
+/// id of a policy, so a graph composed of shared sets can name the binding it removes or replaces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct BindingId(u128);
+
+impl FromStr for BindingId {
+    type Err = NameError;
+
+    /// Reads the hyphenated form `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, in either case.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        parse_uuid(text)
+            .map(Self)
+            .ok_or_else(|| NameError::BindingId(text.to_owned()))
+    }
+}
+
+impl fmt::Display for BindingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_uuid(f, self.0)
+    }
+}
+
+/// The value of the hyphenated form `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, in either case.
+fn parse_uuid(text: &str) -> Option<u128> {
+    let groups: Vec<&str> = text.split('-').collect();
+    let fits = groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, len)| group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit()));
+    if !fits {
+        return None;
+    }
+    u128::from_str_radix(&groups.concat(), 16).ok()
+}
+
+/// Writes `value` in the hyphenated form, in lower case.
+fn write_uuid(f: &mut fmt::Formatter<'_>, value: u128) -> fmt::Result {
+    let hex = format!("{value:032x}");
+    let part = |range: std::ops::Range<usize>| hex.get(range).unwrap_or_default();
+    write!(
+        f,
+        "{}-{}-{}-{}-{}",
+        part(0..8),
+        part(8..12),
+        part(12..16),
+        part(16..20),
+        part(20..32)
+    )
 }
 
 /// Whether `text` is a name: one or more ASCII letters, digits, `-` or `_`.
@@ -107,8 +145,9 @@ impl fmt::Display for PolicyName {
     }
 }
 
-/// A way of working (`bug-fix`, `explore`, `modeling`). One mode is in effect at a time; its
-/// overrides change the level of the policies, or turn them on or off.
+/// A way of working (`bug-fix`, `explore`, `modeling`). One mode is in effect at a time; a
+/// binding may hold only inside a mode, or only outside some, so the mode decides which bindings
+/// take effect.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Mode(String);
 

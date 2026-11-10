@@ -1,8 +1,18 @@
-//! The one part of a catalog: a policy, and the policy graph it is written in.
+//! The one part of a catalog: a policy, the bindings that put it into effect, and the policy graph
+//! both are written in.
 //!
 //! A policy says, for one kind of event, what must hold (a guard) or what is recommended (a
-//! reward), and how strongly ([`Level`]). Knowledge, procedures and roles are not parts of their
-//! own: each is a set of policies seen another way.
+//! reward). It holds no strength of its own. A [`Binding`] is one author's statement that a policy
+//! takes effect at a [`Level`] where its [`ModeScope`] holds; a policy takes effect at the
+//! strongest level of its bindings that hold, and with none it is off. Adding a binding therefore
+//! never lowers a policy. Knowledge, procedures and roles are not parts of their own: each is a set
+//! of policies seen another way.
+//!
+//! ```text
+//! PolicyDef   what must hold or is recommended    (when, rule, subject, fixtures, author)
+//! Binding     that policy, at a level, under a mode scope, by an author
+//!   effect of a policy = the strongest level of its bindings that hold, or Off
+//! ```
 //!
 //! A level is how much the one who acts is trusted with a rule, not when the rule is checked:
 //!
@@ -20,11 +30,12 @@
 //! # Invariants
 //!
 //! - A reward is bound by one guard: the guard is the line not to cross, the reward the way to
-//!   go within it. A reward cannot be stronger than its guard, and cannot be Force
-//!   ([`RewardLevel`] has no such value).
-//! - A policy and an override each have an author, a [`Principal`]. What may refer to what, and
+//!   go within it. A reward takes effect no stronger than its guard, and no binding of a reward
+//!   is Force (see [`super::catalog`]).
+//! - A policy and a binding each have an author, a [`Principal`]. What may refer to what, and
 //!   who may change whose, follows the [`Authority`] the catalog keeps (see
 //!   [`super::catalog`] and [`super::change`]).
+//! - A [`ModeSet`] is not empty and holds no mode twice: [`ModeSet::new`] refuses otherwise.
 //! - A [`Policy`] is made only by [`super::catalog::Catalog::accept`], which checks the graph as a
 //!   whole (see there). The [`PolicyDef`] it is made from is plain data with no rule of its own.
 //! - A [`Policy`] keeps its [`PolicyDef`] as written, and the predicates the catalog uses. The
@@ -33,50 +44,125 @@
 //!   written def is what a graph and a difference between graphs are read from; the compiled
 //!   predicates are what is evaluated and what the slots are made of.
 
+use std::fmt;
+
 use super::authority::{Authority, Principal};
 use super::event::Event;
-use super::name::{Mode, PolicyId, PolicyName};
+use super::name::{BindingId, Mode, PolicyId, PolicyName};
 use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Truth, reads_unnarrowed};
 use super::schema::{EventKind, Field};
-use super::state::{SlotTable, State};
+use super::state::{Known, SlotTable, State};
 
 // `Level` is defined in `schema` so that a record of a judgment (`event`), which carries the
 // levels it was written and enforced at, does not depend on this module; it is read from here.
 pub use super::schema::Level;
 
-/// The levels a reward can have. A recommendation never stops anything.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RewardLevel {
-    /// Only tells.
-    Inform,
-    /// Recommends.
-    Advise,
+/// Whether a policy forbids or recommends. How strongly is its bindings' to say.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Polarity {
+    /// What must hold. Failing it gives a warning or a denial.
+    Guard,
+    /// What is recommended. Following it is a hit; not following it is no failure.
+    Reward {
+        /// The guard it works within.
+        bound_by: PolicyId,
+    },
 }
 
-impl From<RewardLevel> for Level {
-    fn from(level: RewardLevel) -> Self {
-        match level {
-            RewardLevel::Inform => Self::Inform,
-            RewardLevel::Advise => Self::Advise,
+/// Why a [`ModeSet`] could not be made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModeSetError {
+    /// No mode was given.
+    Empty,
+    /// The mode was given twice.
+    Duplicate(Mode),
+}
+
+impl fmt::Display for ModeSetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("a set of modes needs at least one mode"),
+            Self::Duplicate(mode) => write!(f, "the mode {mode} is given twice"),
         }
     }
 }
 
-/// Whether a policy forbids or recommends.
+impl std::error::Error for ModeSetError {}
+
+/// Modes, at least one, none twice, kept in their order. Made only by [`ModeSet::new`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Polarity {
-    /// What must hold. Failing it gives a warning or a denial.
-    Guard {
-        /// How strongly.
-        level: Level,
-    },
-    /// What is recommended. Following it is a hit; not following it is no failure.
-    Reward {
-        /// How strongly.
-        level: RewardLevel,
-        /// The guard it works within.
-        bound_by: PolicyId,
-    },
+pub struct ModeSet(Vec<Mode>);
+
+impl ModeSet {
+    /// The set of `modes`, when there is at least one and none is given twice.
+    pub fn new(modes: Vec<Mode>) -> Result<Self, ModeSetError> {
+        if modes.is_empty() {
+            return Err(ModeSetError::Empty);
+        }
+        for (at, mode) in modes.iter().enumerate() {
+            if modes[..at].contains(mode) {
+                return Err(ModeSetError::Duplicate(mode.clone()));
+            }
+        }
+        Ok(Self(modes))
+    }
+
+    /// The modes, in the order given.
+    pub fn modes(&self) -> &[Mode] {
+        &self.0
+    }
+}
+
+/// Where a binding takes effect, as to the mode.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ModeScope {
+    /// Under every mode, and under none.
+    Any,
+    /// Only while this mode is in effect.
+    In(Mode),
+    /// Only while none of these modes is in effect (no mode at all included).
+    Outside(ModeSet),
+}
+
+impl ModeScope {
+    /// Whether it holds under `mode`; [`Truth::Unknown`] when the mode is not known and the scope
+    /// depends on it. The one answer to "does a binding hold under a mode", and to "is the mode
+    /// `m`" (`In(m)`).
+    pub fn holds(&self, mode: &Known<Option<Mode>>) -> Truth {
+        match (self, mode) {
+            (Self::Any, _) => Truth::True,
+            (Self::In(_) | Self::Outside(_), Known::Unknown) => Truth::Unknown,
+            (Self::In(m), Known::Known(now)) => Truth::of(now.as_ref() == Some(m)),
+            (Self::Outside(set), Known::Known(now)) => {
+                Truth::of(now.as_ref().is_none_or(|now| !set.modes().contains(now)))
+            }
+        }
+    }
+
+    /// The modes it names.
+    pub fn modes(&self) -> &[Mode] {
+        match self {
+            Self::Any => &[],
+            Self::In(mode) => std::slice::from_ref(mode),
+            Self::Outside(set) => set.modes(),
+        }
+    }
+}
+
+/// One author's statement that a policy takes effect at a level, where its scope holds. A policy
+/// takes effect at the strongest level of its bindings that hold.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Binding {
+    /// Its id, unique in the graph.
+    pub id: BindingId,
+    /// The policy it puts into effect.
+    pub policy: PolicyId,
+    /// How strongly.
+    pub level: Level,
+    /// Where, as to the mode.
+    pub mode: ModeScope,
+    /// Who wrote it: the policy's author or one below it.
+    pub author: Principal,
 }
 
 /// How a policy judges. New ways (a classifier's answer) are added as the model grows.
@@ -90,9 +176,10 @@ pub enum Rule {
 /// The layer a policy is defined in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DefLayer {
-    /// Fixed: no override reaches it and no exemption covers it.
+    /// Fixed: it has exactly one binding, by its author, under every mode, and no exemption
+    /// covers it.
     Meta,
-    /// Its author's own: the project and the mode may override it.
+    /// Its author's own: its author and those below may bind it, at a level and under a mode.
     Base,
 }
 
@@ -139,10 +226,8 @@ pub struct PolicyDef {
     pub when: Option<Pred>,
     /// What it says.
     pub rule: Rule,
-    /// Whether it forbids or recommends, and how strongly.
+    /// Whether it forbids or recommends.
     pub polarity: Polarity,
-    /// Whether it is on before any override.
-    pub enabled: bool,
     /// Its examples.
     pub fixtures: Vec<Fixture>,
     /// Who wrote it. The graph is trusted as written; the catalog checks that the author is a
@@ -151,73 +236,13 @@ pub struct PolicyDef {
     pub author: Principal,
 }
 
-/// The layer an override belongs to. A mode's overrides apply over the project's.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum OverrideLayer {
-    /// The project's.
-    Project,
-    /// A mode's, while that mode is in effect.
-    Mode(Mode),
-}
-
-/// What an override changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Change {
-    /// The level.
-    Level(Level),
-    /// Turns the policy off.
-    Off,
-    /// Turns the policy on.
-    On,
-}
-
-/// A change a layer makes to one policy.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Override {
-    /// The layer.
-    pub layer: OverrideLayer,
-    /// The policy.
-    pub policy: PolicyId,
-    /// The change.
-    pub change: Change,
-    /// Who wrote it. It may target only a policy whose author is its own or above it.
-    pub author: Principal,
-}
-
-/// What a catalog is accepted from: the policies, and the overrides of the layers above them.
+/// What a catalog is accepted from: the policies, and the bindings that put them into effect.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct PolicyGraph {
     /// The policies.
     pub policies: Vec<PolicyDef>,
-    /// The overrides.
-    pub overrides: Vec<Override>,
-}
-
-impl PolicyGraph {
-    /// The graph narrowed to what `by` does not cover: the policies and overrides whose author
-    /// is neither `by` nor below it. It is what the graph would be had `by` and those below it
-    /// written nothing, so a catalog's rules without their work can be compared with its rules
-    /// with it.
-    ///
-    /// A graph a catalog accepts narrows to one it would accept again: an item refers only to
-    /// items of its own author or above, so when the target of a reference is dropped, being
-    /// covered by `by`, its referrer is covered by `by` too and is dropped with it.
-    pub fn not_covered_by(&self, authority: &Authority, by: &Principal) -> Self {
-        Self {
-            policies: self
-                .policies
-                .iter()
-                .filter(|def| !authority.covers(by, &def.author))
-                .cloned()
-                .collect(),
-            overrides: self
-                .overrides
-                .iter()
-                .filter(|o| !authority.covers(by, &o.author))
-                .cloned()
-                .collect(),
-        }
-    }
+    /// The bindings.
+    pub bindings: Vec<Binding>,
 }
 
 /// What a policy found on one event.
@@ -254,8 +279,7 @@ struct Compiled {
 impl Policy {
     /// The policy with its predicates as written. Made only where the catalog has decided that
     /// nothing is narrowed: a meta policy, which reads no judgment unnarrowed, and a policy
-    /// whose author is not of the hierarchy, which is not accepted; and by a change, which reads
-    /// the levels only.
+    /// whose author is not of the hierarchy, which is not accepted.
     pub(super) fn new(def: PolicyDef) -> Self {
         let compiled = Compiled {
             when: def.when.clone(),
@@ -311,14 +335,9 @@ impl Policy {
         self.def.subject
     }
 
-    /// Whether it forbids or recommends, and how strongly before any override.
+    /// Whether it forbids or recommends.
     pub fn polarity(&self) -> &Polarity {
         &self.def.polarity
-    }
-
-    /// Whether it is on before any override.
-    pub fn enabled(&self) -> bool {
-        self.def.enabled
     }
 
     /// Its examples.
@@ -328,15 +347,7 @@ impl Policy {
 
     /// Whether it is a guard.
     pub fn is_guard(&self) -> bool {
-        matches!(self.def.polarity, Polarity::Guard { .. })
-    }
-
-    /// Its level before any override.
-    pub fn base_level(&self) -> Level {
-        match self.def.polarity {
-            Polarity::Guard { level } => level,
-            Polarity::Reward { level, .. } => level.into(),
-        }
+        matches!(self.def.polarity, Polarity::Guard)
     }
 
     /// Every predicate it holds, as the catalog uses it.

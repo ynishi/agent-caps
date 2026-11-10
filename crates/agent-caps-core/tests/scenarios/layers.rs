@@ -1,34 +1,38 @@
-//! Scenarios S4, L1, L2 and L3: the layers Base, Project and Mode, and what operating on them does.
+//! Scenarios S4, L1, L2 and L3: the bindings of a policy, under every mode or under some, and what
+//! operating on them does. What used to be the layers Base, Project and Mode are bindings: the
+//! strongest binding that holds under the mode in effect wins.
 //!
-//! - S4: a mode's override changes the level, a switch that lowers a guard takes effect only from
-//!   one who covers the guard's author, and the verdict does not depend on the order of the
-//!   policies. The `mode_switch` module checks the switch as a claim further.
-//! - L2: the order is Base, then Project, then Mode; a policy the project turns off can be turned
-//!   on again by a mode; the order of the overrides in the graph does not matter.
-//! - L3: a meta policy takes no override. `Catalog::accept` rejects one in any layer, so its level
-//!   is the same in every mode by construction; the test checks the rejection.
+//! - S4: a binding inside a mode changes the level there, a switch that lowers a guard takes effect
+//!   only from one who covers the authors of the bindings that carried its strength, and the
+//!   verdict does not depend on the order of the policies. The `mode_switch` module checks the
+//!   switch as a claim further.
+//! - L2: the strongest binding that holds wins, whoever wrote it; a policy with no binding under
+//!   every mode can be put into effect inside a mode; the order of the bindings in the graph does
+//!   not matter.
+//! - L3: a meta policy has its one binding, by its author, under every mode. `Catalog::accept`
+//!   rejects any other, so its level is the same in every mode by construction; the test checks
+//!   the rejection.
 //! - L1: the policies in effect under a mode, with their levels, are listed by
 //!   `Catalog::effective`, without judging any event. That was a gap (#6) and is fixed: a policy
 //!   that is off is listed as off, and one the judged event does not reach is still listed. A
 //!   judgment lists only the guards the event reaches.
 //!
 //! The levels are written as literals ("Force under bugfix"), read from `Catalog::effective` or
-//! from the outcome of `judge`; no test here computes how the layers stack.
+//! from the outcome of `judge`; no test here computes how the bindings combine.
 
 use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Effect};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Outcome, Verdict, judge};
 use agent_caps_core::domain::name::PolicyId;
-use agent_caps_core::domain::policy::{
-    Change, DefLayer, Level, Override, Polarity, PolicyDef, Rule,
-};
+use agent_caps_core::domain::policy::{DefLayer, Level, ModeScope, Polarity, PolicyDef, Rule};
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
 use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::state::Known;
 
 use super::common::{
-    GUARD, OTHER, agent, at, bash, catalog, id, in_mode, listed, mode, mode_switch, outcome,
-    project, rejected, test_guard, the_agent, the_user, unreadable, verdict, violated,
+    GUARD, OTHER, Written, agent, at, bash, bind, catalog, id, inside, listed, mode, mode_switch,
+    outcome, outside, rejected, test_guard, the_agent, the_user, unreadable, verdict, violated,
+    written,
 };
 
 /// The level the guard had on the last event.
@@ -41,32 +45,41 @@ fn level_of(outcome: &Outcome, policy: &str) -> Level {
         .written
 }
 
+/// The test guard with no binding of its author's under every mode: its bindings are the
+/// scenario's.
+fn unbound_guard() -> Written {
+    let mut guard = test_guard(Level::Inform);
+    guard.level = None;
+    guard
+}
+
 /// An advising guard of a tool call: a shell call must have succeeded.
-fn bash_guard() -> PolicyDef {
-    PolicyDef {
+fn bash_guard() -> Written {
+    let def = PolicyDef {
         id: id(OTHER),
         name: "bash-ok".parse().unwrap(),
         layer: DefLayer::Base,
         subject: EventKind::ToolUse,
         when: None,
         rule: Rule::Structural(Pred::Now(Cond::Eq(Field::Ok, Lit::Bool(true)))),
-        polarity: Polarity::Guard {
-            level: Level::Advise,
-        },
-        enabled: true,
+        polarity: Polarity::Guard,
         fixtures: vec![],
         author: the_user(),
-    }
+    };
+    written(def, Level::Advise)
 }
 
-/// UC8, FR11: a mode changes the level of a policy. UC25: a switch that lowers the root's guard
-/// is nothing from the principal below it; the root makes it. FR20: a lost record that may have
-/// been a switch puts the strictest mode in force.
+/// UC8, FR11: a binding inside a mode, beside one outside it, changes the level of a policy.
+/// UC25: a switch that lowers the root's guard is nothing from the principal below it; the root
+/// makes it. FR20: a lost record that may have been a switch puts the strongest binding in force.
 #[test]
-fn a_mode_overrides_the_level_and_a_lowering_switch_needs_the_guards_author() {
+fn a_mode_changes_the_level_and_a_lowering_switch_needs_the_guards_author() {
     let catalog = catalog(
-        vec![test_guard(Level::Force)],
-        vec![in_mode("modeling", GUARD, Change::Level(Level::Inform))],
+        vec![unbound_guard()],
+        vec![
+            bind(GUARD, 1, Level::Force, outside(&["modeling"]), the_user()),
+            bind(GUARD, 2, Level::Inform, inside("modeling"), the_user()),
+        ],
     );
     let switch = |by| {
         at(
@@ -88,7 +101,7 @@ fn a_mode_overrides_the_level_and_a_lowering_switch_needs_the_guards_author() {
         verdict(&catalog, &[switch(the_agent()), stop.clone()]),
         Verdict::Deny(_)
     ));
-    // A lost record may have been a switch: the strictest mode applies.
+    // A lost record may have been a switch: the strongest binding applies.
     let state = catalog.fold(&[switch(the_user()), unreadable(&[EventKind::ModeSwitch])]);
     assert_eq!(state.mode(), &Known::Unknown);
     assert!(matches!(
@@ -112,15 +125,15 @@ fn the_verdict_takes_the_strongest_and_ignores_the_order() {
     assert_eq!(verdict(&other, &events), violated());
 }
 
-/// L2, UC7, UC8: Base Inform, the project says Advise, the bugfix mode says Force. The guard has
-/// its fixtures, so a layer may raise it to a stopping level.
+/// L2, UC7, UC8, FR42: the base binds Inform, the project Advise, the bugfix mode Force; the
+/// strongest that holds wins. The guard has its fixtures, so it may be bound at a stopping level.
 #[test]
-fn a_mode_overrides_the_project_which_overrides_the_base() {
+fn the_strongest_binding_that_holds_wins() {
     let catalog = catalog(
         vec![test_guard(Level::Inform)],
         vec![
-            project(GUARD, Change::Level(Level::Advise)),
-            in_mode("bugfix", GUARD, Change::Level(Level::Force)),
+            bind(GUARD, 1, Level::Advise, ModeScope::Any, the_user()),
+            bind(GUARD, 2, Level::Force, inside("bugfix"), the_user()),
         ],
     );
     let stop = [agent(Body::TaskStart), agent(Body::Stop)];
@@ -129,21 +142,18 @@ fn a_mode_overrides_the_project_which_overrides_the_base() {
     // The bugfix mode: Force over the project's Advise.
     let bugfix = [mode_switch("bugfix"), stop[0].clone(), stop[1].clone()];
     assert_eq!(level_of(&outcome(&catalog, &bugfix), GUARD), Level::Force);
-    // A mode that overrides nothing leaves the project's level.
+    // A mode that no binding names leaves the project's level.
     let other = [mode_switch("modeling"), stop[0].clone(), stop[1].clone()];
     assert_eq!(level_of(&outcome(&catalog, &other), GUARD), Level::Advise);
 }
 
-/// L2, UC7, UC8: the project turns the guard off; the bugfix mode turns it on again, at its base
-/// level.
+/// L2, UC7, UC8, FR42: the project leaves the guard no binding under every mode, so it is off;
+/// a binding inside the bugfix mode puts it into effect there.
 #[test]
-fn a_mode_turns_on_what_the_project_turned_off() {
+fn a_binding_inside_a_mode_turns_on_a_policy_with_no_other() {
     let catalog = catalog(
-        vec![test_guard(Level::Force)],
-        vec![
-            project(GUARD, Change::Off),
-            in_mode("bugfix", GUARD, Change::On),
-        ],
+        vec![unbound_guard()],
+        vec![bind(GUARD, 1, Level::Force, inside("bugfix"), the_user())],
     );
     let stop = [agent(Body::TaskStart), agent(Body::Stop)];
     let off = outcome(&catalog, &stop);
@@ -156,13 +166,12 @@ fn a_mode_turns_on_what_the_project_turned_off() {
     assert_eq!(on.verdict, violated());
 }
 
-/// L2, UC7, UC8: the layers are applied by what they are, not by where their overrides stand in
-/// the graph.
+/// L2, UC7, UC8: the bindings are combined by what they say, not by where they stand in the graph.
 #[test]
-fn the_order_of_the_overrides_in_the_graph_does_not_matter() {
+fn the_order_of_the_bindings_in_the_graph_does_not_matter() {
     let project_first = vec![
-        project(GUARD, Change::Level(Level::Advise)),
-        in_mode("bugfix", GUARD, Change::Level(Level::Force)),
+        bind(GUARD, 1, Level::Advise, ModeScope::Any, the_user()),
+        bind(GUARD, 2, Level::Force, inside("bugfix"), the_user()),
     ];
     let mode_first = vec![project_first[1].clone(), project_first[0].clone()];
     let bugfix = [
@@ -182,36 +191,50 @@ fn the_order_of_the_overrides_in_the_graph_does_not_matter() {
     assert_eq!(level_of(&one, GUARD), Level::Force);
 }
 
-/// L3, FR14, UC10: no layer overrides a meta policy: not the project's, not a mode's.
+/// L3, FR14, UC10: no binding but its own reaches a meta policy: not one more under every mode,
+/// not one inside a mode, and its own cannot be taken away.
 #[test]
-fn no_layer_overrides_a_meta_policy() {
+fn no_binding_but_its_own_reaches_a_meta_policy() {
     let mut meta = test_guard(Level::Force);
     meta.layer = DefLayer::Meta;
-    let overrides: [Override; 3] = [
-        project(GUARD, Change::Level(Level::Inform)),
-        in_mode("bugfix", GUARD, Change::Level(Level::Inform)),
-        in_mode("bugfix", GUARD, Change::Off),
-    ];
-    for one in overrides {
+    for extra in [
+        bind(GUARD, 1, Level::Inform, ModeScope::Any, the_user()),
+        bind(GUARD, 1, Level::Inform, inside("bugfix"), the_user()),
+    ] {
         assert_eq!(
-            rejected(vec![meta.clone()], vec![one.clone()]),
-            vec![AcceptError::MetaOverride(id(GUARD))],
-            "{one:?}"
+            rejected(vec![meta.clone()], vec![extra.clone()]),
+            vec![AcceptError::MetaBinding(id(GUARD))],
+            "{extra:?}"
         );
     }
+    let mut unbound = meta;
+    unbound.level = None;
+    assert_eq!(
+        rejected(
+            vec![unbound],
+            vec![bind(
+                GUARD,
+                1,
+                Level::Force,
+                outside(&["bugfix"]),
+                the_user()
+            )],
+        ),
+        vec![AcceptError::MetaBinding(id(GUARD))]
+    );
 }
 
 /// L1, UC17, FR12: the policies in effect under each mode are listed with their effect, without
-/// judging any event: Base Inform, the project Advise, bugfix Force, explore Off. Not knowing
-/// the mode takes the strictest of them.
+/// judging any event: Base Inform, the project Advise, bugfix Force, and none in explore. Not
+/// knowing the mode takes the strongest binding.
 #[test]
 fn the_effective_policies_are_listed_under_each_mode() {
     let catalog = catalog(
-        vec![test_guard(Level::Inform)],
+        vec![unbound_guard()],
         vec![
-            project(GUARD, Change::Level(Level::Advise)),
-            in_mode("bugfix", GUARD, Change::Level(Level::Force)),
-            in_mode("explore", GUARD, Change::Off),
+            bind(GUARD, 1, Level::Inform, outside(&["explore"]), the_user()),
+            bind(GUARD, 2, Level::Advise, outside(&["explore"]), the_user()),
+            bind(GUARD, 3, Level::Force, inside("bugfix"), the_user()),
         ],
     );
     let under = |name: Option<&str>| listed(&catalog, Known::Known(name.map(mode)));
@@ -221,12 +244,12 @@ fn the_effective_policies_are_listed_under_each_mode() {
         vec![(id(GUARD), Effect::On(Level::Force))]
     );
     assert_eq!(under(Some("explore")), vec![(id(GUARD), Effect::Off)]);
-    // A mode that overrides nothing leaves the project's level.
+    // A mode that no binding names leaves the project's level.
     assert_eq!(
         under(Some("modeling")),
         vec![(id(GUARD), Effect::On(Level::Advise))]
     );
-    // With the mode unknown the strictest of the modes applies.
+    // With the mode unknown the strongest binding applies.
     assert_eq!(
         listed(&catalog, Known::Unknown),
         vec![(id(GUARD), Effect::On(Level::Force))]
@@ -269,10 +292,7 @@ fn a_judgment_lists_only_the_guards_the_event_reaches() {
 #[test]
 fn an_off_guard_is_listed_as_off_and_not_taken_for_one_the_event_does_not_reach() {
     let on = catalog(vec![test_guard(Level::Force)], vec![]);
-    let off = catalog(
-        vec![test_guard(Level::Force)],
-        vec![project(GUARD, Change::Off)],
-    );
+    let off = catalog(vec![unbound_guard()], vec![]);
     let tool_call = [agent(Body::TaskStart), bash("cargo build", Some(true))];
     let stop = [agent(Body::TaskStart), agent(Body::Stop)];
     // Not reached: a Stop guard on a tool call. It is in effect.

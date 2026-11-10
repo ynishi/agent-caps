@@ -1,33 +1,60 @@
 //! The domain's own points of view on a claim, and the default way to combine findings.
 //!
 //! ```text
-//! check            looks at                 finds                                   authors
-//! ExemptionCheck   ExemptionAdded(g)        loosens (the guard is lifted)           g's
-//!                  ExemptionEnded(_)        tightens
-//! ModeCheck        Mode { before, after }   loosens when a policy goes down, or     each policy that
-//!                                           when a policy that reads a mode sees    loosens
-//!                                           it left, or entered where its
-//!                                           direction cannot be read, or reads the
-//!                                           judgments of one that applies to more;
-//!                                           tightens when a policy goes up, or when
-//!                                           every read mode entered is read as
-//!                                           "applies inside"; else neutral
-//! SlotCheck        Slot(s)                  loosens: a slot's direction cannot      each policy reading s
+//! check        looks at                     finds                                   authors
+//! RuleCheck    the whole state before and   loosens when a policy's effect goes     of a lowered policy, the
+//!              after: each policy's effect  down or an exemption of it starts;      bindings that carried what
+//!              (Catalog::effective) and     tightens when one goes up or an         was lowered; of an exempted
+//!              the exemptions in effect     exemption ends (rule_moves)             one, its author and every
+//!                                                                                   binding's, under any mode
+//! ModeCheck    Mode { before, after }       loosens when a policy that reads a      each policy that loosens
+//!                                           mode with ModeIs sees it left, or
+//!                                           entered where its direction cannot
+//!                                           be read; tightens when every read
+//!                                           mode entered is read as "applies
+//!                                           inside"; else neutral
+//! SlotCheck    Slot(s)                      loosens: a slot's direction cannot      each policy reading s
 //!                                           be read
-//! SpawnCheck       ActorAdded { child,      loosens when a policy that reads the    each such policy
-//!                  under }                  actor sees the child leave a principal,
-//!                                           or move where its direction cannot be
-//!                                           told, or reads the judgments of one
-//!                                           that applies to more; tightens when
-//!                                           every move is into a principal read
-//!                                           as "applies inside"; else neutral
+//! SpawnCheck   ActorAdded { child,          loosens when a policy that reads the    each such policy
+//!              under }                      actor sees the child leave a
+//!                                           principal, or move where its
+//!                                           direction cannot be told; tightens
+//!                                           when every move is into a principal
+//!                                           read as "applies inside"; else neutral
+//! RuleCheck, ModeCheck and SpawnCheck also loosen every other policy that reads the judgments of
+//! a policy they move, either way, by that reader's author (`verdict_of`).
 //! ```
 //!
-//! Each [`StateChange`] is looked at by one check only, and all four are applied to every claim
-//! ([`super::TxPolicy`] cannot leave one out). What a policy reads, a slot, a mode or an actor, is
-//! the catalog's one value of it, the same one [`Catalog::accept`] checks references with. The
-//! effects that go down are [`lowered`]'s answer. A check names the authors; whether the claim's
-//! author may loosen their rules is the floor's question, not the check's.
+//! The move of a state atom is looked at by one check: [`ModeCheck`] the mode as rules read it
+//! with `ModeIs`, [`SlotCheck`] a slot, [`SpawnCheck`] the actor. How the rules take effect, the
+//! strength of each policy and the exemptions in effect, is [`RuleCheck`]'s, which compares the
+//! whole state before and after, once per claim, whichever [`StateChange`] moved it (a mode switch,
+//! an exemption added or ended). All four are applied to every claim ([`super::TxPolicy`] cannot
+//! leave one out). What a policy reads, a slot, a mode or an actor, is the catalog's one value of
+//! it, the same one [`Catalog::accept`] checks references with. A check names the authors;
+//! whether the claim's author may loosen their rules is the floor's question, not the check's.
+//!
+//! # How the rules move
+//!
+//! `rule_moves` is the one answer to how the rules take effect differently between two points,
+//! each a catalog, a mode and the exemptions in effect. [`RuleCheck`] reads it for a claim (one
+//! catalog, the state before and after), and [`Catalog::change`] reads it for a change of the
+//! catalog (two catalogs, under each compared mode, with no exemption).
+//!
+//! - A policy goes down when its effect ([`Catalog::effective`], by the order of
+//!   [`Effect`]) is lower after than before. The authors asked are
+//!   those of the bindings, in the catalog before, that held or may have held before
+//!   ([`ModeScope::holds`] not false) and are stronger than the effect after: the bindings that
+//!   carried the strength that was lost, and no others.
+//! - An exemption starts for each one held after and not before, counted one by one, so an
+//!   exemption beside a narrower one of the same guard is still one that starts. The authors
+//!   asked are the guard's author and the author of every binding of it, under any mode: an
+//!   exemption reaches the guard whatever the mode becomes, so one placed while the guard is off
+//!   under the mode still needs those whose bindings turn it on elsewhere.
+//! - A policy that goes up, and an exemption that ends, tighten.
+//!
+//! A mode that is not known is the strongest side by [`Catalog::effective`] alone, so not knowing
+//! it is never a way to loosen a rule.
 //!
 //! # Which way a move of an atom goes
 //!
@@ -45,17 +72,19 @@
 //! What is not known is never taken for "stays". Where it is not known whether an atom was left,
 //! it is taken as left.
 //!
-//! # What a policy that applies to more writes
+//! # What a policy that moves writes
 //!
-//! A policy that is tightened by a claim applies to more events, and so writes more judgments
-//! than it did, in its author's name, which always count. Every other policy that reads its
+//! A policy that a claim or a change moves, either way, writes other judgments than it did, in
+//! its author's name, which always count: one that applies to more or takes effect more strongly
+//! writes more of them or stronger ones, one that applies to less or takes effect less strongly
+//! writes fewer or weaker ones, and an off one writes none. Every other policy that reads its
 //! judgments (a filter that names it, or that narrows to none and sees it) has the slots it reads
-//! moved by that, in a direction that cannot be read: it counts more, or a later record
-//! replaces the last. So such a policy is loosened by the claim, and its author is among the
-//! authors the floor asks, as for a policy loosened by the atom itself. The tightened policy
-//! itself stays tightened. This is the same for a mode and for a spawn, and `verdict_of` is
-//! where it is decided; who reads whose judgments is the catalog's (`Reads`), not found again
-//! here.
+//! moved by that, in a direction that cannot be read: it counts more or fewer, or a later record
+//! replaces the last. So such a policy is loosened, and its author is among the authors the floor
+//! asks, as for a policy loosened by the move itself. This is the same for the rules, a mode and a
+//! spawn, and `verdict_of` is where it is decided; who reads whose judgments is the catalog's
+//! (`Reads`), not found again here. A change of the catalog asks it of the readers of both the
+//! catalog before and after, so a reader that goes and one that comes are both asked.
 //!
 //! # The spawn check
 //!
@@ -77,18 +106,21 @@
 //!
 //! # The mode check
 //!
-//! A mode switch moves each mode a policy reads with `ModeIs` by what the mode was and is:
+//! A mode switch moves each mode a policy reads with `ModeIs` by whether "the mode is `m`"
+//! ([`ModeScope::In`] of `m`, [`ModeScope::holds`]) holds before and after:
 //!
 //! | before | after | the mode `m` |
 //! |---|---|---|
-//! | known `b` | known `a` | entered when `m` is `a` and not `b`; left when `m` is `b` and not `a`; else stays |
-//! | unknown | known `a` | entered when `m` is `a` (it may have been there already, and is counted as entered: tightens a policy that applies inside it, loosens one read in a way that cannot be told); else left (it may have been `m`) |
-//! | known or unknown | unknown | left (where it went is not known) |
+//! | true | false | left |
+//! | false | true | entered |
+//! | true | true | stays |
+//! | false | false | stays |
+//! | unknown | true | entered (it may have been there already, and is counted as entered: tightens a policy that applies inside it, loosens one read in a way that cannot be told) |
+//! | unknown | false | left (it may have been `m`) |
+//! | any | unknown | left (where it went is not known) |
 //!
-//! No mode at all is a value equal to no `m`. A policy is also loosened when its effect goes down
-//! under the switch ([`lowered`]) and tightened when it goes up; for each policy the two are put
-//! together by the same rule, so that either one loosening loosens it. The findings that name the
-//! policies that read the mode are only those loosened by reading it.
+//! No mode at all is a value equal to no `m`. How the switch moves the strength of the policies,
+//! through the bindings that hold inside or outside a mode, is [`RuleCheck`]'s, not this check's.
 //!
 //! The polarity of the mode itself is not changed by this: a switch that tightens is open to
 //! anyone, and one that loosens is the floor's. An upper rule that reads a slot of the mode's
@@ -97,23 +129,30 @@
 use super::{AdjustmentCheck, CheckFinding, CheckName, Combine, Confidence, FindingDetail};
 use super::{TxDecision, TxInput, Verdict};
 use crate::domain::authority::Principal;
-use crate::domain::catalog::{Catalog, lowered};
+use crate::domain::catalog::{Catalog, Effect, lowered};
+use crate::domain::exempt::Exempt;
 use crate::domain::name::{Mode, PolicyId};
-use crate::domain::predicate::Reading;
-use crate::domain::state::{Ancestry, Known, StateChange};
+use crate::domain::policy::ModeScope;
+use crate::domain::predicate::{Reading, Truth};
+use crate::domain::state::{Ancestry, Known, State, StateChange};
 
 /// The domain's checks, in the order their findings are reported.
 pub(super) fn domain() -> [&'static dyn AdjustmentCheck; 4] {
-    [&ExemptionCheck, &ModeCheck, &SlotCheck, &SpawnCheck]
+    [&RuleCheck, &ModeCheck, &SlotCheck, &SpawnCheck]
+}
+
+/// Adds `author` to `authors` when it is not there yet.
+fn add_author(authors: &mut Vec<Principal>, author: &Principal) {
+    if !authors.contains(author) {
+        authors.push(author.clone());
+    }
 }
 
 /// The authors of `policies`, each once.
 fn authors_of(catalog: &Catalog, policies: &[PolicyId]) -> Vec<Principal> {
     let mut authors: Vec<Principal> = Vec::new();
     for policy in policies.iter().filter_map(|id| catalog.policy(*id)) {
-        if !authors.contains(policy.author()) {
-            authors.push(policy.author().clone());
-        }
+        add_author(&mut authors, policy.author());
     }
     authors
 }
@@ -167,79 +206,232 @@ fn direction(moves: &[(Move, Reading)]) -> Option<Direction> {
     }
 }
 
-/// The verdict of a claim from the direction of each policy it moves: it loosens, by the authors
-/// of the loosened policies, when any loosens; else tightens when any tightens; else it is neutral.
-/// `detail` says what it loosens, given the loosened policies.
+/// One policy that a claim or a change moves, the way it moves, and the authors a loosening asks.
+#[derive(Debug, Clone)]
+struct Moved {
+    policy: PolicyId,
+    direction: Direction,
+    /// Read only when it loosens.
+    authors: Vec<Principal>,
+}
+
+/// The verdict from the policies that move: it loosens when any loosens, by their authors; else
+/// tightens when any tightens; else it is neutral. `detail` says what it loosens, given every
+/// loosened policy.
 ///
-/// A policy that is tightened applies to more events, and so writes more judgments than it did;
-/// every other policy that reads its judgments (the catalog's `Reads`, which is the one owner of
-/// who reads whose judgments) has its slots moved by that, in a direction that cannot be read,
-/// so it is loosened too, and its author is among the authors. The tightened policy itself stays
-/// tightened.
+/// A policy that moves, either way, writes other judgments than it did; every other policy of
+/// `readers` that reads its judgments (the catalog's `Reads`, which is the one owner of who reads
+/// whose judgments) has its slots moved by that, in a direction that cannot be read, so it is
+/// loosened too, and its author is among the authors. A claim gives one catalog; a change gives
+/// the catalogs before and after.
 fn verdict_of(
-    catalog: &Catalog,
-    directions: &[(PolicyId, Option<Direction>)],
+    readers: &[&Catalog],
+    moved: &[Moved],
     detail: impl FnOnce(Vec<PolicyId>) -> FindingDetail,
 ) -> Verdict {
-    let mut loosened: Vec<PolicyId> = directions
-        .iter()
-        .filter(|(_, direction)| *direction == Some(Direction::Loosens))
-        .map(|(policy, _)| *policy)
-        .collect();
-    let tightened: Vec<PolicyId> = directions
-        .iter()
-        .filter(|(_, direction)| *direction == Some(Direction::Tightens))
-        .map(|(policy, _)| *policy)
-        .collect();
-    for (reader, reads) in catalog.reads() {
-        let id = reader.id();
-        if !loosened.contains(&id)
-            && tightened
+    let mut loosened: Vec<PolicyId> = Vec::new();
+    let mut authors: Vec<Principal> = Vec::new();
+    for m in moved.iter().filter(|m| m.direction == Direction::Loosens) {
+        if !loosened.contains(&m.policy) {
+            loosened.push(m.policy);
+        }
+        for author in &m.authors {
+            add_author(&mut authors, author);
+        }
+    }
+    for catalog in readers {
+        for (reader, reads) in catalog.reads() {
+            let id = reader.id();
+            if moved
                 .iter()
-                .any(|policy| *policy != id && reads.reads_judgments_of(*policy))
-        {
-            loosened.push(id);
+                .any(|m| m.policy != id && reads.reads_judgments_of(m.policy))
+            {
+                if !loosened.contains(&id) {
+                    loosened.push(id);
+                }
+                add_author(&mut authors, reader.author());
+            }
         }
     }
     if !loosened.is_empty() {
         Verdict::Loosens {
-            authors: authors_of(catalog, &loosened),
+            authors,
             detail: detail(loosened),
         }
-    } else if !tightened.is_empty() {
+    } else if moved.iter().any(|m| m.direction == Direction::Tightens) {
         Verdict::Tightens(Confidence::Certain)
     } else {
         Verdict::Neutral
     }
 }
 
-/// An exemption added lifts its guard, so it loosens, by the guard's author; one that ends
-/// tightens.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct ExemptionCheck;
+/// How one policy takes effect differently between two points (`rule_moves`): a claim's, before
+/// and after it, or a change's, under one mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleMove {
+    /// Its effect goes down: a loosening.
+    Lowered {
+        /// The policy.
+        policy: PolicyId,
+        /// The authors of the bindings that carried the strength it lost.
+        authors: Vec<Principal>,
+    },
+    /// Its effect goes up: a tightening.
+    Raised {
+        /// The policy.
+        policy: PolicyId,
+    },
+    /// An exemption of it starts: a loosening.
+    Exempted {
+        /// The guard.
+        policy: PolicyId,
+        /// Its author, and the author of every binding of it, under any mode.
+        authors: Vec<Principal>,
+    },
+    /// An exemption of it ends: a tightening.
+    Unexempted {
+        /// The guard.
+        policy: PolicyId,
+    },
+}
 
-impl AdjustmentCheck for ExemptionCheck {
-    fn judge(&self, input: &TxInput<'_>) -> Vec<CheckFinding> {
-        input
-            .changes
-            .iter()
-            .filter_map(|change| match change {
-                StateChange::ExemptionAdded(guard) => Some(Verdict::Loosens {
-                    authors: authors_of(input.catalog, &[*guard]),
-                    detail: FindingDetail::ExemptionAdded(*guard),
-                }),
-                StateChange::ExemptionEnded(_) => Some(Verdict::Tightens(Confidence::Certain)),
-                StateChange::Slot(_)
-                | StateChange::Mode { .. }
-                | StateChange::ActorAdded { .. } => None,
-            })
-            .map(|verdict| finding("exemption", verdict))
-            .collect()
+/// One point the rules are compared at: a catalog, the mode, and the exemptions in effect, each
+/// one as many times as it is held.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::domain) struct Point<'a> {
+    /// The catalog.
+    pub(in crate::domain) catalog: &'a Catalog,
+    /// The mode in effect.
+    pub(in crate::domain) mode: &'a Known<Option<Mode>>,
+    /// The exemptions in effect.
+    pub(in crate::domain) exemptions: &'a [Exempt],
+}
+
+impl<'a> Point<'a> {
+    /// The point of a state of `catalog`.
+    fn of(catalog: &'a Catalog, state: &'a State) -> Self {
+        Self {
+            catalog,
+            mode: state.mode(),
+            exemptions: state.exemptions(),
+        }
     }
 }
 
-/// A change of the mode, by what the catalog comes to before and after it, and by who reads the
-/// modes. The mode's scope starting again is a change of its slots, which [`SlotCheck`] sees.
+/// How the rules move from `before` to `after`, policy by policy: the one answer, read by
+/// [`RuleCheck`] and by [`Catalog::change`]. See the module doc for the authors of each move. A
+/// policy missing from either catalog is not compared; its removal or addition is a question of
+/// its own.
+pub(in crate::domain) fn rule_moves(before: &Point<'_>, after: &Point<'_>) -> Vec<RuleMove> {
+    let from = before.catalog.effective(before.mode);
+    let to = after.catalog.effective(after.mode);
+    let mut moves = Vec::new();
+    for down in lowered(&from, &to) {
+        let mut authors = Vec::new();
+        for b in before.catalog.bindings().iter().filter(|b| {
+            b.policy == down.policy
+                && b.mode.holds(before.mode) != Truth::False
+                && Effect::On(b.level) > down.after
+        }) {
+            add_author(&mut authors, &b.author);
+        }
+        moves.push(RuleMove::Lowered {
+            policy: down.policy,
+            authors,
+        });
+    }
+    for up in lowered(&to, &from) {
+        moves.push(RuleMove::Raised { policy: up.policy });
+    }
+    let mut remaining: Vec<&Exempt> = before.exemptions.iter().collect();
+    for exempt in after.exemptions {
+        match remaining.iter().position(|kept| *kept == exempt) {
+            Some(at) => {
+                remaining.remove(at);
+            }
+            None => moves.push(RuleMove::Exempted {
+                policy: exempt.guard,
+                authors: exemption_authors(after.catalog, exempt.guard),
+            }),
+        }
+    }
+    for ended in remaining {
+        moves.push(RuleMove::Unexempted {
+            policy: ended.guard,
+        });
+    }
+    moves
+}
+
+/// Who an exemption of `guard` asks: the guard's author, and the author of every binding of it,
+/// whatever its mode scope.
+fn exemption_authors(catalog: &Catalog, guard: PolicyId) -> Vec<Principal> {
+    let mut authors = authors_of(catalog, &[guard]);
+    for b in catalog.bindings().iter().filter(|b| b.policy == guard) {
+        add_author(&mut authors, &b.author);
+    }
+    authors
+}
+
+/// The verdict of the rule moves, with every other policy of `readers` that reads the judgments
+/// of a policy that moves ([`verdict_of`]). Read by [`RuleCheck`] and by [`Catalog::change`].
+pub(in crate::domain) fn rules_verdict(readers: &[&Catalog], moves: Vec<RuleMove>) -> Verdict {
+    let moved: Vec<Moved> = moves
+        .iter()
+        .map(|m| match m {
+            RuleMove::Lowered { policy, authors } | RuleMove::Exempted { policy, authors } => {
+                Moved {
+                    policy: *policy,
+                    direction: Direction::Loosens,
+                    authors: authors.clone(),
+                }
+            }
+            RuleMove::Raised { policy } | RuleMove::Unexempted { policy } => Moved {
+                policy: *policy,
+                direction: Direction::Tightens,
+                authors: Vec::new(),
+            },
+        })
+        .collect();
+    verdict_of(readers, &moved, |loosened| {
+        let reading = loosened
+            .into_iter()
+            .filter(|p| {
+                !moved
+                    .iter()
+                    .any(|m| m.policy == *p && m.direction == Direction::Loosens)
+            })
+            .collect();
+        FindingDetail::Rules { moves, reading }
+    })
+}
+
+/// How the rules take effect, before and after the claim: each policy's effect and the exemptions
+/// in effect, read from the whole state by `rule_moves`, once per claim, whatever moved them.
+/// No finding when nothing moves.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RuleCheck;
+
+impl AdjustmentCheck for RuleCheck {
+    fn judge(&self, input: &TxInput<'_>) -> Vec<CheckFinding> {
+        let before = Point::of(input.catalog, input.before);
+        let after = Point::of(input.catalog, input.after);
+        // One catalog: the rules move only with the mode or the exemptions. Most claims, a record
+        // of a judgment among them, move neither, and need no catalog computed.
+        if before.mode == after.mode && before.exemptions == after.exemptions {
+            return Vec::new();
+        }
+        let moves = rule_moves(&before, &after);
+        if moves.is_empty() {
+            return Vec::new();
+        }
+        vec![finding("rules", rules_verdict(&[input.catalog], moves))]
+    }
+}
+
+/// A change of the mode, by who reads the modes with `ModeIs`. How the strength of the policies
+/// moves with it is [`RuleCheck`]'s; the mode's scope starting again is a change of its slots,
+/// which [`SlotCheck`] sees.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModeCheck;
 
@@ -260,35 +452,14 @@ impl AdjustmentCheck for ModeCheck {
     }
 }
 
-/// How the mode `read` moved from `before` to `after`. What is not known is never "stays". No mode
-/// at all is equal to no mode that is read.
+/// How the mode `read` moved from `before` to `after`, by whether "the mode is `read`" holds
+/// ([`ModeScope::holds`]). What is not known is never "stays".
 fn mode_move(read: &Mode, before: &Known<Option<Mode>>, after: &Known<Option<Mode>>) -> Move {
-    let is = |mode: &Option<Mode>| mode.as_ref() == Some(read);
-    match (before, after) {
-        (_, Known::Unknown) => Move::Leaves,
-        (Known::Unknown, Known::Known(now)) => {
-            if is(now) {
-                Move::Enters
-            } else {
-                Move::Leaves
-            }
-        }
-        (Known::Known(was), Known::Known(now)) => match (is(was), is(now)) {
-            (false, true) => Move::Enters,
-            (true, false) => Move::Leaves,
-            (true, true) | (false, false) => Move::Stays,
-        },
-    }
-}
-
-/// Either one loosening loosens; else either one tightening tightens.
-fn together(a: Option<Direction>, b: Option<Direction>) -> Option<Direction> {
-    match (a, b) {
-        (Some(Direction::Loosens), _) | (_, Some(Direction::Loosens)) => Some(Direction::Loosens),
-        (Some(Direction::Tightens), _) | (_, Some(Direction::Tightens)) => {
-            Some(Direction::Tightens)
-        }
-        (None, None) => None,
+    let is = ModeScope::In(read.clone());
+    match (is.holds(before), is.holds(after)) {
+        (_, Truth::Unknown) | (Truth::True | Truth::Unknown, Truth::False) => Move::Leaves,
+        (Truth::False | Truth::Unknown, Truth::True) => Move::Enters,
+        (Truth::True, Truth::True) | (Truth::False, Truth::False) => Move::Stays,
     }
 }
 
@@ -298,43 +469,23 @@ fn mode_verdict(
     after: &Known<Option<Mode>>,
 ) -> Verdict {
     let catalog = input.catalog;
-    let (from, to) = (catalog.effective(before), catalog.effective(after));
-    let down = lowered(&from, &to);
-    let up = lowered(&to, &from);
-    let mut directions: Vec<(PolicyId, Option<Direction>)> = Vec::new();
-    let mut reading: Vec<PolicyId> = Vec::new();
-    for (policy, reads) in catalog.reads() {
-        let id = policy.id();
-        let moves: Vec<(Move, Reading)> = reads
-            .modes()
-            .iter()
-            .map(|(mode, how)| (mode_move(mode, before, after), *how))
-            .collect();
-        let read = direction(&moves);
-        if read == Some(Direction::Loosens) {
-            reading.push(id);
-        }
-        let by_effect = if down.iter().any(|l| l.policy == id) {
-            Some(Direction::Loosens)
-        } else if up.iter().any(|l| l.policy == id) {
-            Some(Direction::Tightens)
-        } else {
-            None
-        };
-        directions.push((id, together(by_effect, read)));
-    }
-    verdict_of(catalog, &directions, |loosened| {
-        // Those loosened for reading the judgments of a policy that applies to more are loosened
-        // by what they read too.
-        for policy in loosened {
-            if !reading.contains(&policy) && !down.iter().any(|l| l.policy == policy) {
-                reading.push(policy);
-            }
-        }
-        FindingDetail::Mode {
-            lowered: down,
-            reading,
-        }
+    let moved: Vec<Moved> = catalog
+        .reads()
+        .filter_map(|(policy, reads)| {
+            let moves: Vec<(Move, Reading)> = reads
+                .modes()
+                .iter()
+                .map(|(mode, how)| (mode_move(mode, before, after), *how))
+                .collect();
+            direction(&moves).map(|direction| Moved {
+                policy: policy.id(),
+                direction,
+                authors: vec![policy.author().clone()],
+            })
+        })
+        .collect();
+    verdict_of(&[catalog], &moved, |reading| FindingDetail::Mode {
+        reading,
     })
 }
 
@@ -443,18 +594,22 @@ fn spawn_verdict(input: &TxInput<'_>, child: &Principal, under: &Principal) -> V
     let actors = input.before.actors();
     let spawner = actors.ancestry(&input.event.by, authority);
     let placed = actors.ancestry(under, authority);
-    let directions: Vec<(PolicyId, Option<Direction>)> = catalog
+    let moved: Vec<Moved> = catalog
         .reads()
-        .map(|(policy, reads)| {
+        .filter_map(|(policy, reads)| {
             let moves: Vec<(Move, Reading)> = reads
                 .actors()
                 .iter()
                 .map(|(principal, reading)| (movement(&spawner, &placed, principal), *reading))
                 .collect();
-            (policy.id(), direction(&moves))
+            direction(&moves).map(|direction| Moved {
+                policy: policy.id(),
+                direction,
+                authors: vec![policy.author().clone()],
+            })
         })
         .collect();
-    verdict_of(catalog, &directions, |loosened| FindingDetail::Spawn {
+    verdict_of(&[catalog], &moved, |loosened| FindingDetail::Spawn {
         child: child.clone(),
         under: under.clone(),
         loosened,

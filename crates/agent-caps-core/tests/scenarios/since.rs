@@ -10,13 +10,13 @@
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict};
-use agent_caps_core::domain::policy::{Expect, Level, PolicyDef, Rule};
+use agent_caps_core::domain::policy::{Expect, Level, Rule};
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
-    ACTS, GUARD, OTHER, agent, at, bash, catalog, commit_filter, edit, exemption, fixture, id,
-    outcome, test_guard, tested_in, the_agent, the_user, unreadable, verdict, violated, words,
+    ACTS, GUARD, OTHER, Written, agent, at, bash, catalog, commit_filter, edit, exemption, fixture,
+    id, outcome, test_guard, tested_in, the_agent, the_user, unreadable, verdict, violated, words,
 };
 
 fn test_run() -> Event {
@@ -32,14 +32,14 @@ fn unknown() -> Verdict {
 }
 
 /// A stopping guard on the end of a turn: `cargo test` passed since the boundary `scope` names.
-fn stop_guard_in(scope: Scope) -> PolicyDef {
+fn stop_guard_in(scope: Scope) -> Written {
     let mut guard = test_guard(Level::Force);
     guard.rule = Rule::Structural(tested_in(scope));
     guard
 }
 
 /// A stopping guard on a commit: `cargo test` passed since the last commit.
-fn commit_guard() -> PolicyDef {
+fn commit_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.subject = EventKind::ToolUse;
     guard.when = Some(Pred::Now(Cond::Words(Field::Command, words("git commit"))));
@@ -65,7 +65,7 @@ fn commit_guard() -> PolicyDef {
 }
 
 /// A stopping guard on every tool use but a commit, which is what an exemption can lift.
-fn no_commit_guard() -> PolicyDef {
+fn no_commit_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.subject = EventKind::ToolUse;
     guard.rule = Rule::Structural(Pred::Now(Cond::Not(Box::new(Cond::Words(

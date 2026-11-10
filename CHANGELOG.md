@@ -116,6 +116,69 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a policy holds no strength; a binding does (#39).
+  `Binding { id: BindingId, policy, level, mode: ModeScope, author }` puts a
+  policy into effect at a level where its scope holds (`ModeScope::Any`,
+  `In(mode)`, `Outside(ModeSet)`, answered by `ModeScope::holds`, which is
+  unknown when the mode is not known). A policy takes effect at the strongest
+  level of its bindings that hold, and is off with none, so adding a binding
+  never lowers a policy. `PolicyGraph` has `bindings` in place of
+  `overrides`; `Override`, `OverrideLayer`, `Change`, `RewardLevel`,
+  `PolicyDef::enabled`, `Policy::enabled`, `Policy::base_level` and
+  `PolicyGraph::not_covered_by` are removed, and `Polarity` is `Guard` or
+  `Reward { bound_by }` with no level. `ModeSet::new` refuses an empty set and
+  a mode given twice (`ModeSetError`); `BindingId` reads a hyphenated UUID, as
+  `PolicyId` does (`NameError::BindingId`). To translate a graph: `Off`
+  removes the binding, `On` adds one, `Level` replaces the binding with one at
+  the other level, and a mode's override turns the binding into
+  `Outside([mode])` beside an `In(mode)` binding at the mode's level.
+- Breaking, before 1.0: `Catalog::accept` checks the bindings. Binding ids are
+  unique (`AcceptError::DuplicateBinding`), a binding names a policy of the
+  graph (`UnknownBindingPolicy`), its author is in the hierarchy
+  (`UnknownAuthor` with `Target::Binding`) and is the policy's author or below
+  it (`ReferencesBelow`), no reward is bound at Force (`RewardForce`), a guard
+  bound at Force has a fixture it fails on and one it holds on
+  (`MissingFixtures { policy, binding }`), and a meta policy has exactly one
+  binding, by its author, under `ModeScope::Any` (`MetaBinding`). The variants
+  `RewardAboveGuard`, `RaisedWithoutFixtures`, `UnknownOverride`,
+  `MetaOverride`, `RewardOverrideLevel` and `DuplicateOverride` and
+  `Target::Override` are removed. A reward whose bindings are stronger than its
+  guard's is lowered to the guard and reported as `Degraded`, as before.
+- Breaking, before 1.0: when the mode is not known, `Catalog::effective`
+  computes each mode it may be (no mode, and every mode a binding's scope
+  names), rewards held to their guards in each, and each policy takes the
+  strongest effect any of them gives, and nowhere else is that decided; so a
+  guard is the strongest any of its bindings gives.
+- Breaking, before 1.0: how the rules take effect in a claim is judged by one
+  new domain check, `RuleCheck`, over the whole state before and after, once
+  per claim, through `rule_moves` (`RuleMove`: `Lowered`, `Raised`,
+  `Exempted`, `Unexempted`). A policy that goes down asks the authors of the
+  bindings that carried the strength it lost; an exemption that starts (each
+  one counted, so a wider exemption beside a narrower one is one that starts)
+  asks the guard's author and the author of every binding of it, under any
+  mode. `ExemptionCheck` is removed, and `ModeCheck` only reads how rules read
+  the mode with `ModeIs`. A policy that moves either way now loosens every
+  other policy that reads its judgments (before, only one that came to apply to
+  more did), for the rules, a mode switch and a spawn alike.
+  `FindingDetail::ExemptionAdded` is removed, `FindingDetail::Mode` has only
+  `reading`, and `FindingDetail::Rules { moves, reading }` is new.
+- Breaking, before 1.0: `Catalog::change` judges what takes effect by the same
+  `rule_moves` as a claim, under every compared mode (no mode, and every mode a
+  binding's scope names), with the readers of the catalogs before and after;
+  every author a loosening asks must be covered. A new binding in the name of
+  one the changer does not cover, and one of theirs removed, lowered, given
+  another scope or taken over (even while an equal binding of the changer's
+  keeps the policy's strength), is `Loosening::Uncovered` with
+  `Target::Binding`. The comparison with the graph narrowed to what the
+  changer does not cover is removed, with `Loosening::BelowUncovered`; its
+  place is `Loosening::Moves { mode, authors, detail }`. So a change that only
+  tightens is no longer rejected for falling below that floor. A meta policy's
+  binding differing is `ChangeRejected::Meta`, whoever changes it. `classify`
+  no longer compares a level or an on and off state.
+- The ledger withdraws P9 for P17 (Trust is held by the bindings of a rule)
+  and FR5 and FR6 for FR42 (a permanent change of the level or the on and off
+  state, by the bindings, judged by its result). UC7 cites FR42, FR31 cites
+  P17, and P4, P14 and FR11 no longer speak of overrides.
 - Breaking, before 1.0: `Pred::Last` is `Last { event: EventFilter, scope, test:
   Cond }` in place of `Last { field, scope, value }`: the last event within the
   scope that matches the filter, and a condition on it, the same condition a

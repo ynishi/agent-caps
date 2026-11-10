@@ -18,35 +18,35 @@ use agent_caps_core::domain::catalog::Catalog;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Recognition, Verdict};
 use agent_caps_core::domain::name::GlobPattern;
-use agent_caps_core::domain::policy::{DefLayer, Level, Polarity, PolicyDef, RewardLevel, Rule};
+use agent_caps_core::domain::policy::{DefLayer, Level, Polarity, PolicyDef, Rule};
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
-use super::common::{GUARD, REWARD, agent, at, bash, catalog, edit, id, outcome, read, the_user};
+use super::common::{
+    GUARD, REWARD, Written, agent, at, bash, catalog, edit, id, outcome, read, the_user, written,
+};
 
 const DESIGN: &str = "docs/design.md";
 
-/// The guard that exists to bind the reward: it cannot fail.
-fn carrier_guard() -> PolicyDef {
-    PolicyDef {
+/// The guard that exists to bind the reward, at Advise: it cannot fail.
+fn carrier_guard() -> Written {
+    let def = PolicyDef {
         id: id(GUARD),
         name: "domain-knowledge-carrier".parse().unwrap(),
         layer: DefLayer::Base,
         subject: EventKind::ToolUse,
         when: None,
         rule: Rule::Structural(Pred::All(vec![])),
-        polarity: Polarity::Guard {
-            level: Level::Advise,
-        },
-        enabled: true,
+        polarity: Polarity::Guard,
         fixtures: vec![],
         author: the_user(),
-    }
+    };
+    written(def, Level::Advise)
 }
 
 /// Advise: before an edit of a domain source file, read the design document.
-fn design_reward() -> PolicyDef {
-    PolicyDef {
+fn design_reward() -> Written {
+    let def = PolicyDef {
         id: id(REWARD),
         name: "read-design-before-domain-edit".parse().unwrap(),
         layer: DefLayer::Base,
@@ -66,13 +66,12 @@ fn design_reward() -> PolicyDef {
             scope: Scope::Task,
         }),
         polarity: Polarity::Reward {
-            level: RewardLevel::Advise,
             bound_by: id(GUARD),
         },
-        enabled: true,
         fixtures: vec![],
         author: the_user(),
-    }
+    };
+    written(def, Level::Advise)
 }
 
 fn knowledge() -> Catalog {

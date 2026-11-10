@@ -6,7 +6,7 @@ use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict, judge};
-use agent_caps_core::domain::policy::{DefLayer, Level, PolicyDef};
+use agent_caps_core::domain::policy::{DefLayer, Level};
 use agent_caps_core::domain::predicate::{Cond, Lit, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
@@ -193,7 +193,7 @@ fn an_exemption_from_the_agent_covers_nothing_whatever_its_lifetime() {
 /// one above it.
 #[test]
 fn a_principal_exempts_the_guards_it_covers_and_no_other() {
-    let mut own: PolicyDef = src_edit_guard();
+    let mut own = src_edit_guard();
     own.id = id(OTHER);
     own.name = "agent-src-edit".parse().unwrap();
     own.author = the_agent();

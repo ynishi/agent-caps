@@ -5,29 +5,34 @@
 use agent_caps_core::domain::catalog::{Capabilities, Catalog, Degraded, Effect};
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::judge;
-use agent_caps_core::domain::policy::{Change, Level, OverrideLayer, RewardLevel};
+use agent_caps_core::domain::policy::Level;
 use agent_caps_core::domain::state::Known;
 
 use super::common::{
-    GUARD, REWARD, agent, catalog, clippy_reward, graph_of, id, in_mode, listed, mode, over,
-    test_guard, the_agent, the_user,
+    GUARD, REWARD, Written, agent, bind, catalog, clippy_reward, id, inside, listed, mode, outside,
+    test_guard, the_user,
 };
 
+/// The guard with no binding of its author's under every mode: its bindings are the scenario's.
+fn unbound_guard() -> Written {
+    let mut guard = test_guard(Level::Advise);
+    guard.level = None;
+    guard
+}
+
 /// FR12, UC17: the policies in effect under a mode are listed with their levels, without judging
-/// any event; a policy turned off is listed as off, not left out; an unknown mode takes the
-/// strictest level; and the list is what the judgment reads.
+/// any event; a policy with no binding that holds is listed as off, not left out; an unknown mode
+/// takes the strongest level; and the list is what the judgment reads.
 #[test]
 fn the_effective_policies_are_listed_per_mode() {
     let bugfix = mode("bugfix");
     let explore = mode("explore");
+    // Advise outside explore, and Force inside bugfix: off in explore.
     let catalog = catalog(
+        vec![unbound_guard(), clippy_reward(Level::Advise)],
         vec![
-            test_guard(Level::Advise),
-            clippy_reward(RewardLevel::Advise),
-        ],
-        vec![
-            in_mode("bugfix", GUARD, Change::Level(Level::Force)),
-            in_mode("explore", GUARD, Change::Off),
+            bind(GUARD, 1, Level::Advise, outside(&["explore"]), the_user()),
+            bind(GUARD, 2, Level::Force, inside("bugfix"), the_user()),
         ],
     );
     let effects = |under| listed(&catalog, under);
@@ -58,7 +63,7 @@ fn the_effective_policies_are_listed_per_mode() {
             guard: id(GUARD)
         }]
     );
-    // Not knowing the mode takes the strictest of every mode.
+    // Not knowing the mode takes every binding that may hold: the strongest of them.
     assert_eq!(
         effects(Known::Unknown),
         vec![
@@ -66,7 +71,7 @@ fn the_effective_policies_are_listed_per_mode() {
             (id(REWARD), Effect::On(Level::Advise)),
         ]
     );
-    // What explore degraded does not show where the strictest effect keeps the reward on.
+    // What explore degraded does not show where the strongest effect keeps the reward on.
     assert!(catalog.effective(&Known::Unknown).degraded.is_empty());
     // The judgment of an event both policies apply to reads the same list, as written.
     let events = [agent(Body::TaskStart), agent(Body::Stop)];
@@ -108,57 +113,44 @@ fn effects_are_ordered_by_how_much_they_hold() {
     assert!(ordered.windows(2).all(|pair| pair[0] < pair[1]));
 }
 
-/// FR20, UC9: an unknown mode is the strictest effect any mode gives, each mode computed to the
-/// end with its rewards bound, never a value of its own. So a change that lowers nothing under
-/// any mode lowers nothing under an unknown one either.
+/// FR20, UC9: an unknown mode is the strongest of the modes it may be, each computed to the end
+/// with rewards held to their guards. Not knowing the mode never loosens a rule, and never gives
+/// a value no mode gives: a reward is not held to a guard level of another mode.
 #[test]
-fn an_unknown_mode_is_the_strictest_a_mode_gives() {
-    let review = || OverrideLayer::Mode(mode("review"));
-    let policies = || {
+fn an_unknown_mode_is_the_strongest_of_the_modes_it_may_be() {
+    let review = || inside("review");
+    let not_review = || outside(&["review"]);
+    let mut reward = clippy_reward(Level::Advise);
+    reward.level = None;
+    let catalog = catalog(
+        vec![unbound_guard(), reward],
         vec![
-            test_guard(Level::Advise),
-            clippy_reward(RewardLevel::Advise),
-        ]
-    };
-    let users = || {
-        vec![
-            over(
-                OverrideLayer::Project,
-                GUARD,
-                Change::Level(Level::Inform),
-                the_user(),
-            ),
-            over(review(), GUARD, Change::Level(Level::Advise), the_user()),
-            over(review(), REWARD, Change::Level(Level::Inform), the_user()),
-        ]
-    };
-    let unknown = |catalog: &Catalog| {
+            bind(GUARD, 1, Level::Inform, not_review(), the_user()),
+            bind(GUARD, 2, Level::Advise, review(), the_user()),
+            bind(REWARD, 1, Level::Advise, not_review(), the_user()),
+            bind(REWARD, 2, Level::Inform, review(), the_user()),
+        ],
+    );
+    let effect_of = |catalog: &Catalog, under: Known<_>, policy: &str| {
         catalog
-            .effective(&Known::Unknown)
+            .effective(&under)
             .policies
             .iter()
-            .find(|p| p.policy.id() == id(REWARD))
+            .find(|p| p.policy.id() == id(policy))
             .unwrap()
             .effect
     };
-    // No mode: the guard is at Inform and holds the reward down to it. Review: the user holds
-    // the reward at Inform. No mode gives the reward Advise, so an unknown mode does not either.
-    let before = catalog(policies(), users());
     let inform = Effect::On(Level::Inform);
-    assert_eq!(unknown(&before), inform);
-
-    // The agent's project override lowers the reward where the guard holds it down anyway (no
-    // mode), and the user's own mode override holds it at Inform under review: nothing comes
-    // to less under any mode, an unknown one included.
-    let mut overrides = users();
-    overrides.push(over(
-        OverrideLayer::Project,
-        REWARD,
-        Change::Level(Level::Inform),
-        the_agent(),
-    ));
-    let after = before
-        .change(graph_of(policies(), overrides), &the_agent())
-        .unwrap();
-    assert_eq!(unknown(&after), inform);
+    let advise = Effect::On(Level::Advise);
+    // No mode: the guard is at Inform and holds the reward down to it. Review: the user binds
+    // the reward at Inform.
+    assert_eq!(effect_of(&catalog, Known::Known(None), REWARD), inform);
+    assert_eq!(
+        effect_of(&catalog, Known::Known(Some(mode("review"))), REWARD),
+        inform
+    );
+    // Unknown: the guard at the strongest of its modes, Advise (review). The reward is Inform
+    // under every mode, so it is Inform, not its own strongest binding held to the guard's.
+    assert_eq!(effect_of(&catalog, Known::Unknown, GUARD), advise);
+    assert_eq!(effect_of(&catalog, Known::Unknown, REWARD), inform);
 }

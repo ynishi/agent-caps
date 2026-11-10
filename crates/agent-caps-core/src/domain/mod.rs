@@ -8,7 +8,8 @@
 //! ```text
 //! PolicyGraph ─ Catalog::accept ─▶ Catalog    (structure, what each policy reads, fixtures)
 //! events ─ Catalog::fold / apply ─▶ State      (an act is folded; a claim is a transaction)
-//! Catalog::effective(mode) ─▶ Effective        (as written: every policy On(level) or Off, Degraded)
+//! Catalog::effective(mode) ─▶ Effective        (as written: every policy On(the strongest level of
+//!                                               its bindings that hold) or Off, Degraded)
 //! Catalog::enforced(mode, &Capabilities) ─▶ Enforced
 //!                                              (as the platform holds it: levels capped, Lowering)
 //! judge(&Catalog, &State, &Event, &Capabilities) ─▶ Outcome
@@ -26,6 +27,8 @@
 //! reads `authority` for the principal an event is by. `authority` knows nothing of the others,
 //! and `arch-lint.toml` keeps it so. `catalog` does not use `tx`: the transaction is built on the
 //! catalog, and [`catalog::Catalog::accept`], which folds the fixtures with it, lives in `tx`.
+//! `change` reads `tx` too: a change of the catalog and a claim are judged by the one function of
+//! how the rules move (`tx::checks`).
 //!
 //! The domain holds no roles. Who an event or a policy comes from is a principal, and where it
 //! sits is the [`authority::Authority`] the caller gives; nothing here treats one principal
@@ -36,8 +39,11 @@
 //! # Glossary
 //!
 //! - Policy: the one part of a catalog. A guard says what must hold, a reward what is
-//!   recommended within a guard, each at a [`policy::Level`].
-//! - Catalog: the accepted set of policies with their layers ([`catalog`]).
+//!   recommended within a guard. A policy holds no strength of its own.
+//! - Binding: one author's statement that a policy takes effect at a [`policy::Level`] where its
+//!   mode scope holds ([`policy::Binding`]). A policy takes effect at the strongest level of its
+//!   bindings that hold, and is off with none, so adding a binding never lowers a policy.
+//! - Catalog: the accepted set of policies with their bindings ([`catalog`]).
 //! - Capabilities: the highest level a platform can enforce, given as data in the words of an
 //!   event filter and supplied with each judgment ([`catalog::Capabilities`]). A policy written
 //!   above it is enforced at it, and each judgment records both levels ([`event::Body::Judged`]).

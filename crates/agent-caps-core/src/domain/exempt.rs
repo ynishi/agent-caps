@@ -2,12 +2,14 @@
 //!
 //! An exemption has two axes and no list of grains: the events it covers (a condition on the
 //! judged event, such as one path) and how long it lasts ([`Lifetime`]). Every exemption ends;
-//! one that should outlive the session is not an exemption but an override in the project layer
-//! of the catalog, so a lasting exception is always a visible change to the rules.
+//! one that should outlive the session is not an exemption but a permanent binding in the
+//! catalog, so a lasting exception is always a visible change to the rules.
 //!
 //! An exemption is a claim, and it loosens its guard: it takes effect only from one who covers
-//! the guard's author ([`super::tx`]), never for a guard of the meta layer, and only while its
-//! lifetime lasts.
+//! the guard's author and the author of every binding of the guard, under any mode
+//! ([`super::tx`]), never for a guard of the meta layer, and only while its lifetime lasts. It
+//! does not change the strength the guard takes effect at: the guard does not judge the events
+//! the exemption covers.
 
 use super::name::{PolicyId, Reason};
 use super::predicate::{Cond, PredError, Scope};

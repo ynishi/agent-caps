@@ -73,7 +73,7 @@ pub struct GuardResult {
     pub policy: PolicyId,
     /// Its author, in whose name the record of the judgment is written.
     pub author: Principal,
-    /// Its level in effect as written, after the layers.
+    /// Its level in effect as written, from its bindings.
     pub written: Level,
     /// The level the platform enforces it at on this event: `written` held to the platform's
     /// capabilities. This is the level that decides whether the guard stops.
@@ -109,7 +109,7 @@ pub struct RewardResult {
     pub policy: PolicyId,
     /// Its author, in whose name the record of the judgment is written.
     pub author: Principal,
-    /// Its level in effect as written, after the layers.
+    /// Its level in effect as written, from its bindings.
     pub written: Level,
     /// The level the platform enforces it at on this event: `written` held to the platform's
     /// capabilities, and to the level its guard is enforced at.
@@ -127,7 +127,7 @@ pub struct Outcome {
     pub guards: Vec<GuardResult>,
     /// Each reward that judged the event.
     pub rewards: Vec<RewardResult>,
-    /// What the layers could not keep as written.
+    /// What the rewards could not keep as their bindings give it.
     pub degraded: Vec<Degraded>,
     /// What the platform's capabilities lowered, apart from `degraded`, of the policies that
     /// judged this event: one enforced less strongly on this event than it is written

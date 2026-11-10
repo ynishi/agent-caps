@@ -1,52 +1,46 @@
-//! Scenario V4: refining one intent by the layers. The same intent, "test before stop", is
-//! written once in the base as Inform, raised to Advise by the project, and to Force by the
-//! bugfix mode; the explore mode turns it off. The reward bound to it follows: it goes off with
-//! the guard.
+//! Scenario V4: refining one intent by bindings. The same intent, "test before stop", is written
+//! once and bound at Inform as the base, at Advise by the project, and at Force inside the bugfix
+//! mode; none of the bindings holds in the explore mode, which turns it off. The strongest binding
+//! that holds wins. The reward bound to it follows: it goes off with the guard.
 //!
 //! The levels are read from `Outcome.guards[].written` and `rewards[].written`, and `degraded`, as
 //! literals; nothing here works out the stacking.
 //!
-//! The fixtures of a guard are checked at the levels the guard is defined with. A guard defined
-//! as Inform or Advise needs none, and an override that raises it to a stopping level would make
+//! A guard bound at Inform or Advise needs no fixture, and a binding that makes it stop would make
 //! a stopping guard that was never checked on an example it fails on and one it holds on. That was
-//! a gap (#11) and is fixed: `Catalog::accept` rejects such an override, in every layer, and the
-//! guard here has its fixtures so that the layers may raise it.
+//! a gap (#11) and is fixed: `Catalog::accept` rejects such a binding, under any mode scope, and
+//! the guard here has its fixtures so that it may be bound at Force.
 
 use agent_caps_core::domain::catalog::{AcceptError, Catalog, Degraded};
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict};
-use agent_caps_core::domain::policy::{Change, Level, OverrideLayer, RewardLevel};
+use agent_caps_core::domain::policy::{Level, ModeScope};
 
 use super::common::{
-    GUARD, REWARD, agent, catalog, clippy_reward, id, in_mode, mode, mode_switch, outcome, over,
-    project, rejected, test_guard, the_user, violated,
+    GUARD, REWARD, agent, bind, binding_id, catalog, clippy_reward, id, inside, mode_switch,
+    outcome, outside, rejected, test_guard, the_user, violated,
 };
 
-/// The base: Inform. The project: Advise. Bugfix: Force. Explore: Off. The reward is Inform, the
-/// most the base guard holds it to.
+/// The base: Inform. The project: Advise. Bugfix: Force. Explore: none holds. The reward is Inform.
 fn refined() -> Catalog {
+    let mut guard = test_guard(Level::Inform);
+    guard.level = None;
     catalog(
+        vec![guard, clippy_reward(Level::Inform)],
         vec![
-            test_guard(Level::Inform),
-            clippy_reward(RewardLevel::Inform),
-        ],
-        vec![
-            project(GUARD, Change::Level(Level::Advise)),
-            in_mode("bugfix", GUARD, Change::Level(Level::Force)),
-            in_mode("explore", GUARD, Change::Off),
+            bind(GUARD, 1, Level::Inform, outside(&["explore"]), the_user()),
+            bind(GUARD, 2, Level::Advise, outside(&["explore"]), the_user()),
+            bind(GUARD, 3, Level::Force, inside("bugfix"), the_user()),
         ],
     )
 }
 
-/// FR1, FR13: the base alone, without the layers above it, only informs, and its reward is at the
-/// level it is written.
+/// FR1, FR13: the base alone, without the bindings above it, only informs, and its reward is at
+/// the level it is bound.
 #[test]
 fn the_base_alone_only_informs() {
     let catalog = catalog(
-        vec![
-            test_guard(Level::Inform),
-            clippy_reward(RewardLevel::Inform),
-        ],
+        vec![test_guard(Level::Inform), clippy_reward(Level::Inform)],
         vec![],
     );
     let out = outcome(&catalog, &[agent(Body::TaskStart), agent(Body::Stop)]);
@@ -55,8 +49,8 @@ fn the_base_alone_only_informs() {
     assert_eq!(out.rewards[0].written, Level::Inform);
 }
 
-/// UC7, UC8, FR5: the project raises the guard from Inform to Advise, and the bugfix mode raises
-/// it again to Force; the reward is kept at its own level.
+/// UC7, UC8, FR42: the project's binding raises the guard from Inform to Advise, and the bugfix
+/// mode's raises it again to Force; the reward is kept at its own level.
 #[test]
 fn the_project_raises_it_and_the_bugfix_mode_raises_it_again() {
     let catalog = refined();
@@ -81,7 +75,8 @@ fn the_project_raises_it_and_the_bugfix_mode_raises_it_again() {
     assert!(bugfix.degraded.is_empty());
 }
 
-/// UC8, UC9, FR13: the explore mode turns the guard off, and the reward goes off with it.
+/// UC8, UC9, FR13: in the explore mode no binding of the guard holds, so it is off, and the
+/// reward goes off with it.
 #[test]
 fn the_explore_mode_turns_the_guard_off_and_the_reward_with_it() {
     let catalog = refined();
@@ -105,53 +100,57 @@ fn the_explore_mode_turns_the_guard_off_and_the_reward_with_it() {
     );
 }
 
-/// FR2, UC12: an override that raises a guard to a stopping level needs the guard's fixtures, in
-/// every layer; a guard that has them may be raised, and one already stopping as defined is
-/// reported once, as missing its fixtures.
+/// FR2, UC12: a binding that makes a guard stop needs the guard's fixtures, under every mode and
+/// inside one; a guard that has them may be bound at Force, and each binding at Force of a guard
+/// without them is reported.
 #[test]
-fn an_override_that_makes_a_guard_stop_needs_its_fixtures() {
+fn a_binding_that_makes_a_guard_stop_needs_its_fixtures() {
     let mut bare = test_guard(Level::Advise);
     bare.fixtures.clear();
-    let raises = [
-        (OverrideLayer::Project, Level::Force),
-        (OverrideLayer::Mode(mode("bugfix")), Level::Force),
-    ];
-    for (layer, level) in raises {
+    for scope in [ModeScope::Any, inside("bugfix")] {
         let errors = rejected(
             vec![bare.clone()],
-            vec![over(layer.clone(), GUARD, Change::Level(level), the_user())],
+            vec![bind(GUARD, 1, Level::Force, scope, the_user())],
         );
         assert_eq!(
             errors,
-            vec![AcceptError::RaisedWithoutFixtures {
+            vec![AcceptError::MissingFixtures {
                 policy: id(GUARD),
-                layer,
-                level,
+                binding: binding_id(id(GUARD), 1),
             }]
         );
     }
 
-    // Lowering, or raising only to Advise, needs no fixture.
+    // A binding at Inform or Advise needs no fixture.
     catalog(
         vec![bare.clone()],
-        vec![project(GUARD, Change::Level(Level::Inform))],
+        vec![bind(GUARD, 1, Level::Inform, ModeScope::Any, the_user())],
     );
     let mut informs = test_guard(Level::Inform);
     informs.fixtures.clear();
     catalog(
         vec![informs],
-        vec![project(GUARD, Change::Level(Level::Advise))],
+        vec![bind(GUARD, 1, Level::Advise, ModeScope::Any, the_user())],
     );
 
-    // A guard with its fixtures may be raised.
-    let raise = project(GUARD, Change::Level(Level::Force));
+    // A guard with its fixtures may be bound at Force.
+    let raise = bind(GUARD, 1, Level::Force, ModeScope::Any, the_user());
     catalog(vec![test_guard(Level::Advise)], vec![raise.clone()]);
 
-    // Stopping as defined and raised again: one error, not two.
+    // Bound at Force by its author and by another binding: each binding is reported.
     let mut stopping = test_guard(Level::Force);
     stopping.fixtures.clear();
     assert_eq!(
         rejected(vec![stopping], vec![raise]),
-        vec![AcceptError::MissingFixtures(id(GUARD))]
+        vec![
+            AcceptError::MissingFixtures {
+                policy: id(GUARD),
+                binding: binding_id(id(GUARD), 0),
+            },
+            AcceptError::MissingFixtures {
+                policy: id(GUARD),
+                binding: binding_id(id(GUARD), 1),
+            },
+        ]
     );
 }

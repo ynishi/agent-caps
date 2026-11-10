@@ -98,6 +98,7 @@ use super::authority::{Authority, Principal};
 use super::event::{Body, Event};
 use super::exempt::{Exempt, Lifetime};
 use super::name::{Mode, PolicyId};
+use super::policy::ModeScope;
 use super::predicate::{EventFilter, Pred, Scope, Temporal, Truth};
 use super::schema::{At, EventKind, Judgment};
 
@@ -478,6 +479,11 @@ impl State {
         &self.mode
     }
 
+    /// The exemptions in effect, each one as many times as it is held.
+    pub(super) fn exemptions(&self) -> &[Exempt] {
+        &self.exempts
+    }
+
     /// The leaves that spawns added to the hierarchy of actors.
     pub(super) fn actors(&self) -> &Actors {
         &self.actors
@@ -703,11 +709,7 @@ impl State {
         let holds = |pred: &Pred| self.holds(table, authority, pred, event);
         match pred {
             Pred::Now(cond) => event.body.holds(cond),
-            Pred::ModeIs(mode) => match &self.mode {
-                Known::Known(Some(current)) => Truth::of(current == mode),
-                Known::Known(None) => Truth::False,
-                Known::Unknown => Truth::Unknown,
-            },
+            Pred::ModeIs(mode) => ModeScope::In(mode.clone()).holds(&self.mode),
             Pred::ActorUnder(principal) => self.actors.is_under(&event.by, principal, authority),
             Pred::Once {
                 event: filter,

@@ -13,16 +13,15 @@ use agent_caps_core::domain::catalog::{
 use agent_caps_core::domain::change::ChangeRejected;
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Outcome, Recognition, Verdict, judge};
-use agent_caps_core::domain::policy::{
-    Change, Level, OverrideLayer, Polarity, PolicyDef, RewardLevel,
-};
+use agent_caps_core::domain::policy::{Level, ModeScope};
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 use agent_caps_core::domain::state::Known;
 
 use super::common::{
-    GUARD, OTHER, REWARD, agent, at, bash, catalog, clippy_reward, commit_after_test_guard, edit,
-    graph_of, id, in_mode, mode, over, src_edit_guard, test_guard, the_agent, the_user, violated,
+    GUARD, OTHER, REWARD, Written, agent, at, bash, bind, catalog, clippy_reward,
+    commit_after_test_guard, edit, graph_of, id, inside, mode, outside, src_edit_guard, test_guard,
+    the_agent, the_user, violated,
 };
 
 /// Every tool call, whatever the tool.
@@ -72,7 +71,7 @@ fn commit() -> [Event; 2] {
 }
 
 /// A second stopping guard, on an edit under `src/`, beside the guard on a commit.
-fn other_src_edit_guard() -> PolicyDef {
+fn other_src_edit_guard() -> Written {
     let mut guard = src_edit_guard();
     guard.id = id(OTHER);
     guard.name = "src-edit-after-test".parse().unwrap();
@@ -203,9 +202,7 @@ fn the_record_of_a_judgment_has_the_written_and_the_enforced_level() {
 
     // A guard written to warn, on a platform that holds everything.
     let mut warning = commit_after_test_guard();
-    warning.polarity = Polarity::Guard {
-        level: Level::Advise,
-    };
+    warning.level = Some(Level::Advise);
     let warning = catalog(vec![warning], vec![]);
     let written = judged_on(&warning, &commit(), &Capabilities::full());
     assert_eq!(
@@ -226,10 +223,7 @@ fn the_record_of_a_judgment_has_the_written_and_the_enforced_level() {
 /// events of two kinds.
 fn guard_with_reward_at_stop() -> Catalog {
     catalog(
-        vec![
-            commit_after_test_guard(),
-            clippy_reward(RewardLevel::Advise),
-        ],
+        vec![commit_after_test_guard(), clippy_reward(Level::Advise)],
         vec![],
     )
 }
@@ -305,7 +299,7 @@ fn a_reward_of_another_kind_is_held_to_what_its_guard_holds_on_every_event() {
 /// the list, where no event is judged, still holds the reward to what the guard holds on every call.
 #[test]
 fn a_reward_of_the_guards_own_kind_follows_the_guard_on_the_event_not_on_the_kind() {
-    let mut reward = clippy_reward(RewardLevel::Advise);
+    let mut reward = clippy_reward(Level::Advise);
     reward.subject = EventKind::ToolUse;
     let catalog = catalog(vec![commit_after_test_guard(), reward], vec![]);
     let caps = capabilities(vec![(tool_is("Edit"), Level::Inform)], Level::Force);
@@ -441,12 +435,10 @@ fn the_list_shows_a_cap_that_differs_by_event_and_never_says_more_than_a_judgmen
 fn a_catalog_is_checked_against_the_capabilities_mode_by_mode() {
     // Written to warn, and to stop in the bugfix mode.
     let mut guard = commit_after_test_guard();
-    guard.polarity = Polarity::Guard {
-        level: Level::Advise,
-    };
+    guard.level = Some(Level::Advise);
     let catalog = catalog(
         vec![guard],
-        vec![in_mode("bugfix", GUARD, Change::Level(Level::Force))],
+        vec![bind(GUARD, 1, Level::Force, inside("bugfix"), the_user())],
     );
 
     assert!(catalog.check_capabilities(&Capabilities::full()).is_empty());
@@ -479,9 +471,9 @@ fn a_catalog_is_checked_against_the_capabilities_mode_by_mode() {
     );
 }
 
-/// FR40, FR5: a change of the rules is judged by the written strength, not by what a platform
+/// FR40, FR42: a change of the rules is judged by the written strength, not by what a platform
 /// holds. On a platform that squashes Force to Advise, one below the guard's author still cannot
-/// lower the guard to Advise.
+/// lower the guard to Advise, by putting a binding of its own at Advise in place of the author's.
 #[test]
 fn a_change_is_judged_by_the_written_strength_whatever_the_platform_holds() {
     let catalog = catalog(vec![test_guard(Level::Force)], vec![]);
@@ -494,14 +486,11 @@ fn a_change_is_judged_by_the_written_strength_whatever_the_platform_holds() {
         EnforcedEffect::On(Cap::Fixed(Level::Advise))
     );
 
+    let mut unbound = test_guard(Level::Force);
+    unbound.level = None;
     let lowered = graph_of(
-        vec![test_guard(Level::Force)],
-        vec![over(
-            OverrideLayer::Project,
-            GUARD,
-            Change::Level(Level::Advise),
-            the_agent(),
-        )],
+        vec![unbound],
+        vec![bind(GUARD, 1, Level::Advise, ModeScope::Any, the_agent())],
     );
     assert!(matches!(
         catalog.change(lowered, &the_agent()),
@@ -514,9 +503,15 @@ fn a_change_is_judged_by_the_written_strength_whatever_the_platform_holds() {
 /// same level in both modes.
 #[test]
 fn a_claim_is_judged_by_the_written_strength_whatever_the_platform_holds() {
+    // Advise outside the relaxed mode, Inform inside it.
+    let mut guard = test_guard(Level::Advise);
+    guard.level = None;
     let catalog = catalog(
-        vec![test_guard(Level::Advise)],
-        vec![in_mode("relaxed", GUARD, Change::Level(Level::Inform))],
+        vec![guard],
+        vec![
+            bind(GUARD, 0, Level::Advise, outside(&["relaxed"]), the_user()),
+            bind(GUARD, 1, Level::Inform, inside("relaxed"), the_user()),
+        ],
     );
     let squashed = capabilities(vec![(any_tool(), Level::Inform)], Level::Inform);
     let enforced_in = |mode: Option<&str>| {
