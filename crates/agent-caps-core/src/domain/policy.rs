@@ -435,6 +435,20 @@ fn scope_pred(pred: &Pred, visible: &Cond) -> Pred {
             scope: scoped(scope),
             test: test.clone(),
         },
+        // It sums `Used` events, never judgments: only its scope may read them.
+        Pred::Spent {
+            meter,
+            by,
+            scope,
+            order,
+            n,
+        } => Pred::Spent {
+            meter: meter.clone(),
+            by: by.clone(),
+            scope: scoped(scope),
+            order: *order,
+            n: *n,
+        },
         Pred::All(preds) => Pred::All(preds.iter().map(|p| scope_pred(p, visible)).collect()),
         Pred::Any(preds) => Pred::Any(preds.iter().map(|p| scope_pred(p, visible)).collect()),
         Pred::Not(inner) => Pred::Not(Box::new(scope_pred(inner, visible))),

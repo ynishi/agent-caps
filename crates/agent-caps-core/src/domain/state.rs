@@ -112,7 +112,9 @@
 //! - The mode in effect: the mode of the last switch that took effect.
 //! - One slot per temporal operator of the catalog's predicates. Each is updated
 //!   from its last value and the new event alone, and goes back to its start value when its
-//!   scope starts again.
+//!   scope starts again. The slot of a `spent` is a sum of amounts that starts at zero; a
+//!   `Used` it chooses whose amount could not be read makes it unknown until its scope starts
+//!   again.
 //! - The temporary adjustments in effect, each with who made it and whether it is known to be
 //!   held ([`State::adjustments`], [`Holding`]). Each lasts only for its lifetime or until it is
 //!   cancelled, and only one the catalog's index admits is kept. When it cannot be told whether
@@ -177,7 +179,7 @@ use super::authority::{Authority, Principal};
 use super::event::{Body, Event};
 use super::name::{AdjustmentId, BindingId, Mode, PolicyId};
 use super::policy::ModeScope;
-use super::predicate::{By, Cond, EventFilter, Pred, Scope, Selector, Temporal, Truth};
+use super::predicate::{Amount, By, Cond, EventFilter, Pred, Scope, Selector, Temporal, Truth};
 use super::schema::{At, EventKind, Judgment, Nature};
 
 /// A value that was seen, or could not be.
@@ -428,6 +430,8 @@ enum Slot {
     Count(Known<u32>),
     /// The last event that matched the filter within the scope; `Known(None)`: there was none.
     Last(Known<Option<Body>>),
+    /// The sum of the amounts of the `Used` events chosen within the scope.
+    Spent(Known<Amount>),
 }
 
 impl Slot {
@@ -436,6 +440,7 @@ impl Slot {
             Temporal::Once(..) => Self::Once(Known::Known(false)),
             Temporal::Count(..) => Self::Count(Known::Known(0)),
             Temporal::Last(..) => Self::Last(Known::Known(None)),
+            Temporal::Spent(..) => Self::Spent(Known::Known(Amount::ZERO)),
         }
     }
 
@@ -446,6 +451,7 @@ impl Slot {
             Self::Once(_) => Self::Once(Known::Unknown),
             Self::Count(_) => Self::Count(Known::Unknown),
             Self::Last(_) => Self::Last(Known::Unknown),
+            Self::Spent(_) => Self::Spent(Known::Unknown),
         }
     }
 
@@ -456,6 +462,7 @@ impl Slot {
             Self::Once(_) => Self::Once(Known::Unknown),
             Self::Count(_) => Self::Count(Known::Unknown),
             Self::Last(_) => Self::Last(Known::Unknown),
+            Self::Spent(_) => Self::Spent(Known::Unknown),
         }
     }
 
@@ -494,6 +501,20 @@ impl Slot {
                 Truth::False => Self::Last(last),
                 Truth::Unknown => Self::Last(Known::Unknown),
             },
+            // The one place that reads the amount a `Used` adds. One whose amount could not be
+            // read makes the sum unknown; the event is still chosen, so a `count` of it and a
+            // `Since` it closes read it as known.
+            (Self::Spent(sum), Temporal::Spent(..)) => Self::Spent(match (sum, chosen) {
+                (Known::Known(total), Truth::True) => match &event.body {
+                    Body::Used {
+                        amount: Some(amount),
+                        ..
+                    } => Known::Known(total.saturating_add(*amount)),
+                    _ => Known::Unknown,
+                },
+                (Known::Known(total), Truth::False) => Known::Known(total),
+                (_, _) => Known::Unknown,
+            }),
             // A slot always has the shape of its operator: both come from the same table.
             (slot, _) => slot,
         }
@@ -1083,6 +1104,19 @@ impl State {
             } => match slot(Temporal::Last(select.clone(), scope.clone())) {
                 Some(Slot::Last(Known::Known(Some(last)))) => last.holds(test),
                 Some(Slot::Last(Known::Known(None))) => Truth::False,
+                _ => Truth::Unknown,
+            },
+            Pred::Spent {
+                meter,
+                by,
+                scope,
+                order,
+                n,
+            } => match slot(Temporal::Spent(
+                Pred::spent_selector(meter, by),
+                scope.clone(),
+            )) {
+                Some(Slot::Spent(Known::Known(sum))) => Truth::of(order.holds(*sum, *n)),
                 _ => Truth::Unknown,
             },
             Pred::All(preds) => Truth::all(preds.iter().map(holds)),

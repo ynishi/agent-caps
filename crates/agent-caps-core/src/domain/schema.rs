@@ -110,6 +110,8 @@ event_kinds! {
     ToolUse,
     /// A turn is about to end.
     Stop,
+    /// The platform measured an amount used of a meter.
+    Used,
     /// The mode was switched.
     ModeSwitch,
     /// An oracle measured a score.
@@ -152,6 +154,7 @@ impl EventKind {
             | Self::PromptSubmit
             | Self::ToolUse
             | Self::Stop
+            | Self::Used
             | Self::Unreadable => Nature::Act,
             // A spawn is observed on the platform, but where it places its child is its
             // spawner's choice, and that can change how a rule takes effect: it is a claim.
@@ -230,6 +233,10 @@ pub enum Field {
     Policy,
     /// What a [`EventKind::Judged`] came to, as [`Judgment::as_str`] (text).
     Judgment,
+    /// The meter of a [`EventKind::Used`], as the text of its
+    /// [`Meter`](super::name::Meter) (text). The amount is no field: only
+    /// [`Pred::Spent`](super::predicate::Pred::Spent) reads it.
+    Meter,
 }
 
 /// The type of a [`Field`]'s value.
@@ -253,6 +260,7 @@ impl Field {
             Self::ModeTo => EventKind::ModeSwitch,
             Self::Oracle | Self::Score => EventKind::Measured,
             Self::Policy | Self::Judgment => EventKind::Judged,
+            Self::Meter => EventKind::Used,
         }
     }
 
@@ -264,7 +272,8 @@ impl Field {
             | Self::ModeTo
             | Self::Oracle
             | Self::Policy
-            | Self::Judgment => FieldType::Text,
+            | Self::Judgment
+            | Self::Meter => FieldType::Text,
             Self::Command => FieldType::Words,
             Self::Ok => FieldType::Bool,
             Self::Score => FieldType::Num,

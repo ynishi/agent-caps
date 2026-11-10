@@ -116,6 +116,31 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a rule can limit the sum of an amount used, such as
+  the tokens of a task (#42). The new act `Body::Used { meter: Meter, amount:
+  Option<Amount> }` (`EventKind::Used`, of `Nature::Act`) is what the platform
+  measured as used; the adapter carries it as it carries the origin of any
+  act. The new operator `Pred::Spent { meter, by, scope, order, n }` sums the
+  amounts of the `Used` events of the meter whose actor `by` chooses, within
+  the scope (every scope, `Every` and `Task(By)` included). Its `by` is the new
+  `Whose` (`Anyone` or `Under(Principal)`), a `By` without `Only`: what is
+  delegated counts toward the one who delegates, so a sub agent's use counts
+  toward the principal it is spawned under, and no budget can be escaped by
+  delegating. The `By` doc now says that an upper bound chosen with `Only`
+  does not count what its principal delegates. It compares the
+  sum with `n` by an `Order` (`Lt`, `Le`, `Ge`, `Gt`: no equality on a sum).
+  `Amount::new` refuses NaN, the infinities and negative numbers
+  (`AmountError`), and a sum is held at the largest finite number. `Meter` is
+  a name, as `Mode` is, and the new `Field::Meter` (text, of `Used`) lets a
+  condition test it; the amount is read only by `Spent`. A `Used` whose amount
+  is `None` makes only a sum of its meter unknown, so a stopping guard stops; a
+  `count` of `Used` events and a `Since` a `Used` closes still read it. A sum
+  can pass its bound by one event, since an amount is known after the use, and
+  an amount that goes down (a gauge) cannot be written. `Body`, `EventKind`
+  and `Field` are `#[non_exhaustive]`, so a match on them outside the crate
+  already has a wildcard arm; `Pred` is not, so an exhaustive match on `Pred`
+  outside the crate needs a new arm for `Spent`. The ledger has FR47 for it,
+  and UC26 cites it.
 - Breaking, before 1.0: time is a clock that only acts advance, and a period
   can be a window of time (#42). The new `Scope::Every(Window)` is the window
   of fixed length the clock is in, aligned to the Unix epoch in UTC, and starts

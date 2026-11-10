@@ -4,6 +4,7 @@
 //! Pred := Now(Cond) | ModeIs(mode) | ActorUnder(principal)
 //!       | Once(selector, scope) | Count(selector, scope) cmp n
 //!       | Last(selector, scope) test Cond
+//!       | Spent(meter, by, scope) order amount
 //!       | All[Pred…] | Any[Pred…] | Not Pred
 //! Cond := field == lit | field in {lit…} | glob(field, pattern) | words(field, words)
 //!       | num(field) cmp n | All[Cond…] | Any[Cond…] | Not Cond
@@ -11,7 +12,22 @@
 //! by       := Anyone | Under(principal) | Only(principal)
 //! selector := filter by by
 //! scope    := Session | Mode | Task(by) | Turn(by) | Since(selector) | Every(window)
+//! order    := < | <= | >= | >
 //! ```
+//!
+//! `Count` and `Spent` are siblings: both gather the events a selector chooses within a scope
+//! and compare what they gathered with a bound, `Count` the number of events as a `u32`, `Spent`
+//! the sum of the amounts of the [`EventKind::Used`] events of one meter as an [`Amount`]. The
+//! type of the bound is the operator's, so neither a count in fractions nor a NaN bound can be
+//! written.
+//!
+//! # Known limits of a sum
+//!
+//! - An amount is known after the use it measures, so a sum can pass its bound by one event:
+//!   `Spent(tokens, …) < n` lets through the act whose use takes the sum to `n` or past it, and
+//!   stops the next act.
+//! - Only an amount that grows and starts again with its scope can be summed. A gauge, such as
+//!   the number of calls running at once, which goes down as well as up, cannot be written.
 //!
 //! `ModeIs` and `ActorUnder` read the state rather than the events of a scope: the mode in
 //! effect, and where the judged event's actor sits in the hierarchy of actors. A [`By::Under`]
@@ -28,9 +44,9 @@
 //!
 //! - Every predicate stops, in time linear in its size per event: there is no loop, recursion,
 //!   user-defined function or regex. Shell patterns are matched without backtracking.
-//! - The past is read only through the three temporal operators, each one level deep: the
+//! - The past is read only through the four temporal operators, each one level deep: the
 //!   condition inside a [`Pred::Once`], [`Pred::Count`] or [`Pred::Last`] is a [`Cond`], which
-//!   cannot hold one.
+//!   cannot hold one, and a [`Pred::Spent`] holds no condition but its meter.
 //!   The type, not a check, keeps them from nesting. Each temporal operator becomes one slot of
 //!   the state, updated from its last value and the new event alone.
 //! - A predicate is evaluated in three values ([`Truth`]). A value the event has but did not
@@ -43,7 +59,7 @@
 use std::fmt;
 
 use super::authority::Principal;
-use super::name::{CommandWords, GlobPattern, Mode, PolicyId};
+use super::name::{CommandWords, GlobPattern, Meter, Mode, PolicyId};
 use super::schema::{At, EventKind, Field, FieldType};
 
 /// A truth value of Kleene's three-valued logic.
@@ -183,6 +199,12 @@ pub struct EventFilter {
 ///   such as a count of pushes since the last review by the user. No spawn can move it, since a
 ///   spawned leaf is never `p` (its name is new at every start).
 ///
+/// An upper bound on events chosen with `Only(p)` does not count what `p` delegates: the acts of
+/// a sub agent `p` spawns are not `p`'s, so `p` escapes the bound by delegating, and no spawn
+/// check sees it. A limit on what someone uses or does chooses with `Under`; `Only` is for who
+/// may start a scope again or close it. A sum ([`Pred::Spent`]) cannot choose with `Only` at
+/// all ([`Whose`]).
+///
 /// The principal of `Under` and `Only` must be one of the authority's, in a rule and in the
 /// lifetime of a temporary adjustment alike.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -204,6 +226,32 @@ impl By {
         match self {
             Self::Anyone => None,
             Self::Under(principal) | Self::Only(principal) => Some(principal),
+        }
+    }
+}
+
+/// Whose use a sum ([`Pred::Spent`]) counts: a [`By`] without `Only`. A budget limits
+/// consumption, and what is delegated is consumed for the one who delegates, so a sub agent's
+/// use counts toward the principal it is spawned under, as a platform totals the spend of sub
+/// agents and as hierarchical resource accounting does. With `Only(p)`, `p` could escape its
+/// budget by handing the work to a sub agent, which no spawn check would catch, so `Only` is not
+/// offered here. It becomes a `By` in one place, where the events a sum reads are chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Whose {
+    /// The use of every actor.
+    Anyone,
+    /// The use of the principal and of every actor below it in the hierarchy of actors, the
+    /// leaves spawns place there included, read as [`By::Under`] reads it.
+    Under(Principal),
+}
+
+impl Whose {
+    /// The principal it names, when it names one: that of `Under`, read as a [`By::Under`]
+    /// is.
+    pub(super) fn principal(&self) -> Option<&Principal> {
+        match self {
+            Self::Anyone => None,
+            Self::Under(principal) => Some(principal),
         }
     }
 }
@@ -380,6 +428,90 @@ impl fmt::Display for WindowError {
 
 impl std::error::Error for WindowError {}
 
+/// An amount used of a meter ([`Body::Used`](super::event::Body::Used)), or the bound of a
+/// [`Pred::Spent`]: a finite number, zero or more. The constructor refuses NaN, the infinities
+/// and negative numbers, so a sum of amounts is always ordered and only grows.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Amount(f64);
+
+impl Amount {
+    /// No amount: where a sum starts.
+    pub const ZERO: Self = Self(0.0);
+
+    /// The amount `value`; NaN, the infinities and negative numbers are refused. A negative zero
+    /// is zero.
+    pub fn new(value: f64) -> Result<Self, AmountError> {
+        if !value.is_finite() {
+            Err(AmountError::NotFinite(value))
+        } else if value < 0.0 {
+            Err(AmountError::Negative(value))
+        } else {
+            // `-0.0 + 0.0` is `0.0`: one zero.
+            Ok(Self(value + 0.0))
+        }
+    }
+
+    /// The number.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+
+    /// The sum of the two, held at the largest finite number when it would pass it, so a sum
+    /// stays an amount. The one way amounts are added.
+    pub(super) fn saturating_add(self, other: Self) -> Self {
+        let sum = self.0 + other.0;
+        Self(if sum.is_finite() { sum } else { f64::MAX })
+    }
+}
+
+/// Why a number is not an amount.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AmountError {
+    /// NaN or an infinity.
+    NotFinite(f64),
+    /// Less than zero.
+    Negative(f64),
+}
+
+impl fmt::Display for AmountError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFinite(value) => write!(f, "{value} is not a finite amount"),
+            Self::Negative(value) => write!(f, "{value} is a negative amount"),
+        }
+    }
+}
+
+impl std::error::Error for AmountError {}
+
+/// How a sum of amounts compares with its bound. There is no equality: a sum of amounts measured
+/// in fractions rarely meets a bound exactly, so a rule says on which side of it the sum is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Order {
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>=`
+    Ge,
+    /// `>`
+    Gt,
+}
+
+impl Order {
+    /// Whether `left` compares to `right` this way. Amounts are always ordered, so it is always
+    /// known.
+    pub(super) fn holds(self, left: Amount, right: Amount) -> bool {
+        let (left, right) = (left.0, right.0);
+        match self {
+            Self::Lt => left < right,
+            Self::Le => left <= right,
+            Self::Ge => left >= right,
+            Self::Gt => left > right,
+        }
+    }
+}
+
 /// A predicate on the judged event and the events before it.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pred {
@@ -428,6 +560,30 @@ pub enum Pred {
         /// What must hold of that event, read from the kind of the filter.
         test: Cond,
     },
+    /// The sum of the amounts of the [`EventKind::Used`] events of the meter whose actor `by`
+    /// chooses, within the scope, the judged event included, compares to `n`. Zero when there was
+    /// none. The events summed are those of one selector: a `Used` whose meter is this one
+    /// ([`Field::Meter`]), chosen by who acted as any selector chooses, so `Whose::Under(agent)`
+    /// sums the use of the agent and of the sub agents spawned below it. A sum always chooses by
+    /// place ([`Whose`]), so what is delegated counts toward the one who delegates. A `Used`
+    /// whose amount could not be read makes the sum unknown until the scope starts again.
+    ///
+    /// `Spent { meter: tokens, by: Whose::Under(agent), scope: Task(Only(user)), order: Lt, n }`
+    /// is "the agent and its sub agents have used fewer than `n` tokens since the user last
+    /// started a task". The sum is of what was measured, after the use, so it can pass `n` by one event (see
+    /// the module doc).
+    Spent {
+        /// What is summed.
+        meter: Meter,
+        /// Whose use is summed.
+        by: Whose,
+        /// Since when.
+        scope: Scope,
+        /// How the sum compares.
+        order: Order,
+        /// What it is compared with.
+        n: Amount,
+    },
     /// All of them hold (true when there are none).
     All(Vec<Pred>),
     /// One of them holds (false when there are none).
@@ -437,27 +593,55 @@ pub enum Pred {
 }
 
 /// What a temporal operator remembers between events: one slot of the state. Two operators with
-/// the same temporal part share a slot.
+/// the same temporal part share a slot; the variant is part of it, so a `count` and a `spent`
+/// never share one.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Temporal {
     Once(Selector, Scope),
     Count(Selector, Scope),
     Last(Selector, Scope),
+    /// The selector is the one [`Pred::spent_selector`] makes of the meter and the [`Whose`],
+    /// so the key is the meter, the `Whose` and the scope.
+    Spent(Selector, Scope),
 }
 
 impl Temporal {
     pub(super) fn scope(&self) -> &Scope {
         match self {
-            Self::Once(_, scope) | Self::Count(_, scope) | Self::Last(_, scope) => scope,
+            Self::Once(_, scope)
+            | Self::Count(_, scope)
+            | Self::Last(_, scope)
+            | Self::Spent(_, scope) => scope,
         }
     }
 
     /// The events the operator looks at.
     pub(super) fn selector(&self) -> &Selector {
         match self {
-            Self::Once(selector, _) | Self::Count(selector, _) | Self::Last(selector, _) => {
-                selector
-            }
+            Self::Once(selector, _)
+            | Self::Count(selector, _)
+            | Self::Last(selector, _)
+            | Self::Spent(selector, _) => selector,
+        }
+    }
+}
+
+impl Pred {
+    /// The events a [`Pred::Spent`] of `meter` by `by` sums: the [`EventKind::Used`] events whose
+    /// meter ([`Field::Meter`], the meter's own text) is `meter`, whose actor `by` chooses. The
+    /// one place that says which events a sum reads, and the one place a [`Whose`] becomes a
+    /// [`By`], so whether an event is summed is answered by `Selector::selects`, as for every
+    /// other operator, and whether the meter is the same by one comparison of its text.
+    pub(super) fn spent_selector(meter: &Meter, by: &Whose) -> Selector {
+        Selector {
+            filter: EventFilter {
+                kind: EventKind::Used,
+                cond: Some(Cond::Eq(Field::Meter, Lit::Text(meter.as_str().to_owned()))),
+            },
+            by: match by {
+                Whose::Anyone => By::Anyone,
+                Whose::Under(principal) => By::Under(principal.clone()),
+            },
         }
     }
 }
@@ -605,6 +789,9 @@ impl Pred {
                 test.check_into(select.filter.kind, errors);
                 scope.check_into(errors);
             }
+            // The events it sums are typed by construction (`spent_selector`); its scope is read
+            // as any other.
+            Self::Spent { scope, .. } => scope.check_into(errors),
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
                     pred.check_into(subject, errors);
@@ -627,11 +814,28 @@ impl Pred {
         match self {
             Self::Now(_) | Self::ModeIs(_) => {}
             Self::ActorUnder(principal) => note(principal),
-            Self::Once { select, scope }
-            | Self::Count { select, scope, .. }
-            | Self::Last { select, scope, .. } => {
-                temporal_bys(select, scope)
+            Self::Once {
+                select: Selector { by, .. },
+                scope,
+            }
+            | Self::Count {
+                select: Selector { by, .. },
+                scope,
+                ..
+            }
+            | Self::Last {
+                select: Selector { by, .. },
+                scope,
+                ..
+            } => {
+                temporal_bys(by, scope)
                     .filter_map(By::principal)
+                    .for_each(note);
+            }
+            Self::Spent { by, scope, .. } => {
+                by.principal()
+                    .into_iter()
+                    .chain(scope.by().and_then(By::principal))
                     .for_each(note);
             }
             Self::All(preds) | Self::Any(preds) => {
@@ -658,6 +862,12 @@ impl Pred {
                 Some(Temporal::Count(select.clone(), scope.clone()))
             }
             Self::Last { select, scope, .. } => Some(Temporal::Last(select.clone(), scope.clone())),
+            Self::Spent {
+                meter, by, scope, ..
+            } => Some(Temporal::Spent(
+                Self::spent_selector(meter, by),
+                scope.clone(),
+            )),
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
                     pred.temporals_into(out);
@@ -702,6 +912,8 @@ impl Pred {
                 scope,
                 test,
             } => vec![last_read(&select.filter, test), since(scope)],
+            // It sums `Used` events, never judgments: only its scope may read them.
+            Self::Spent { scope, .. } => vec![since(scope)],
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
                     pred.judged_reads_into(out);
@@ -773,14 +985,20 @@ pub(super) fn state_readings(pred: &Pred, site: Site) -> Vec<(StateAtom<'_>, Rea
 pub(super) fn by_reading(by: &By) -> Option<(&Principal, Reading)> {
     match by {
         By::Anyone | By::Only(_) => None,
-        By::Under(principal) => Some((principal, Reading::Unreadable)),
+        By::Under(principal) => Some(under_reading(principal)),
     }
 }
 
-/// The `By`s of a temporal operator: that of its selector, and that of its scope when the scope
-/// has one.
-fn temporal_bys<'a>(select: &'a Selector, scope: &'a Scope) -> impl Iterator<Item = &'a By> {
-    std::iter::once(&select.by).chain(scope.by())
+/// How an `Under(principal)` is read, of a [`By`] and of a sum's [`Whose`] alike: always
+/// `Unreadable` (see [`by_reading`]).
+fn under_reading(principal: &Principal) -> (&Principal, Reading) {
+    (principal, Reading::Unreadable)
+}
+
+/// The `By`s of a temporal operator that chooses with a selector: that of its selector, and that
+/// of its scope when the scope has one.
+fn temporal_bys<'a>(by: &'a By, scope: &'a Scope) -> impl Iterator<Item = &'a By> {
+    std::iter::once(by).chain(scope.by())
 }
 
 fn readings_into<'a>(
@@ -799,10 +1017,32 @@ fn readings_into<'a>(
             return;
         }
         Pred::Not(pred) => return readings_into(pred, site, !negated, out),
-        Pred::Once { select, scope }
-        | Pred::Count { select, scope, .. }
-        | Pred::Last { select, scope, .. } => {
-            for (principal, reading) in temporal_bys(select, scope).filter_map(by_reading) {
+        Pred::Once {
+            select: Selector { by, .. },
+            scope,
+        }
+        | Pred::Count {
+            select: Selector { by, .. },
+            scope,
+            ..
+        }
+        | Pred::Last {
+            select: Selector { by, .. },
+            scope,
+            ..
+        } => {
+            for (principal, reading) in temporal_bys(by, scope).filter_map(by_reading) {
+                note_reading(out, StateAtom::Actor(principal), reading);
+            }
+            return;
+        }
+        Pred::Spent { by, scope, .. } => {
+            let readings = by
+                .principal()
+                .map(under_reading)
+                .into_iter()
+                .chain(scope.by().and_then(by_reading));
+            for (principal, reading) in readings {
                 note_reading(out, StateAtom::Actor(principal), reading);
             }
             return;
@@ -1135,6 +1375,85 @@ mod tests {
         // In both directions at once, it is not read.
         let both = Pred::All(vec![under(), not(under())]);
         assert_eq!(reading(&both, Site::GuardWhen), Reading::Unreadable);
+    }
+
+    fn spent(by: Whose, scope: Scope) -> Pred {
+        Pred::Spent {
+            meter: "tokens".parse().unwrap(),
+            by,
+            scope,
+            order: Order::Lt,
+            n: Amount::new(100.0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn an_amount_is_finite_and_not_negative_and_its_sum_stays_so() {
+        assert_eq!(
+            Amount::new(f64::NAN)
+                .map(Amount::get)
+                .map_err(|e| e.to_string()),
+            Err("NaN is not a finite amount".to_owned())
+        );
+        assert!(matches!(
+            Amount::new(f64::INFINITY),
+            Err(AmountError::NotFinite(_))
+        ));
+        assert_eq!(Amount::new(-1.0), Err(AmountError::Negative(-1.0)));
+        assert!(Amount::new(-0.0).unwrap().get().is_sign_positive());
+        let max = Amount::new(f64::MAX).unwrap();
+        assert_eq!(max.saturating_add(max), max);
+        let (one, two) = (Amount::new(1.0).unwrap(), Amount::new(2.0).unwrap());
+        assert_eq!(one.saturating_add(one), two);
+        assert!(Order::Lt.holds(one, two) && Order::Le.holds(two, two));
+        assert!(!Order::Gt.holds(two, two) && Order::Ge.holds(two, one));
+    }
+
+    #[test]
+    fn a_sum_and_a_count_of_the_same_events_are_two_slots() {
+        let pred = Pred::All(vec![
+            spent(Whose::Anyone, Scope::Session),
+            spent(Whose::Anyone, Scope::Session),
+            Pred::Count {
+                select: Pred::spent_selector(&"tokens".parse().unwrap(), &Whose::Anyone),
+                scope: Scope::Session,
+                cmp: Cmp::Le,
+                n: 3,
+            },
+            // Another meter is another slot.
+            Pred::Spent {
+                meter: "cost".parse().unwrap(),
+                by: Whose::Anyone,
+                scope: Scope::Session,
+                order: Order::Lt,
+                n: Amount::ZERO,
+            },
+        ]);
+        assert_eq!(pred.temporals().len(), 3);
+    }
+
+    #[test]
+    fn a_principal_a_sum_chooses_by_is_named_and_read_in_no_direction() {
+        let agent = Principal::new("agent");
+        let user = Principal::new("user");
+        let pred = spent(
+            Whose::Under(agent.clone()),
+            Scope::Task(By::Only(user.clone())),
+        );
+        // A sum by place reads its principal as a selector's `By::Under` does.
+        assert_eq!(
+            Pred::spent_selector(&"tokens".parse().unwrap(), &Whose::Under(agent.clone())).by,
+            By::Under(agent.clone())
+        );
+        let mut named = Vec::new();
+        pred.named_actors_into(&mut named);
+        assert_eq!(named, vec![&agent, &user]);
+        // `Only` reads nothing a spawn can move.
+        assert_eq!(
+            state_readings(&pred, Site::GuardWhen),
+            vec![(StateAtom::Actor(&agent), Reading::Unreadable)]
+        );
+        assert!(pred.check(EventKind::ToolUse).is_empty());
     }
 
     #[test]

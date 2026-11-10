@@ -812,7 +812,8 @@ fn enforce_by_kind<'a>(effective: &Effective<'a>, caps: &Capabilities) -> Enforc
 /// check of references here reads (the judgments it reads).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct Reads {
-    /// The slots of its temporal operators (`once`, `count`, `last`), each with its scope.
+    /// The slots of its temporal operators (`once`, `count`, `last`, `spent`), each with its
+    /// scope.
     slots: Vec<SlotId>,
     /// The judgments those operators and the filters of their `Since` scopes read.
     judged: Vec<JudgedRead>,

@@ -17,8 +17,8 @@
 
 use super::adjust::Adjustment;
 use super::authority::Principal;
-use super::name::{AdjustmentId, CommandWords, Mode, PolicyId};
-use super::predicate::{Cond, Lit, Truth};
+use super::name::{AdjustmentId, CommandWords, Meter, Mode, PolicyId};
+use super::predicate::{Amount, Cond, Lit, Truth};
 use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
 
 /// One event: when, from whom, and what.
@@ -69,6 +69,24 @@ pub enum Body {
     },
     /// A turn is about to end.
     Stop,
+    /// What the platform measured as used of a meter, such as the tokens of a model call: an act.
+    /// The adapter reads the amount from what the platform measured and carries it, as it carries
+    /// the origin of any act ([`super::schema::EventKind::nature`]); the domain takes it as given.
+    /// Its actor is the one whose use it was, so a sum chooses it by its actor's place
+    /// ([`Whose`](super::predicate::Whose)), and a sub agent's use counts under its parent.
+    ///
+    /// The amount is read only by [`Pred::Spent`](super::predicate::Pred::Spent), which sums it; a
+    /// condition reads the meter ([`Field::Meter`]). An amount is known after the use, so a sum can
+    /// pass its bound by one event, and the next act is the one a rule stops.
+    Used {
+        /// What was measured.
+        meter: Meter,
+        /// How much was used; `None` when it was measured but the amount could not be read. That
+        /// makes only a sum of the meter unknown, as `ok: None` makes a read of a tool call's
+        /// success unknown: a count of `Used` events, and a `Since` that a `Used` closes, still
+        /// read the event.
+        amount: Option<Amount>,
+    },
     /// The mode is switched.
     ModeSwitch {
         /// The mode to put in effect.
@@ -163,6 +181,7 @@ impl Body {
             Self::PromptSubmit => EventKind::PromptSubmit,
             Self::ToolUse { .. } => EventKind::ToolUse,
             Self::Stop => EventKind::Stop,
+            Self::Used { .. } => EventKind::Used,
             Self::ModeSwitch { .. } => EventKind::ModeSwitch,
             Self::Measured { .. } => EventKind::Measured,
             Self::Adjust(_) => EventKind::Adjust,
@@ -212,6 +231,10 @@ impl Body {
             }
             (Self::Judged { judgment, .. }, Field::Judgment) => {
                 Read::Found(Value::Text(judgment.as_str().to_owned()))
+            }
+            // The text the meter holds, so `meter == "tokens"` is the meter's own equality.
+            (Self::Used { meter, .. }, Field::Meter) => {
+                Read::Found(Value::Text(meter.as_str().to_owned()))
             }
             _ => Read::OtherKind,
         }
@@ -277,6 +300,16 @@ mod tests {
         assert_eq!(bash("cargo test", None).read(Field::Ok), Read::Unknown);
         assert_eq!(tool_use.read(Field::Score), Read::OtherKind);
         assert_eq!(Body::Stop.read(Field::Tool), Read::OtherKind);
+        // An amount that could not be read leaves the meter known.
+        let used = Body::Used {
+            meter: "tokens".parse().unwrap(),
+            amount: None,
+        };
+        assert_eq!(
+            used.read(Field::Meter),
+            Read::Found(Value::Text("tokens".to_owned()))
+        );
+        assert_eq!(used.read(Field::Tool), Read::OtherKind);
     }
 
     #[test]

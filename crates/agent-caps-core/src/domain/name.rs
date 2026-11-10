@@ -1,6 +1,6 @@
 //! The values with a rule of their own that the rest of the domain refers to: the id and name of a
-//! policy, the id of a binding and of a temporary adjustment, a mode, the words of a command, a
-//! shell pattern and the reason of an adjustment.
+//! policy, the id of a binding and of a temporary adjustment, a mode, a meter, the words of a
+//! command, a shell pattern and the reason of an adjustment.
 //!
 //! Each is made only through its constructor, so a value of the type always keeps its rule.
 
@@ -16,7 +16,7 @@ pub enum NameError {
     BindingId(String),
     /// An adjustment id that is not a UUID in its hyphenated form.
     AdjustmentId(String),
-    /// A name (of a policy or a mode) that is empty or has a character other than an ASCII
+    /// A name (of a policy, a mode or a meter) that is empty or has a character other than an ASCII
     /// letter, a digit, `-` or `_`.
     Name(String),
     /// Command words that are none, or that have an empty word.
@@ -193,6 +193,39 @@ impl fmt::Display for Mode {
     }
 }
 
+/// What a platform measures as used (`tokens`, `cost-usd`): the meter of a
+/// [`Body::Used`](super::event::Body::Used) and of a
+/// [`Pred::Spent`](super::predicate::Pred::Spent). A rule reads it as text
+/// ([`Field::Meter`](super::schema::Field::Meter)), the same text it holds, so whether two meters
+/// are the same is one comparison of that text.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Meter(String);
+
+impl Meter {
+    /// The name as text: what [`Field::Meter`](super::schema::Field::Meter) reads.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for Meter {
+    type Err = NameError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        if is_name(text) {
+            Ok(Self(text.to_owned()))
+        } else {
+            Err(NameError::Name(text.to_owned()))
+        }
+    }
+}
+
+impl fmt::Display for Meter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// A command as its words, the program first. A command is compared word by word, never as one
 /// string, so quoting and spacing cannot make one command look like another.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -290,7 +323,10 @@ mod tests {
         }
         for bad in ["", "a b", "a.b", "日本"] {
             assert!(bad.parse::<Mode>().is_err(), "{bad:?}");
+            assert!(bad.parse::<Meter>().is_err(), "{bad:?}");
         }
+        let tokens: Meter = "tokens".parse().unwrap();
+        assert_eq!(tokens.as_str(), "tokens");
     }
 
     #[test]
