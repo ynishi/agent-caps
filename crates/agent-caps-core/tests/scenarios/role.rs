@@ -22,9 +22,7 @@ use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::GlobPattern;
-use agent_caps_core::domain::policy::{
-    DefLayer, Expect, Level, Polarity, PolicyDef, RewardLevel, Rule,
-};
+use agent_caps_core::domain::policy::{DefLayer, Expect, Level, Polarity, PolicyDef, Rule};
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
 use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::tx::{
@@ -32,8 +30,9 @@ use agent_caps_core::domain::tx::{
 };
 
 use super::common::{
-    GUARD, OTHER, REWARD, at, catalog, clippy_reward, fixture, id, push_after_allowed, rejected,
-    test_guard, the_agent, the_helper, the_reviewer, the_user, unreadable, verdict, violated,
+    GUARD, OTHER, REWARD, Written, at, catalog, clippy_reward, fixture, id, push_after_allowed,
+    rejected, test_guard, the_agent, the_helper, the_reviewer, the_user, unreadable, verdict,
+    violated, written,
 };
 
 /// The event, by the actor.
@@ -110,9 +109,9 @@ fn violated_by(policy: &str) -> Verdict {
 
 /// Force: no edit by an actor under the `reviewer`. It applies where the actor is under the role:
 /// the principal is read where the guard applies.
-fn reviewer_guard() -> PolicyDef {
+fn reviewer_guard() -> Written {
     let child = leaf("r0");
-    PolicyDef {
+    let def = PolicyDef {
         id: id(GUARD),
         name: "reviewer-does-not-edit".parse().unwrap(),
         layer: DefLayer::Base,
@@ -122,10 +121,7 @@ fn reviewer_guard() -> PolicyDef {
             Field::Tool,
             Lit::Text("Edit".to_owned()),
         ))))),
-        polarity: Polarity::Guard {
-            level: Level::Force,
-        },
-        enabled: true,
+        polarity: Polarity::Guard,
         fixtures: vec![
             fixture(
                 "an edit by a sub agent under the reviewer",
@@ -145,13 +141,14 @@ fn reviewer_guard() -> PolicyDef {
             ),
         ],
         author: the_user(),
-    }
+    };
+    written(def, Level::Force)
 }
 
 /// Force: nothing outside the `reviewer` reads a secret. It applies where the actor is not under
 /// the role: the principal is read where the direction cannot be told.
-fn secret_guard() -> PolicyDef {
-    PolicyDef {
+fn secret_guard() -> Written {
+    let def = PolicyDef {
         id: id(OTHER),
         name: "only-the-reviewer-reads-secrets".parse().unwrap(),
         layer: DefLayer::Base,
@@ -161,10 +158,7 @@ fn secret_guard() -> PolicyDef {
             Field::Path,
             GlobPattern::new("secrets/*"),
         ))))),
-        polarity: Polarity::Guard {
-            level: Level::Force,
-        },
-        enabled: true,
+        polarity: Polarity::Guard,
         fixtures: vec![
             fixture(
                 "a read of a secret by the agent",
@@ -178,11 +172,12 @@ fn secret_guard() -> PolicyDef {
             ),
         ],
         author: the_user(),
-    }
+    };
+    written(def, Level::Force)
 }
 
 /// Force: no edit by `under` or anything under it. It applies where the actor is under it.
-fn no_edit_under(policy: &str, name: &str, under: Principal) -> PolicyDef {
+fn no_edit_under(policy: &str, name: &str, under: Principal) -> Written {
     let mut guard = reviewer_guard();
     guard.id = id(policy);
     guard.name = name.parse().unwrap();
@@ -199,7 +194,7 @@ fn no_edit_under(policy: &str, name: &str, under: Principal) -> PolicyDef {
 }
 
 /// The guard that stops an edit by the agent or anything under it.
-fn agent_guard() -> PolicyDef {
+fn agent_guard() -> Written {
     no_edit_under(GUARD, "the-agent-does-not-edit", the_agent())
 }
 
@@ -575,7 +570,7 @@ fn an_unknown_actor_cannot_place_a_child_above_the_agent() {
 /// role loosens it. The agent may not place a child there; the user may.
 #[test]
 fn placing_a_child_loosens_a_reward_that_reads_the_actor() {
-    let mut reward = clippy_reward(RewardLevel::Advise);
+    let mut reward = clippy_reward(Level::Advise);
     reward.when = Some(Pred::ActorUnder(the_reviewer()));
     let catalog = catalog(vec![test_guard(Level::Force), reward], vec![]);
     let r4 = leaf("r4");

@@ -10,11 +10,13 @@
 use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Verdict, judge};
-use agent_caps_core::domain::policy::{Level, PolicyDef};
+use agent_caps_core::domain::policy::Level;
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
-use super::common::{GUARD, agent, bash, catalog, id, test_guard, the_user, verdict, violated};
+use super::common::{
+    GUARD, Written, agent, bash, catalog, id, test_guard, the_user, verdict, violated,
+};
 
 /// The test guard, applying only while it has not yet denied within the session: the count of
 /// its own `denied` judgments is below one.
@@ -22,7 +24,7 @@ use super::common::{GUARD, agent, bash, catalog, id, test_guard, the_user, verdi
 /// This was once counted within the agent, so that each sub agent was stopped once. There is no
 /// scope of one agent now (FR39 is not decided): the count is the session's, and a sub agent
 /// that starts later is let through where its parent was stopped.
-fn deny_once_guard() -> PolicyDef {
+fn deny_once_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.when = Some(Pred::Count {
         event: EventFilter {

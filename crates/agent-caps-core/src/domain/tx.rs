@@ -48,8 +48,11 @@
 //!   can turn a commit into an abort, never an abort into a commit. Nobody asks of a tightening
 //!   finding: it is open to anyone. A finding whose direction cannot be read is a loosening one.
 //! - The domain's checks are always applied, so no policy can leave one out to get past the
-//!   floor; each looks at one kind of [`StateChange`], and no two look at the same. A check
-//!   never decides who may loosen. (The spawn check reads `Event::by` to make the place a spawn is
+//!   floor. The move of a state atom is looked at by one check ([`checks::ModeCheck`] the mode
+//!   as rules read it with `ModeIs`, [`checks::SlotCheck`] a slot, [`checks::SpawnCheck`] the
+//!   actor); how the rules take effect, their strength and their exemptions, is
+//!   [`checks::RuleCheck`]'s, read from the whole state before and after, whichever
+//!   [`StateChange`] moved it. A check never decides who may loosen. (The spawn check reads `Event::by` to make the place a spawn is
 //!   compared with, which is a fact of the claim and not a question of trust.)
 //! - One function decides every claim: [`Catalog::apply`], [`Catalog::apply_with`],
 //!   [`Catalog::fold`], [`Catalog::fold_with`], [`Catalog::admit`] and the check of the fixtures
@@ -63,8 +66,10 @@ pub mod checks;
 
 use std::fmt;
 
+use checks::RuleMove;
+
 use super::authority::{Authority, NotCovered, Principal};
-use super::catalog::{AcceptError, Catalog, Lowered, Rejected};
+use super::catalog::{AcceptError, Catalog, Rejected};
 use super::event::Event;
 use super::name::PolicyId;
 use super::policy::{Expect, Finding, PolicyGraph};
@@ -156,16 +161,20 @@ pub enum Verdict {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum FindingDetail {
-    /// An exemption of the guard is added.
-    ExemptionAdded(PolicyId),
-    /// The mode changes: these policies take effect less strongly, and these are loosened by the
-    /// mode they read (see [`checks`]).
+    /// The rules take effect otherwise: how each policy moves (see [`checks::RuleCheck`]), and
+    /// the policies loosened because they read the judgments of one that moves.
+    Rules {
+        /// How the policies move, those that tighten included.
+        moves: Vec<RuleMove>,
+        /// The policies that read the judgments of one that moves, loosened by that.
+        reading: Vec<PolicyId>,
+    },
+    /// The mode changes, and these policies are loosened by the mode they read with `ModeIs`
+    /// (see [`checks`]).
     Mode {
-        /// The policies that take effect less strongly.
-        lowered: Vec<Lowered>,
         /// The policies loosened by reading the mode: one that applies inside a mode it sees
         /// left, one that reads a mode in a direction that cannot be told, entered or left, and
-        /// one that reads the judgments of a policy that comes to apply to more.
+        /// one that reads the judgments of a policy that the switch moves.
         reading: Vec<PolicyId>,
     },
     /// The slot changes, and these policies read it.
@@ -177,7 +186,7 @@ pub enum FindingDetail {
     },
     /// A spawn places a child where these policies, which read the actor, take effect less
     /// strongly or in a direction that cannot be read, against a place directly under the
-    /// spawner, or which read the judgments of a policy that comes to apply to more.
+    /// spawner, or which read the judgments of a policy that the placement moves.
     Spawn {
         /// The new actor.
         child: Principal,

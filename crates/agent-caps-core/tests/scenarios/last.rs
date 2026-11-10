@@ -18,8 +18,8 @@ use agent_caps_core::domain::schema::{EventKind, Field, FieldType};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, agent, at, bash, catalog, fixture, id, lost_line, outcome, rejected, test_guard,
-    the_agent, the_user, verdict, violated,
+    GUARD, Written, agent, at, bash, catalog, fixture, id, lost_line, outcome, rejected,
+    test_guard, the_agent, the_user, verdict, violated, written,
 };
 
 /// A score of `oracle`, recorded by `by`.
@@ -67,18 +67,15 @@ fn latest_bench_score() -> Pred {
 }
 
 /// Force: at the end of a turn, the latest bench score must be 0.8 or more.
-fn bench_guard() -> PolicyDef {
-    PolicyDef {
+fn bench_guard() -> Written {
+    let def = PolicyDef {
         id: id(GUARD),
         name: "bench-score".parse().unwrap(),
         layer: DefLayer::Base,
         subject: EventKind::Stop,
         when: None,
         rule: Rule::Structural(latest_bench_score()),
-        polarity: Polarity::Guard {
-            level: Level::Force,
-        },
-        enabled: true,
+        polarity: Polarity::Guard,
         author: the_user(),
         fixtures: vec![
             // A stopping guard needs a real example it fails on, and one it holds on.
@@ -100,7 +97,8 @@ fn bench_guard() -> PolicyDef {
                 Expect::Violated,
             ),
         ],
-    }
+    };
+    written(def, Level::Force)
 }
 
 /// UC16: the turn is held until the latest bench score is high enough, and a high score that a

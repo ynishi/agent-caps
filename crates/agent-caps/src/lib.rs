@@ -18,7 +18,9 @@
 //! use agent_caps::domain::event::{Body, Event};
 //! use agent_caps::domain::judge::{judge, Verdict};
 //! use agent_caps::domain::name::CommandWords;
-//! use agent_caps::domain::policy::{DefLayer, Expect, Fixture, Level, Polarity, PolicyDef, PolicyGraph, Rule};
+//! use agent_caps::domain::policy::{
+//!     Binding, DefLayer, Expect, Fixture, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
+//! };
 //! use agent_caps::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
 //! use agent_caps::domain::schema::{At, EventKind, Field};
 //!
@@ -54,15 +56,23 @@
 //!     subject: EventKind::Stop,
 //!     when: None,
 //!     rule: Rule::Structural(tested),
-//!     polarity: Polarity::Guard { level: Level::Force },
-//!     enabled: true,
+//!     polarity: Polarity::Guard,
 //!     fixtures: vec![
 //!         fixture("untested", vec![event(Body::TaskStart), event(Body::Stop)], Expect::Violated),
 //!         fixture("tested", vec![event(Body::TaskStart), test_run(true), event(Body::Stop)], Expect::Satisfied),
 //!     ],
 //!     author: user.clone(),
 //! };
-//! let policies = PolicyGraph { policies: vec![guard], overrides: vec![] };
+//! // The guard holds no strength of its own: a binding puts it into effect, here at Force under
+//! // every mode. A policy takes effect at the strongest level of its bindings that hold.
+//! let binding = Binding {
+//!     id: "0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5c".parse().unwrap(),
+//!     policy: guard.id,
+//!     level: Level::Force,
+//!     mode: ModeScope::Any,
+//!     author: user.clone(),
+//! };
+//! let policies = PolicyGraph { policies: vec![guard], bindings: vec![binding] };
 //! let catalog = Catalog::accept(policies, authority).unwrap();
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];
@@ -93,7 +103,7 @@
 //!
 //! # Map
 //!
-//! - [`domain::catalog`]: the accepted policies, their layers and invariants.
+//! - [`domain::catalog`]: the accepted policies, their bindings and invariants.
 //! - [`domain::authority`]: the hierarchy of who writes policies, and who may loosen whose.
 //! - [`domain::change`]: whether one who changes a catalog may, judged by the difference.
 //! - [`domain::predicate`]: the structural rule language.

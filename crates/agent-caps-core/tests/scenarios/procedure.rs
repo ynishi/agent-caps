@@ -25,14 +25,14 @@ use agent_caps_core::domain::catalog::Catalog;
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Recognition, Verdict};
 use agent_caps_core::domain::policy::{
-    DefLayer, Expect, Finding, Level, Polarity, PolicyDef, RewardLevel, Rule,
+    DefLayer, Expect, Finding, Level, Polarity, PolicyDef, Rule,
 };
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field, Judgment};
 
 use super::common::{
-    GUARD, OTHER, REWARD, agent, at, bash, catalog, fixture, id, outcome, step, the_user,
-    unreadable, verdict, words,
+    GUARD, OTHER, REWARD, Written, agent, at, bash, catalog, fixture, id, outcome, step, the_user,
+    unreadable, verdict, words, written,
 };
 
 const COMMIT: &str = GUARD;
@@ -71,18 +71,15 @@ fn stage_reached(policy: &str) -> Pred {
     }
 }
 
-fn commit_guard() -> PolicyDef {
-    PolicyDef {
+fn commit_guard() -> Written {
+    let def = PolicyDef {
         id: id(COMMIT),
         name: "commit-after-test".parse().unwrap(),
         layer: DefLayer::Base,
         subject: EventKind::ToolUse,
         when: Some(Pred::Now(Cond::Words(Field::Command, words("git commit")))),
         rule: Rule::Structural(stage_reached(TEST_STAGE)),
-        polarity: Polarity::Guard {
-            level: Level::Force,
-        },
-        enabled: true,
+        polarity: Polarity::Guard,
         author: the_user(),
         fixtures: vec![
             fixture(
@@ -101,11 +98,13 @@ fn commit_guard() -> PolicyDef {
                 Expect::Satisfied,
             ),
         ],
-    }
+    };
+    written(def, Level::Force)
 }
 
-fn stage(id_text: &str, name: &str, command: &str, rule: Rule) -> PolicyDef {
-    PolicyDef {
+/// An advising stage of the procedure, bound by the commit guard.
+fn stage(id_text: &str, name: &str, command: &str, rule: Rule) -> Written {
+    let def = PolicyDef {
         id: id(id_text),
         name: name.parse().unwrap(),
         layer: DefLayer::Base,
@@ -113,13 +112,12 @@ fn stage(id_text: &str, name: &str, command: &str, rule: Rule) -> PolicyDef {
         when: Some(Pred::Now(Cond::Words(Field::Command, words(command)))),
         rule,
         polarity: Polarity::Reward {
-            level: RewardLevel::Advise,
             bound_by: id(COMMIT),
         },
-        enabled: true,
         fixtures: vec![],
         author: the_user(),
-    }
+    };
+    written(def, Level::Advise)
 }
 
 fn procedure() -> Catalog {

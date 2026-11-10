@@ -4,15 +4,16 @@
 //! ```text
 //! Catalog::change(&self, after, by)
 //!   1. accept `after` with the catalog's Authority      invariants, types, fixtures, references
-//!   2. any difference in a Meta policy: rejected, whoever `by` is
+//!   2. any difference in a Meta policy or its binding: rejected, whoever `by` is
 //!   3. `by` must be a principal of the hierarchy
-//!   4. for what `by` does not cover (authored by neither `by` nor anyone below it):
-//!      (a) no policy removed, and every difference only tightens (an override by what its
-//!          policy comes to); what is new is authored by `by` or below
-//!      (b) under every compared mode, each policy of `after` takes effect
-//!          at least as strongly as in `after` narrowed to what `by` does not cover
-//!      one miss rejects the whole change
-//!   what `by` covers is free to add, remove and change
+//!   4. what is written: for what `by` does not cover (authored by neither `by` nor anyone
+//!      below it), no policy removed, none changed in a way that cannot be read as stricter
+//!      (classify), no binding removed, lowered or rescoped, and nothing new in its name, a
+//!      policy or a binding
+//!   5. what takes effect: under every compared mode, how the rules move from before to after
+//!      (rule_moves, with the readers of a moved policy's judgments in both catalogs); every
+//!      author a loosening asks must be covered by `by` (Authority::may_loosen)
+//!   one miss rejects the whole change; what `by` covers is free to add, remove and change
 //! ```
 //!
 //! A change is judged as a whole by the difference it makes, so one loosening difference makes
@@ -21,53 +22,60 @@
 //! change really comes from `by` is for whoever calls (an approval, the store); a catalog
 //! trusts the graph it accepts.
 //!
-//! Whether `by` may loosen an item is [`Authority::may_loosen`](super::authority::Authority::may_loosen)'s
-//! answer, and whether a policy's effect goes down is [`lowered`]'s: the same two that judge a
-//! claim at run time ([`super::tx`]).
+//! Whether `by` may loosen what an author wrote is
+//! [`Authority::may_loosen`](super::authority::Authority::may_loosen)'s answer, and how the rules
+//! move, with whose authors, is the one function a claim is judged by at run time
+//! ([`super::tx::checks`]): a change and a claim cannot disagree on which way the strength of a
+//! policy goes.
 //!
 //! # What is compared
 //!
-//! - (a) looks at each item `by` does not cover, one difference at a time ([`classify`]): a
-//!   policy is removed or changed, an override of one is removed, changed or added. A policy
-//!   changed in a way whose direction cannot be told (its rule, its condition, its subject, its
-//!   layer, what binds it, its author, its examples) is taken to loosen. An override is judged by the effective
-//!   value of the policy it targets before and after, under every compared mode.
-//! - (b) catches what (a) cannot see: an item of `by` that works against an item `by` does not
-//!   cover. It compares `after` with `after` narrowed by [`PolicyGraph::not_covered_by`], which
-//!   is what the rules are with nothing of `by`'s in them. A policy of `by` that lowers a guard
-//!   of the one above, by an override of its own, falls below that floor and is rejected; one
-//!   that raises it does not. When `by` removes its own override of the one above's guard, the
-//!   guard returns to the value the narrowed graph gives, and the change is accepted.
-//! - The compared modes are no mode, and every mode that an override of the catalog before, or
-//!   of `after`, names. A mode that neither names behaves as no mode, so it adds nothing. An
-//!   unknown mode is not compared: [`Catalog::effective`] gives it the strictest effect of these
-//!   modes for each policy, so a change that holds under each holds under it.
+//! - Step 4 looks at each policy `by` does not cover, one difference at a time ([`classify`]): a
+//!   policy changed in a way whose direction cannot be told (its rule, its condition, its
+//!   subject, its layer, whether it forbids or recommends and what binds it, its author, its
+//!   examples) is taken to loosen, and so is one removed. A binding in the name of an author `by`
+//!   does not cover is kept: one removed, lowered, given another scope or taken over loosens,
+//!   though its policy keeps its strength, since an equal binding of `by`'s own beside it would
+//!   hide the loss now and leave the strength to a binding `by` may drop later; one raised at its
+//!   scope tightens. One that goes with its policy is the policy's removal. A new one in such a
+//!   name is refused, so nobody writes in another's name; a binding kept with its id, its author
+//!   and its policy is not new.
+//! - Step 5 compares what takes effect. The strongest binding wins, so the strength of a policy
+//!   that `by` does not cover goes down only when a binding that carried it is removed, weakened
+//!   or stops holding, and the authors asked are those of such bindings, read from the catalog
+//!   before. Adding a binding never lowers a policy. A policy that moves, either way, moves every
+//!   other policy that reads its judgments, so their authors are asked too.
+//! - The compared modes are no mode, and every mode a binding's scope names in the catalog
+//!   before or in `after`. A mode that neither names behaves as no mode, so it adds nothing. An
+//!   unknown mode is not compared: [`Catalog::effective`] takes every binding that may hold to
+//!   hold, and each holds under one of the compared modes, so a guard that goes down under an
+//!   unknown mode goes down under one of them.
+//! - A rule of one below that reads the judgments of one above is not accepted
+//!   ([`AcceptError::ReferencesBelow`](super::catalog::AcceptError::ReferencesBelow)), so what
+//!   `by` writes cannot work against what `by` does not cover through what it reads.
 //!
 //! # Limits that are chosen
 //!
-//! - Rejecting is conservative. (b) is measured against `after` narrowed, not against `before`,
-//!   so a change that tightens can still be rejected: when `by` removes an override of the one
-//!   above that turns a guard off, and places an override of its own on the same guard at
-//!   Inform, the guard is stricter than before but below what it is with none of `by`'s work,
-//!   and the change is rejected. Removing the override alone is accepted.
 //! - The hierarchy belongs to the catalog. [`Catalog::change`] cannot be given another; to
 //!   change the hierarchy, accept the graph again with the new one. Whether that loosens
 //!   anything is for whoever keeps the hierarchy to ask, and is not judged here.
 //! - The code allows several roots, and two roots do not cover each other, so neither's work
 //!   is changed by the other. The requirements ledger describes the placement of one user with
 //!   the agents below; that several roots are allowed is wider than it.
+//! - Composing shared sets into one graph is the application's: this module is given the graph
+//!   composed, and the ids of the bindings let a project remove or replace a binding of a set.
 //! - What the agent adds for a task and the end of the task, when its policies are removed, are
 //!   the application's: this module judges a change, and does not make one.
 
 use std::fmt;
 
 use super::authority::{NotCovered, Principal};
-use super::catalog::{
-    Catalog, Effect, Effective, Rejected, Target, compared_modes, effective_in, lowered,
-};
+use super::catalog::{Catalog, Rejected, Target, compared_modes};
 use super::name::{Mode, PolicyId};
-use super::policy::{DefLayer, Override, Polarity, Policy, PolicyDef, PolicyGraph};
+use super::policy::{Binding, DefLayer, PolicyDef, PolicyGraph};
 use super::state::Known;
+use super::tx::checks::{Point, rule_moves, rules_verdict};
+use super::tx::{FindingDetail, Verdict};
 
 /// Which way one difference moves a rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -80,35 +88,14 @@ pub enum Direction {
     Loosens,
 }
 
-impl Direction {
-    /// The direction of two differences together: one loosening makes the whole loosen, else one
-    /// tightening makes it tighten.
-    fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::Loosens, _) | (_, Self::Loosens) => Self::Loosens,
-            (Self::Tightens, _) | (_, Self::Tightens) => Self::Tightens,
-            (Self::Neutral, Self::Neutral) => Self::Neutral,
-        }
-    }
-
-    /// The direction of `after` against `before`, by the order of the values.
-    fn of_order<T: Ord>(before: &T, after: &T) -> Self {
-        match after.cmp(before) {
-            std::cmp::Ordering::Greater => Self::Tightens,
-            std::cmp::Ordering::Equal => Self::Neutral,
-            std::cmp::Ordering::Less => Self::Loosens,
-        }
-    }
-}
-
 /// The direction of the difference between one policy `before` and the same policy `after`.
 ///
 /// Every field of [`PolicyDef`] is read, so a field added to it stops this from compiling until
-/// its direction is decided. A level or an on and off state is compared as it is; a change of
-/// the rule, the condition, the subject, the layer, the policy that binds a reward, or the
-/// author cannot be read as stricter and loosens. So does any change to the examples, a
-/// `known_gap` mark included: they are the evidence for the rule, and one below must not weaken
-/// them. Only a name is neutral.
+/// its direction is decided. A policy holds no strength (its bindings do), so a change of any
+/// field but the name cannot be read as stricter and loosens: the rule, the condition, the
+/// subject, the layer, whether it forbids or recommends and the guard that binds a reward, the
+/// author, and any change to the examples, a `known_gap` mark included (they are the evidence for
+/// the rule, and one below must not weaken them). Only a name is neutral.
 pub fn classify(before: &PolicyDef, after: &PolicyDef) -> Direction {
     let PolicyDef {
         id: before_id,
@@ -118,7 +105,6 @@ pub fn classify(before: &PolicyDef, after: &PolicyDef) -> Direction {
         when: before_when,
         rule: before_rule,
         polarity: before_polarity,
-        enabled: before_enabled,
         fixtures: before_fixtures,
         author: before_author,
     } = before;
@@ -130,7 +116,6 @@ pub fn classify(before: &PolicyDef, after: &PolicyDef) -> Direction {
         when: after_when,
         rule: after_rule,
         polarity: after_polarity,
-        enabled: after_enabled,
         fixtures: after_fixtures,
         author: after_author,
     } = after;
@@ -139,54 +124,36 @@ pub fn classify(before: &PolicyDef, after: &PolicyDef) -> Direction {
         && before_subject == after_subject
         && before_when == after_when
         && before_rule == after_rule
+        && before_polarity == after_polarity
         && before_fixtures == after_fixtures
         && before_author == after_author;
-    let fixed = if same {
+    if same {
         Direction::Neutral
     } else {
         Direction::Loosens
-    };
-    let polarity = match (before_polarity, after_polarity) {
-        (Polarity::Guard { level: before }, Polarity::Guard { level: after }) => {
-            Direction::of_order(before, after)
-        }
-        (
-            Polarity::Reward {
-                level: before,
-                bound_by: before_guard,
-            },
-            Polarity::Reward {
-                level: after,
-                bound_by: after_guard,
-            },
-        ) if before_guard == after_guard => Direction::of_order(before, after),
-        _ => Direction::Loosens,
-    };
-    // Off is below on.
-    let enabled = Direction::of_order(before_enabled, after_enabled);
-    fixed.and(polarity).and(enabled)
+    }
 }
 
 /// One way a change loosens what `by` does not cover.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Loosening {
-    /// An item `by` does not cover is removed, loosened or changed in a way that cannot be read
-    /// as stricter, or a new one is authored by one `by` does not cover.
+    /// A policy `by` does not cover is removed or changed in a way that cannot be read as
+    /// stricter, a binding `by` does not cover is removed, lowered, rescoped or taken over, or a
+    /// new policy or binding is in the name of one `by` does not cover.
     Uncovered {
         /// The item.
         target: Target,
     },
-    /// Under the mode, the policy takes effect less strongly than it would with nothing of
-    /// `by`'s in the graph: `by`'s own work works against what `by` does not cover.
-    BelowUncovered {
-        /// The policy.
-        policy: PolicyId,
+    /// Under the mode, the rules move in a way that loosens the work of authors `by` does not
+    /// cover: a policy takes effect less strongly, or a policy that reads the judgments of one
+    /// that moves is moved by that.
+    Moves {
         /// The mode compared (`None` for no mode).
         mode: Option<Mode>,
-        /// What the policy comes to with only what `by` does not cover.
-        before: Effect,
-        /// What it comes to in the changed graph.
-        after: Effect,
+        /// Every author the loosening asks, those `by` covers included.
+        authors: Vec<Principal>,
+        /// How the rules move.
+        detail: FindingDetail,
     },
 }
 
@@ -194,21 +161,20 @@ impl fmt::Display for Loosening {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Uncovered { target } => write!(f, "{target} is removed, loosened or new"),
-            Self::BelowUncovered {
-                policy,
+            Self::Moves {
                 mode,
-                before,
-                after,
+                authors,
+                detail,
             } => {
                 let mode = match mode {
                     None => "no mode".to_owned(),
                     Some(m) => format!("mode {m}"),
                 };
-                write!(
-                    f,
-                    "policy {policy} under {mode} comes to {after:?}, below {before:?}, what it \
-                     is without the changer's own work"
-                )
+                f.write_str("under ")?;
+                f.write_str(&mode)?;
+                f.write_str(" the rules of")?;
+                authors.iter().try_for_each(|a| write!(f, " {a}"))?;
+                write!(f, " are loosened: {detail:?}")
             }
         }
     }
@@ -219,7 +185,7 @@ impl fmt::Display for Loosening {
 pub enum ChangeRejected {
     /// The changed graph is not accepted as a catalog.
     Invalid(Rejected),
-    /// A meta policy differs, added, removed or changed. Nobody changes one.
+    /// A meta policy or its binding differs, added, removed or changed. Nobody changes one.
     Meta(Vec<PolicyId>),
     /// The one who changes is not a principal of the catalog's hierarchy.
     UnknownPrincipal,
@@ -262,12 +228,9 @@ impl Catalog {
             return Err(ChangeRejected::UnknownPrincipal);
         }
         let uncovered = |author: &Principal| authority.may_loosen(by, [author]).is_err();
-        let modes = compared_modes([self, &next]);
-        let before_effects = effects(self, &modes);
-        let after_effects = effects(&next, &modes);
         let mut loosenings = Vec::new();
 
-        // (a) What `by` does not cover is only tightened, and nothing new is made of it.
+        // What is written: what `by` does not cover is kept, and nothing new is in its name.
         for old in self.policies().iter().filter(|p| uncovered(p.author())) {
             let loosens = next
                 .policy(old.id())
@@ -288,53 +251,48 @@ impl Catalog {
                 });
             }
         }
-        let same_key = |a: &Override, b: &Override| a.layer == b.layer && a.policy == b.policy;
-        for old in self.overrides().iter().filter(|o| uncovered(&o.author)) {
-            let new = next.overrides().iter().find(|n| same_key(n, old));
-            let loosens = match new {
-                Some(new) if new.author != old.author => true,
-                Some(new) if new.change == old.change => false,
-                _ => {
-                    // Removed or changed: by what the policy comes to, under any compared mode.
-                    before_effects
-                        .iter()
-                        .zip(&after_effects)
-                        .any(|(b, a)| lowered(b, a).iter().any(|l| l.policy == old.policy))
-                }
-            };
-            if loosens {
-                loosenings.push(Loosening::Uncovered {
-                    target: Target::Override(old.layer.clone(), old.policy),
-                });
-            }
-        }
-        for new in next.overrides().iter().filter(|o| uncovered(&o.author)) {
-            let was_uncovered = self
-                .overrides()
+        // A binding in the name of one `by` does not cover is kept, at its level or above, under
+        // the same scope: an equal binding of `by`'s own beside it would hide its removal or its
+        // weakening from what takes effect, and leave the strength to a binding `by` may drop.
+        // One that goes with its policy is the removal of the policy, reported as that.
+        let same_item =
+            |a: &Binding, b: &Binding| a.id == b.id && a.policy == b.policy && a.author == b.author;
+        let unkept = self.bindings().iter().filter(|old| {
+            uncovered(&old.author)
+                && next.policy(old.policy).is_some()
+                && !next.bindings().iter().any(|new| {
+                    same_item(old, new) && new.mode == old.mode && new.level >= old.level
+                })
+        });
+        let new_in_another_name = next.bindings().iter().filter(|new| {
+            uncovered(&new.author) && !self.bindings().iter().any(|old| same_item(old, new))
+        });
+        for binding in unkept.chain(new_in_another_name) {
+            let target = Target::Binding(binding.id);
+            if !loosenings
                 .iter()
-                .any(|old| same_key(old, new) && uncovered(&old.author));
-            if !was_uncovered {
-                loosenings.push(Loosening::Uncovered {
-                    target: Target::Override(new.layer.clone(), new.policy),
-                });
+                .any(|l| matches!(l, Loosening::Uncovered { target: t } if *t == target))
+            {
+                loosenings.push(Loosening::Uncovered { target });
             }
         }
 
-        // (b) Nothing of `by`'s puts a policy below what it is without all of `by`'s work.
-        // The narrowed graph is never made a catalog: only its effects are read, which depend on
-        // the levels and not on what a predicate sees, so the policies are kept as written.
-        let narrowed = next.graph().not_covered_by(authority, by);
-        let narrowed_policies: Vec<Policy> =
-            narrowed.policies.into_iter().map(Policy::new).collect();
-        for (mode, after_of) in modes.iter().zip(&after_effects) {
+        // What takes effect: the same moves, with the same authors, as a claim's.
+        for mode in compared_modes([self, &next]) {
             let known = Known::Known(mode.clone());
-            let floor = effective_in(&narrowed_policies, &narrowed.overrides, &known);
-            for below in lowered(&floor, after_of) {
-                loosenings.push(Loosening::BelowUncovered {
-                    policy: below.policy,
-                    mode: mode.clone(),
-                    before: below.before,
-                    after: below.after,
+            let point = |catalog| Point {
+                catalog,
+                mode: &known,
+                exemptions: &[],
+            };
+            let moves = rule_moves(&point(self), &point(&next));
+            if let Verdict::Loosens { authors, detail } = rules_verdict(&[self, &next], moves)
+                && authority.may_loosen(by, &authors).is_err()
+            {
+                loosenings.push(Loosening::Moves {
+                    mode,
+                    authors,
+                    detail,
                 });
             }
         }
@@ -348,13 +306,25 @@ impl Catalog {
 }
 
 /// The ids of the meta policies that differ between the two catalogs: one that is added,
-/// removed, or changed in any field, or that changes its layer.
+/// removed, or changed in any field, that changes its layer, or whose binding differs in any
+/// field (its id, level, scope or author).
 fn meta_differences(before: &Catalog, after: &Catalog) -> Vec<PolicyId> {
+    let bindings_of = |catalog: &Catalog, id: PolicyId| -> Vec<Binding> {
+        catalog
+            .bindings()
+            .iter()
+            .filter(|b| b.policy == id)
+            .cloned()
+            .collect()
+    };
     let differs = |from: &Catalog, to: &Catalog| {
         from.policies()
             .iter()
             .filter(|p| p.layer() == DefLayer::Meta)
-            .filter(|p| to.policy(p.id()).map(|q| q.def()) != Some(p.def()))
+            .filter(|p| {
+                to.policy(p.id()).map(|q| q.def()) != Some(p.def())
+                    || bindings_of(from, p.id()) != bindings_of(to, p.id())
+            })
             .map(|p| p.id())
             .collect::<Vec<_>>()
     };
@@ -365,14 +335,4 @@ fn meta_differences(before: &Catalog, after: &Catalog) -> Vec<PolicyId> {
         }
     }
     ids
-}
-
-/// What the catalog comes to under each mode, in the order of `modes`. A policy missing from
-/// the other catalog is not compared by [`lowered`]; its removal is judged as the removal of a
-/// policy.
-fn effects<'a>(catalog: &'a Catalog, modes: &[Option<Mode>]) -> Vec<Effective<'a>> {
-    modes
-        .iter()
-        .map(|mode| catalog.effective(&Known::Known(mode.clone())))
-        .collect()
 }

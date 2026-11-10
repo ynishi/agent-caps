@@ -1,6 +1,7 @@
 //! A mode switch is a claim (#17): it takes effect when it only tightens, from anyone, and when it
 //! loosens only from one who covers the authors of what it loosens. It loosens when a policy
-//! takes effect less strongly after it, when a policy that applies inside a mode it reads sees
+//! takes effect less strongly after it (by the bindings that hold inside or outside a mode, which
+//! the rule check reads), when a policy that applies inside a mode it reads sees
 //! the mode left (and, where the policy reads the mode in a direction that cannot be told, entered
 //! as well), and when it starts the mode's scope again over a slot that moves. A switch into a
 //! mode a policy applies inside tightens it. A switch to the mode already in effect starts the
@@ -10,7 +11,7 @@ use agent_caps_core::domain::catalog::Catalog;
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::Mode;
-use agent_caps_core::domain::policy::{Change, Level, PolicyDef, Rule};
+use agent_caps_core::domain::policy::{Binding, Level, Rule};
 use agent_caps_core::domain::predicate::{Cond, Pred, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::state::Known;
@@ -20,8 +21,8 @@ use agent_caps_core::domain::tx::{
 };
 
 use super::common::{
-    GUARD, OTHER, agent, bash, catalog, id, in_mode, mode, mode_switch, push_after_allowed,
-    test_guard, tested_in, the_user, unreadable, verdict, words,
+    GUARD, OTHER, Written, agent, bash, bind, catalog, id, inside, mode, mode_switch, outside,
+    push_after_allowed, test_guard, tested_in, the_user, unreadable, verdict, words,
 };
 
 /// The principal below the root switches to the mode.
@@ -34,22 +35,26 @@ fn mode_after(catalog: &Catalog, events: &[Event]) -> Known<Option<Mode>> {
     catalog.fold(events).mode().clone()
 }
 
-/// The root's advising guard on the end of a turn, Force in `fix` and Inform in `explore`, with
-/// `rule` in place of its own.
+/// The root's bindings of the guard: Advise outside `explore`, Force in `fix` and Inform in
+/// `explore`.
+fn levels() -> Vec<Binding> {
+    vec![
+        bind(GUARD, 1, Level::Advise, outside(&["explore"]), the_user()),
+        bind(GUARD, 2, Level::Force, inside("fix"), the_user()),
+        bind(GUARD, 3, Level::Inform, inside("explore"), the_user()),
+    ]
+}
+
+/// The root's guard on the end of a turn, bound by [`levels`], with `rule` in place of its own.
 fn levelled(rule: Pred) -> Catalog {
     let mut guard = test_guard(Level::Advise);
+    guard.level = None;
     guard.rule = Rule::Structural(rule);
-    catalog(
-        vec![guard],
-        vec![
-            in_mode("fix", GUARD, Change::Level(Level::Force)),
-            in_mode("explore", GUARD, Change::Level(Level::Inform)),
-        ],
-    )
+    catalog(vec![guard], levels())
 }
 
 /// The root's guard that holds only in the `strict` mode: no shell call while it is in effect.
-fn strict_guard() -> PolicyDef {
+fn strict_guard() -> Written {
     let mut guard = test_guard(Level::Advise);
     guard.id = id(OTHER);
     guard.name = "strict-no-shell".parse().unwrap();
@@ -148,14 +153,9 @@ fn the_roots_switch_to_the_same_mode_starts_the_mode_again() {
 #[test]
 fn a_switch_from_below_does_not_leave_a_mode_the_roots_guard_reads() {
     let mut guard = test_guard(Level::Advise);
+    guard.level = None;
     guard.rule = Rule::Structural(tested_in(Scope::Task));
-    let catalog = catalog(
-        vec![guard, strict_guard()],
-        vec![
-            in_mode("fix", GUARD, Change::Level(Level::Force)),
-            in_mode("explore", GUARD, Change::Level(Level::Inform)),
-        ],
-    );
+    let catalog = catalog(vec![guard, strict_guard()], levels());
     let start = agent(Body::TaskStart);
     for to in ["explore", "fix"] {
         assert_eq!(
@@ -178,7 +178,7 @@ fn a_switch_from_below_does_not_leave_a_mode_the_roots_guard_reads() {
 
 /// The root's guard that holds everywhere but in the `strict` mode: it reads the mode under a
 /// `not`, so the direction it reads it in cannot be told.
-fn outside_strict_guard() -> PolicyDef {
+fn outside_strict_guard() -> Written {
     let mut guard = strict_guard();
     guard.when = Some(Pred::Not(Box::new(Pred::ModeIs(mode("strict")))));
     guard
@@ -259,7 +259,7 @@ fn a_switch_from_below_after_a_lost_mode_switch_counts_the_mode_it_goes_to_as_en
 }
 
 /// The root's advising guard on the end of a turn that holds only in the `strict` mode.
-fn strict_stop_guard() -> PolicyDef {
+fn strict_stop_guard() -> Written {
     let mut guard = test_guard(Level::Advise);
     guard.when = Some(Pred::ModeIs(mode("strict")));
     guard.fixtures = vec![];
@@ -298,7 +298,6 @@ fn a_switch_from_below_does_not_take_effect_when_a_root_rule_reads_the_judgments
         TxVerdict::Loosens {
             authors: vec![the_user()],
             detail: FindingDetail::Mode {
-                lowered: vec![],
                 reading: vec![id(OTHER)],
             },
         }

@@ -5,68 +5,70 @@
 //! project's. The right expectation, "a project changes a shared policy only by an override",
 //! cannot be stated without the test inventing that distinction; it is left to the issue.
 //!
-//! What these tests state is what holds today: the caller concatenates the policies and the
-//! overrides into one `PolicyGraph`, `Catalog::accept` takes it as any other, and two sets that
-//! share an id or a name are rejected with `DuplicateId` or `DuplicateName`.
+//! What these tests state is what holds today: the caller composes the policies and the bindings
+//! into one `PolicyGraph`, `Catalog::accept` takes it as any other, and two sets that share an id
+//! or a name are rejected with `DuplicateId` or `DuplicateName`. A project changes the level of a
+//! shared policy by giving a binding with the id of the shared one, which the caller's composition
+//! puts in its place: the core sees only the composed graph, and keeps the ids unique.
 
 use agent_caps_core::domain::catalog::AcceptError;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{
-    Change, DefLayer, Level, Polarity, PolicyDef, PolicyGraph, RewardLevel, Rule,
+    DefLayer, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
 };
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
 use agent_caps_core::domain::schema::{EventKind, Field};
 
 use super::common::{
-    GUARD, OTHER, REWARD, accept, agent, bash, clippy_reward, graph_of, id, outcome, project,
-    test_guard, the_user, violated,
+    GUARD, OTHER, REWARD, accept, agent, bash, bind, clippy_reward, graph_of, id, outcome,
+    test_guard, the_user, violated, written,
 };
 
 /// The shared set: the test guard and the reward bound by it.
 fn shared() -> PolicyGraph {
     graph_of(
-        vec![test_guard(Level::Force), clippy_reward(RewardLevel::Advise)],
+        vec![test_guard(Level::Force), clippy_reward(Level::Advise)],
         vec![],
     )
 }
 
-/// The project's own: a guard that warns when a shell call failed, and its override of a shared
-/// policy.
+/// The project's own: a guard that warns when a shell call failed, and the binding that takes
+/// the place of the shared reward's (the same id), at Inform.
 fn project_graph(project_id: &str, project_name: &str) -> PolicyGraph {
-    PolicyGraph {
-        policies: vec![PolicyDef {
-            id: id(project_id),
-            name: project_name.parse().unwrap(),
-            layer: DefLayer::Base,
-            subject: EventKind::ToolUse,
-            when: None,
-            rule: Rule::Structural(Pred::Now(Cond::Eq(Field::Ok, Lit::Bool(true)))),
-            polarity: Polarity::Guard {
-                level: Level::Advise,
-            },
-            enabled: true,
-            fixtures: vec![],
-            author: the_user(),
-        }],
-        overrides: vec![project(REWARD, Change::Level(Level::Inform))],
-    }
+    let guard = PolicyDef {
+        id: id(project_id),
+        name: project_name.parse().unwrap(),
+        layer: DefLayer::Base,
+        subject: EventKind::ToolUse,
+        when: None,
+        rule: Rule::Structural(Pred::Now(Cond::Eq(Field::Ok, Lit::Bool(true)))),
+        polarity: Polarity::Guard,
+        fixtures: vec![],
+        author: the_user(),
+    };
+    graph_of(
+        vec![written(guard, Level::Advise)],
+        vec![bind(REWARD, 0, Level::Inform, ModeScope::Any, the_user())],
+    )
 }
 
-/// What the caller does today to put two sets side by side.
+/// What the caller does today to put two sets side by side: the policies of both, and the
+/// bindings of both, a binding of the second taking the place of the first's with its id.
 fn concat(first: PolicyGraph, second: PolicyGraph) -> PolicyGraph {
     let mut policies = first.policies;
     policies.extend(second.policies);
-    let mut overrides = first.overrides;
-    overrides.extend(second.overrides);
-    PolicyGraph {
-        policies,
-        overrides,
-    }
+    let mut bindings: Vec<_> = first
+        .bindings
+        .into_iter()
+        .filter(|b| !second.bindings.iter().any(|s| s.id == b.id))
+        .collect();
+    bindings.extend(second.bindings);
+    PolicyGraph { policies, bindings }
 }
 
-/// UC7, FR4: two sets joined by the caller are accepted as one catalog, and the project's
-/// override of a shared policy applies.
+/// UC7, FR4, FR42: two sets joined by the caller are accepted as one catalog, and the project's
+/// binding of a shared policy applies.
 #[test]
 fn two_sets_joined_by_the_caller_are_one_catalog() {
     let catalog = accept(concat(shared(), project_graph(OTHER, "project-bash-ok"))).unwrap();
@@ -76,7 +78,7 @@ fn two_sets_joined_by_the_caller_are_one_catalog() {
     let stop = [agent(Body::TaskStart), agent(Body::Stop)];
     let out = outcome(&catalog, &stop);
     assert_eq!(out.verdict, violated());
-    // ... with the project's override of the reward applied.
+    // ... with the project's binding of the reward in place of the shared one.
     assert_eq!(out.rewards.len(), 1);
     assert_eq!(out.rewards[0].written, Level::Inform);
 
