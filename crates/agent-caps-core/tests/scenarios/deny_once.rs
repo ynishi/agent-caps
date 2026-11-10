@@ -73,7 +73,7 @@ fn a_stopping_guard_denies_until_its_condition_is_seen() {
     );
 }
 
-/// FR1, UC2, FR35: the guard stops the first end of a turn and lets the second one through. The
+/// FR1, UC2, FR37: the guard stops the first end of a turn and lets the second one through. The
 /// record of the denial is written in the name of the guard's author, so it counts.
 #[test]
 fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
@@ -95,7 +95,7 @@ fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     assert_eq!(verdict(&catalog, &events), Verdict::Allow);
 }
 
-/// Scenario S2g. UC25, FR35, UC2: a record of a denial written by one below the guard's author
+/// Scenario S2g. UC25, FR37, UC2: a record of a denial written by one below the guard's author
 /// does not move the guard's count, so it does not let the second end of a turn through.
 #[test]
 fn a_judgment_record_the_agent_wrote_does_not_count() {

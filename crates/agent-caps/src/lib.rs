@@ -113,6 +113,13 @@
 //! - Only structural rules: a rule answered by a classifier is not part of the model yet.
 //! - Temporal operators do not nest, and there is no regex.
 //! - An agent's start is an act, so it starts `Scope::Agent` again whoever it is by.
+//! - A rule that counts judgments without narrowing them to named policies (`policy == id`,
+//!   `policy in {ids}`, alone or within an `all`, or in an `any` every branch of which does)
+//!   counts only those of the policies in the catalog whose authors cover its own: those of one
+//!   below it, and those of a policy that is not in the catalog, are not counted, even when a
+//!   branch of an `any` names it. To count a policy, narrow to it; one below cannot be
+//!   named, and neither can a `last` of a judgment's field be used beside one. A Meta rule
+//!   reads judgments only by naming the policies.
 #![warn(missing_docs)]
 
 pub mod _requirements;

@@ -53,12 +53,34 @@
 //!   never depends on what is below, so taking away one principal's work and everyone's below it
 //!   leaves a graph that is still accepted.
 //! - Which judgments a predicate reads is read from the filters of its temporal operators and of
-//!   their `Since` scopes, one value per policy that the run-time checks read too: a filter of
-//!   judgments that holds `policy == id` or `policy in {ids}` (alone, or within an `all`) reads
-//!   those policies, and any other filter of judgments, and a `last` of a judgment's field, reads
-//!   every policy. So a genuine record of a judgment, written in the name of the judged policy's
-//!   author, is always one its reader may count ([`super::tx`]): what is checked here is what is
-//!   used there.
+//!   their `Since` scopes, one value per policy that the run-time checks read too, made from the
+//!   predicates the catalog uses (see below). A filter of judgments narrows to the policies it
+//!   names with `policy == id` or `policy in {ids}` (alone, within an `all`, or in an `any` every
+//!   branch of which does), and then reads those. Every policy a filter names, wherever in the
+//!   filter, is read as named: a policy named below is [`AcceptError::ReferencesBelow`], whatever
+//!   the shape of the filter. A `last` of a judgment's field has no filter to narrow, so it reads
+//!   every policy, and is not accepted beside a policy below.
+//! - A filter of judgments that narrows to no policy sees the judgments of the policies of the
+//!   catalog whose authors cover the author of its policy, its own and those above, and no
+//!   others: a rule counts what it may trust. Who is visible is decided here, once, from the
+//!   catalog's [`Authority`], and written into the predicate the catalog keeps for the policy
+//!   (`policy in {the visible}`, all of the filter's own condition beside it, in the catalog's
+//!   order, so two policies of one author share their slots). The policy as written is kept as
+//!   it is: [`Catalog::graph`] and [`super::change::classify`] read it, so a difference between
+//!   graphs is a difference of what was written. State and the transaction of a claim know
+//!   nothing of who: they run the predicate they are given. A judgment of a policy that is not in
+//!   the catalog is not seen by such a filter.
+//! - What the predicate of a policy is, is decided only by the policy as written, the catalog's
+//!   hierarchy and the policies of authors that cover its author. A policy of one below or beside
+//!   an author does not change what that author's rules see, and a policy of one above or of the
+//!   author itself cannot be made by one who does not cover it ([`super::change`]); so a change
+//!   that [`super::change::classify`] reads from the written policies alone cannot loosen a rule
+//!   through the predicates it does not read. A meta policy never changes, so it does not depend
+//!   on a set that grows: it reads no judgment without naming the policies, neither in a filter
+//!   that narrows to none nor in a `last` of a judgment's field
+//!   ([`AcceptError::MetaReadsUnscoped`]). So a genuine record of a judgment, written in the name of
+//!   the judged policy's author, is always one its reader may count ([`super::tx`]): what is
+//!   checked here is what is used there.
 //! - A reward is bound by a guard that exists, and is not stronger than it as defined. After the
 //!   overrides, a reward stronger than its guard is lowered to the guard's level, and a reward
 //!   whose guard is off is off; both are reported as [`Degraded`], never done silently.
@@ -89,8 +111,8 @@ use super::policy::{
     Change, DefLayer, Expect, Level, Override, OverrideLayer, Polarity, Policy, PolicyDef,
     PolicyGraph, Rule,
 };
-use super::predicate::{Cond, EventFilter, Lit, Pred, PredError, Scope, Temporal};
-use super::schema::{EventKind, Field};
+use super::predicate::{JudgedRead, Pred, PredError, Scope, Temporal, judged_read};
+use super::schema::EventKind;
 use super::state::{GuardIndex, Known, SlotId, SlotTable, State};
 
 /// One item of a policy graph: a policy, or the override of a layer on a policy.
@@ -134,15 +156,24 @@ pub enum AcceptError {
         author: Principal,
     },
     /// The item refers to a policy whose author is below its own, or beside it: a reward bound
-    /// by it, an override that targets it, or a policy whose predicate reads its judgments. To
-    /// fix a predicate, narrow its filter of judgments to the policies of its own author or of
-    /// one above (`policy == id`, `policy in {ids}`).
+    /// by it, an override that targets it, or a policy whose predicate names it in a filter of
+    /// judgments (`policy == id`, `policy in {ids}`, wherever in the filter), or reads every
+    /// policy's judgments with a `last` of a judgment's field. A filter of judgments that narrows
+    /// to no policy (names none, or names one only where it does not narrow, as in
+    /// `any(policy == id, judgment == denied)`) is not this for what it does not name: it sees
+    /// only the policies its author may count. To fix a predicate, name only the policies of its
+    /// own author or of one above.
     ReferencesBelow {
         /// The item.
         item: Target,
         /// The policy it refers to.
         referenced: PolicyId,
     },
+    /// The meta policy reads judgments without naming the policies: a filter of judgments that
+    /// narrows to no policy, or a `last` of a judgment's field. What such a read sees grows with
+    /// the policies of the catalog, and a meta policy depends on nothing that changes. To fix
+    /// it, name the policies whose judgments it reads.
+    MetaReadsUnscoped(PolicyId),
     /// Two policies have the id.
     DuplicateId(PolicyId),
     /// Two policies have the name.
@@ -233,6 +264,10 @@ impl fmt::Display for AcceptError {
             Self::ReferencesBelow { item, referenced } => write!(
                 f,
                 "{item} refers to {referenced}, whose author is not its own or above it"
+            ),
+            Self::MetaReadsUnscoped(policy) => write!(
+                f,
+                "meta policy {policy} reads judgments without naming the policies"
             ),
             Self::DuplicateId(id) => write!(f, "two policies have the id {id}"),
             Self::DuplicateName(name) => write!(f, "two policies have the name {name}"),
@@ -411,34 +446,15 @@ pub fn lowered(before: &Effective<'_>, after: &Effective<'_>) -> Vec<Lowered> {
         .collect()
 }
 
-/// Which judged policies a filter of judgments reads.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum PolicySet {
-    /// Every policy: the filter does not narrow the policy.
-    All,
-    /// These policies only.
-    Only(Vec<PolicyId>),
-}
-
-impl PolicySet {
-    /// Whether the set holds the policy.
-    pub(super) fn contains(&self, id: PolicyId) -> bool {
-        match self {
-            Self::All => true,
-            Self::Only(ids) => ids.contains(&id),
-        }
-    }
-}
-
-/// What one policy reads, from its predicates (`when` and `rule`): the one value the run-time
-/// checks of a claim ([`super::tx`]) read (its slots and modes), and the check of references
-/// here reads (the judgments it reads).
+/// What one policy reads, from its predicates (`when` and `rule`) as the catalog uses them: the
+/// one value the run-time checks of a claim ([`super::tx`]) read (its slots and modes), and the
+/// check of references here reads (the judgments it reads).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct Reads {
     /// The slots of its temporal operators (`once`, `count`, `last`), each with its scope.
     slots: Vec<SlotId>,
     /// The judgments those operators and the filters of their `Since` scopes read.
-    judged: Vec<PolicySet>,
+    judged: Vec<JudgedRead>,
     /// The modes it reads with `ModeIs`. The mode's scope is read through `slots`.
     modes: Vec<Mode>,
 }
@@ -456,20 +472,20 @@ impl Reads {
                 }
                 let (judged, scope) = match &temporal {
                     Temporal::Once(filter, scope) | Temporal::Count(filter, scope) => {
-                        (judged_of(filter), scope)
+                        (judged_read(filter), scope)
                     }
                     Temporal::Last(field, scope) => (
-                        (field.kind() == EventKind::Judged).then_some(PolicySet::All),
+                        (field.kind() == EventKind::Judged).then(JudgedRead::every),
                         scope,
                     ),
                 };
                 let since = match scope {
-                    Scope::Since(filter) => judged_of(filter),
+                    Scope::Since(filter) => judged_read(filter),
                     _ => None,
                 };
-                for set in judged.into_iter().chain(since) {
-                    if !reads.judged.contains(&set) {
-                        reads.judged.push(set);
+                for read in judged.into_iter().chain(since) {
+                    if !reads.judged.contains(&read) {
+                        reads.judged.push(read);
                     }
                 }
             }
@@ -486,56 +502,6 @@ impl Reads {
     /// The modes the policy reads with `ModeIs`.
     pub(super) fn modes(&self) -> &[Mode] {
         &self.modes
-    }
-}
-
-/// The judged policies a filter reads, when it looks for judgments. A `last` of a judgment's
-/// field reads every policy's judgments.
-fn judged_of(filter: &EventFilter) -> Option<PolicySet> {
-    (filter.kind == EventKind::Judged).then(|| {
-        filter
-            .cond
-            .as_ref()
-            .and_then(judged_policies)
-            .map_or(PolicySet::All, PolicySet::Only)
-    })
-}
-
-/// The policies a condition on a judgment narrows to: `policy == id`, `policy in {ids}`, an
-/// `all` that holds one or more of them (the policies all of them allow), or an `any` whose every
-/// branch narrows (the policies one of them allows). `None` when it does not
-/// narrow. A text that is not an id narrows to no policy, since no judgment's policy reads as it.
-fn judged_policies(cond: &Cond) -> Option<Vec<PolicyId>> {
-    let ids = |lits: &[Lit]| {
-        lits.iter()
-            .filter_map(|lit| match lit {
-                Lit::Text(text) => text.parse::<PolicyId>().ok(),
-                Lit::Bool(_) => None,
-            })
-            .collect::<Vec<_>>()
-    };
-    match cond {
-        Cond::Eq(Field::Policy, lit) => Some(ids(std::slice::from_ref(lit))),
-        Cond::In(Field::Policy, lits) => Some(ids(lits)),
-        Cond::All(conds) => conds
-            .iter()
-            .filter_map(judged_policies)
-            .reduce(|kept, other| kept.into_iter().filter(|id| other.contains(id)).collect()),
-        // An `any` narrows only when every branch does, to the policies some branch allows.
-        Cond::Any(conds) if !conds.is_empty() => conds
-            .iter()
-            .map(judged_policies)
-            .collect::<Option<Vec<_>>>()
-            .map(|sets| {
-                let mut union: Vec<PolicyId> = Vec::new();
-                for id in sets.into_iter().flatten() {
-                    if !union.contains(&id) {
-                        union.push(id);
-                    }
-                }
-                union
-            }),
-        _ => None,
     }
 }
 
@@ -577,7 +543,7 @@ impl Catalog {
         check_authors(&graph, &authority, &mut errors);
         check_policies(&graph, &mut errors);
         check_overrides(&graph, &mut errors);
-        let policies: Vec<Policy> = graph.policies.into_iter().map(Policy::new).collect();
+        let policies = compile_policies(graph.policies, &authority);
         let slots = SlotTable::of(policies.iter().flat_map(Policy::preds));
         let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
         check_reads(&policies, &reads, &authority, &mut errors);
@@ -869,8 +835,43 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
     }
 }
 
-/// No policy reads the judgments of a policy whose author does not cover its own. A reference is
-/// checked only when both authors are of the hierarchy, as in [`check_authors`].
+/// The policies of the catalog, each with the predicates the catalog uses: the one place that
+/// decides which judgments a filter that narrows to no policy sees. A policy sees the judgments of the
+/// policies, in the order given, whose authors cover its own ([`Authority::covers`]: its own
+/// author and those above). A meta policy is not given this, as it reads no judgment unnarrowed
+/// ([`AcceptError::MetaReadsUnscoped`]); nor is one whose author is not of the hierarchy, which
+/// [`check_authors`] rejects. Every other policy is, whether or not it has such a filter, so that
+/// its predicates are decided by the same three things always.
+fn compile_policies(defs: Vec<PolicyDef>, authority: &Authority) -> Vec<Policy> {
+    let in_hierarchy = |def: &PolicyDef| authority.contains(&def.author);
+    let visible_to = |reader: &PolicyDef| -> Vec<PolicyId> {
+        defs.iter()
+            .filter(|def| in_hierarchy(def) && authority.covers(&def.author, &reader.author))
+            .map(|def| def.id)
+            .collect()
+    };
+    defs.iter()
+        .map(|def| {
+            if def.layer == DefLayer::Meta || !in_hierarchy(def) {
+                Policy::new(def.clone())
+            } else {
+                Policy::scoped(def.clone(), &visible_to(def))
+            }
+        })
+        .collect()
+}
+
+/// No policy reads the judgments of a policy whose author does not cover its own, and no meta
+/// policy reads judgments without naming the policies. A reference is checked only when both
+/// authors are of the hierarchy, as in [`check_authors`].
+///
+/// What is read is [`Reads`], made from the predicates the catalog uses. A filter that narrows to
+/// no policy has been narrowed to the policies its author may count, so it reads none below; a
+/// policy named, in any shape of filter, and a `last` of a judgment's field, which reads every
+/// policy, are what can be below. A meta policy's reads are made from its predicates as
+/// written, so a read of every policy is the one thing its check looks for; the policies it
+/// names are checked as any other's, and it is not also told off for every policy below that a
+/// read of every policy would reach.
 fn check_reads(
     policies: &[Policy],
     reads: &[Reads],
@@ -881,15 +882,31 @@ fn check_reads(
         if !authority.contains(reader.author()) {
             continue;
         }
-        for set in &reads.judged {
-            for read in policies.iter().filter(|p| set.contains(p.id())) {
-                let below = authority.contains(read.author())
-                    && !authority.covers(read.author(), reader.author());
+        let meta = reader.layer() == DefLayer::Meta;
+        if meta && reads.judged.iter().any(|read| read.narrowed.is_none()) {
+            let error = AcceptError::MetaReadsUnscoped(reader.id());
+            if !errors.contains(&error) {
+                errors.push(error);
+            }
+        }
+        // Only a policy below can be an error, so that is asked first: what a compiled filter
+        // names holds every policy its author may count, none of which is below.
+        let below = |target: &&Policy| {
+            authority.contains(target.author())
+                && !authority.covers(target.author(), reader.author())
+        };
+        for read in &reads.judged {
+            let every = read.narrowed.is_none() && !meta;
+            for target in policies
+                .iter()
+                .filter(below)
+                .filter(|p| every || read.names(p.id()))
+            {
                 let error = AcceptError::ReferencesBelow {
                     item: Target::Policy(reader.id()),
-                    referenced: read.id(),
+                    referenced: target.id(),
                 };
-                if below && !errors.contains(&error) {
+                if !errors.contains(&error) {
                     errors.push(error);
                 }
             }

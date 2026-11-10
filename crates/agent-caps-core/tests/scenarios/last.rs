@@ -125,7 +125,7 @@ fn the_bench_guard_stops_without_a_high_score_and_lets_one_through() {
     );
 }
 
-/// UC16, FR35, UC25: a score recorded by one below the guard's author does not move the
+/// UC16, FR37, UC25: a score recorded by one below the guard's author does not move the
 /// guard's slot, so a high score from there does not let the turn end.
 #[test]
 fn a_score_from_below_the_guards_author_does_not_count() {

@@ -25,7 +25,7 @@
 //! - A field is read only from its own kind of event, with an operand of its type. The catalog
 //!   checks this ([`Pred::check`]) before it accepts a policy.
 
-use super::name::{CommandWords, GlobPattern, Mode};
+use super::name::{CommandWords, GlobPattern, Mode, PolicyId};
 use super::schema::{EventKind, Field, FieldType};
 
 /// A truth value of Kleene's three-valued logic.
@@ -449,6 +449,128 @@ impl Pred {
     }
 }
 
+/// What one filter of judgments reads: how far it narrows the judged policy, and which policies
+/// it names. They are two questions with two answers: a filter that narrows to nothing can still
+/// name a policy (`any(policy == id, judgment == denied)`), and the naming is what is checked
+/// against the hierarchy whatever the shape of the filter. It is a fact about the filter alone;
+/// what the catalog makes of it (who is visible, what is rejected) is the catalog's.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct JudgedRead {
+    /// The policies the filter narrows to, or `None` when it does not narrow the policy and so
+    /// reads every policy.
+    pub(super) narrowed: Option<Vec<PolicyId>>,
+    /// Every policy the filter names with `policy == id` or `policy in {ids}`, wherever in it.
+    pub(super) named: Vec<PolicyId>,
+}
+
+impl JudgedRead {
+    /// A read of every policy with none named: a `last` of a judgment's field.
+    pub(super) fn every() -> Self {
+        Self {
+            narrowed: None,
+            named: Vec::new(),
+        }
+    }
+
+    /// Whether the read is of the policy because it is named, not because the read is of every
+    /// policy. What a filter narrows to it names, so the narrowed policies are among `named`.
+    pub(super) fn names(&self, id: PolicyId) -> bool {
+        self.named.contains(&id)
+    }
+}
+
+/// Whether the filter looks for judgments and narrows to no policy: the filters the catalog
+/// limits to the policies their author may count. The same answer as [`judged_read`]'s
+/// `narrowed`, without collecting what the filter names.
+pub(super) fn reads_unnarrowed(filter: &EventFilter) -> bool {
+    filter.kind == EventKind::Judged && filter.cond.as_ref().and_then(narrowed_policies).is_none()
+}
+
+/// What a filter reads, when it looks for judgments. A filter with no condition narrows to no
+/// policy and names none. (A `last` of a judgment's field has no filter: it reads
+/// [`JudgedRead::every`].)
+pub(super) fn judged_read(filter: &EventFilter) -> Option<JudgedRead> {
+    (filter.kind == EventKind::Judged).then(|| match &filter.cond {
+        None => JudgedRead::every(),
+        Some(cond) => {
+            let mut named = Vec::new();
+            named_policies(cond, &mut named);
+            JudgedRead {
+                narrowed: narrowed_policies(cond),
+                named,
+            }
+        }
+    })
+}
+
+/// The policies a text of a condition on a judgment names. A text that is not an id as a
+/// judgment's policy reads (its hyphenated, lowercase form) names no policy, since no judgment's
+/// policy reads as it: the text is compared as it is ([`super::event`]), though an id is parsed
+/// in either case.
+fn ids_of(lits: &[Lit]) -> Vec<PolicyId> {
+    lits.iter()
+        .filter_map(|lit| match lit {
+            Lit::Text(text) => text
+                .parse::<PolicyId>()
+                .ok()
+                .filter(|id| id.to_string() == *text),
+            Lit::Bool(_) => None,
+        })
+        .collect()
+}
+
+/// Every policy a condition names with `policy == id` or `policy in {ids}`, wherever in it, each
+/// once, in the order they first appear.
+fn named_policies(cond: &Cond, out: &mut Vec<PolicyId>) {
+    let mut push = |ids: Vec<PolicyId>| {
+        for id in ids {
+            if !out.contains(&id) {
+                out.push(id);
+            }
+        }
+    };
+    match cond {
+        Cond::Eq(Field::Policy, lit) => push(ids_of(std::slice::from_ref(lit))),
+        Cond::In(Field::Policy, lits) => push(ids_of(lits)),
+        Cond::All(conds) | Cond::Any(conds) => {
+            for cond in conds {
+                named_policies(cond, out);
+            }
+        }
+        Cond::Not(cond) => named_policies(cond, out),
+        Cond::Eq(..) | Cond::In(..) | Cond::Glob(..) | Cond::Words(..) | Cond::Num(..) => {}
+    }
+}
+
+/// The policies a condition on a judgment narrows to: `policy == id`, `policy in {ids}`, an
+/// `all` that holds one or more of them (the policies all of them allow), or an `any` whose every
+/// branch narrows (the policies one of them allows). `None` when it does not narrow.
+fn narrowed_policies(cond: &Cond) -> Option<Vec<PolicyId>> {
+    match cond {
+        Cond::Eq(Field::Policy, lit) => Some(ids_of(std::slice::from_ref(lit))),
+        Cond::In(Field::Policy, lits) => Some(ids_of(lits)),
+        Cond::All(conds) => conds
+            .iter()
+            .filter_map(narrowed_policies)
+            .reduce(|kept, other| kept.into_iter().filter(|id| other.contains(id)).collect()),
+        // An `any` narrows only when every branch does, to the policies some branch allows.
+        Cond::Any(conds) if !conds.is_empty() => conds
+            .iter()
+            .map(narrowed_policies)
+            .collect::<Option<Vec<_>>>()
+            .map(|sets| {
+                let mut union: Vec<PolicyId> = Vec::new();
+                for id in sets.into_iter().flatten() {
+                    if !union.contains(&id) {
+                        union.push(id);
+                    }
+                }
+                union
+            }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +588,23 @@ mod tests {
         assert_eq!(Truth::any([]), F);
         assert_eq!(!U, U);
         assert_eq!(!T, F);
+    }
+
+    #[test]
+    fn a_policy_is_named_only_as_a_judgment_reads_it() {
+        let filter = |text: &str| EventFilter {
+            kind: EventKind::Judged,
+            cond: Some(Cond::Eq(Field::Policy, Lit::Text(text.to_owned()))),
+        };
+        let lower = "0000000a-0000-7000-8000-00000000000b";
+        let id: PolicyId = lower.parse().unwrap();
+        let read = judged_read(&filter(lower)).unwrap();
+        assert_eq!(read.narrowed, Some(vec![id]));
+        assert!(read.names(id));
+        // Parsed in either case, but compared as written: the upper case matches no judgment.
+        let read = judged_read(&filter(&lower.to_uppercase())).unwrap();
+        assert_eq!(read.narrowed, Some(vec![]));
+        assert!(!read.names(id));
     }
 
     #[test]

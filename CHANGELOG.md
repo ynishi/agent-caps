@@ -79,6 +79,24 @@ and this project adheres to
   loosening claim takes effect only from one who covers the authors of what it
   loosens; one that only tightens takes effect from anyone, a principal outside
   the hierarchy included.
+- Breaking, before 1.0: a filter of judgments that does not narrow to named
+  policies (`count(Judged where judgment == denied, Session) < 5`, or
+  `any(policy == id, judgment == denied)`) sees only the
+  judgments of the policies in the catalog whose authors cover its policy's
+  author, its own and those above, instead of every policy's; so a rule of
+  one above no longer stops the ones below from adding a policy, and their
+  records of judgments do not count for it. It no longer counts a judgment of a
+  policy that is not in the catalog. Who is visible is decided once, when the
+  catalog is accepted, and compiled into the predicate the catalog uses; the
+  policy as written is kept, so `Catalog::graph` and `Catalog::change` read
+  what was written. A policy named in a filter of judgments, in any shape of
+  filter, is still rejected when it is below (`ReferencesBelow`), and so is a
+  `last` of a judgment's field beside a policy below, as it reads every policy.
+  A Meta policy may not read judgments without naming the policies, a `last`
+  of a judgment's field included (`AcceptError::MetaReadsUnscoped`). A text
+  that is an id only in another case (`policy == "ABCD…"`) names no policy, as
+  no judgment's policy reads as it. The ledger's FR35 is withdrawn for FR37
+  (#31).
 - Breaking, before 1.0: `Body::Unreadable` holds `may_have_been: KindSet`, the
   kinds the lost record may have been, given by the adapter (`KindSet::any`
   when it cannot tell; there is no empty default), instead of where
@@ -91,9 +109,10 @@ and this project adheres to
   each record of a judgment in the name of that author.
 - Breaking, before 1.0: `AcceptError::ReferencesBelow` also covers what a
   predicate reads. A policy may read the judgments only of policies whose
-  authors cover its own; a filter of judgments that does not narrow the policy
-  (`policy == id`, `policy in {ids}`), and a `last` of a judgment's field, read
-  every policy.
+  authors cover its own: a filter that names a policy below is not accepted,
+  and a `last` of a judgment's field reads every policy. (A filter that names no
+  policy sees only the judgments of its own author and those above: see the
+  entry for #31.)
 - Fixtures are folded by the same transaction as a run, so a claim in a fixture
   takes effect, or not, as it would at run time.
 - Breaking, before 1.0: `PolicyDef` and `Override` have an `author:

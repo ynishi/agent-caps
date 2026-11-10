@@ -6,18 +6,19 @@
 use agent_caps_core::domain::authority::{Authority, AuthorityError, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Catalog, Effect, Target};
 use agent_caps_core::domain::change::{ChangeRejected, Loosening};
-use agent_caps_core::domain::event::Body;
+use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::Verdict;
 use agent_caps_core::domain::policy::{
-    Change, DefLayer, Level, OverrideLayer, Polarity, PolicyDef, RewardLevel, Rule,
+    Change, DefLayer, Finding, Level, OverrideLayer, Polarity, PolicyDef, RewardLevel, Rule,
 };
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
-use agent_caps_core::domain::schema::{EventKind, Field};
+use agent_caps_core::domain::schema::{EventKind, Field, Judgment};
 use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, OTHER, REWARD, accept, agent, authority, catalog, clippy_reward, graph_of, id, mode,
-    over, rejected, test_guard, tested, the_agent, the_helper, the_user, verdict,
+    GUARD, OTHER, REWARD, accept, agent, at, authority, catalog, clippy_reward, graph_of, id, mode,
+    outcome, over, rejected, test_guard, tested, the_agent, the_helper, the_user, verdict,
 };
 
 const AGENT_REWARD: &str = "00000000-0000-7000-8000-000000000004";
@@ -404,67 +405,79 @@ fn an_item_refers_only_to_items_of_its_own_author_or_above() {
     );
 }
 
-/// FR35, UC25: a policy reads the judgments only of policies whose authors cover its own. The
-/// root's guard that counts the judgments of the guard below it is rejected, and so is one whose
-/// filter of judgments does not narrow the policy, since it reads every policy's. The guard below
-/// may read the root's judgments.
+/// The judgments of a session counted below one, by a filter of `cond`, as the guard's `when`;
+/// the guard is the test guard, with no fixtures.
+fn counting(cond: Option<Cond>) -> PolicyDef {
+    let mut guard = test_guard(Level::Advise);
+    guard.fixtures = vec![];
+    guard.when = Some(Pred::Count {
+        event: EventFilter {
+            kind: EventKind::Judged,
+            cond,
+        },
+        scope: Scope::Session,
+        cmp: Cmp::Lt,
+        n: 1,
+    });
+    guard
+}
+
+fn of(policy: &str) -> Cond {
+    Cond::Eq(Field::Policy, Lit::Text(policy.to_owned()))
+}
+
+fn denied() -> Cond {
+    Cond::Eq(Field::Judgment, Lit::Text("denied".to_owned()))
+}
+
+/// The user's stopping guard, which applies until a `denied` judgment has been counted in the
+/// session by a filter that names no policy, so it counts whatever it is allowed to see.
+fn stops_until_denied() -> PolicyDef {
+    let mut guard = test_guard(Level::Force);
+    guard.when = counting(Some(denied())).when;
+    guard
+}
+
+/// What the guard finds on the last of the events, folded as a run is. A guard that does not
+/// judge the event is not in the outcome: it is not applicable.
+fn found(catalog: &Catalog, events: &[Event], guard: &str) -> Finding {
+    outcome(catalog, events)
+        .guards
+        .iter()
+        .find(|g| g.policy == id(guard))
+        .map_or(Finding::NotApplicable, |g| g.finding)
+}
+
+/// The record of a judgment of `policy`, from `by`.
+fn denial(policy: &str, by: Principal) -> Event {
+    at(
+        by,
+        0,
+        Body::Judged {
+            policy: id(policy),
+            judgment: Judgment::Denied,
+        },
+    )
+}
+
+/// FR37, UC25: a policy names the judgments only of policies whose authors cover its own. The
+/// root's guard that names the guard below it is rejected, whatever the shape of the filter that
+/// names it: alone, in an `all`, in an `any` beside a branch that names nothing, or under a
+/// `not`. The guard below may name the root's.
 #[test]
-fn a_policy_reads_the_judgments_only_of_policies_above_it() {
-    let counting = |cond: Option<Cond>| {
-        let mut guard = test_guard(Level::Advise);
-        guard.fixtures = vec![];
-        guard.when = Some(Pred::Count {
-            event: EventFilter {
-                kind: EventKind::Judged,
-                cond,
-            },
-            scope: Scope::Session,
-            cmp: Cmp::Lt,
-            n: 1,
-        });
-        guard
-    };
-    let of = |policy: &str| Cond::Eq(Field::Policy, Lit::Text(policy.to_owned()));
-    let denied = Cond::Eq(Field::Judgment, Lit::Text("denied".to_owned()));
+fn a_policy_names_the_judgments_only_of_policies_above_it() {
     let below = vec![AcceptError::ReferencesBelow {
         item: Target::Policy(id(GUARD)),
         referenced: id(OTHER),
     }];
     for cond in [
-        Some(Cond::All(vec![of(OTHER), denied.clone()])),
-        Some(Cond::In(Field::Policy, vec![Lit::Text(OTHER.to_owned())])),
-        Some(denied.clone()),
-        None,
-    ] {
-        assert_eq!(
-            rejected(
-                vec![counting(cond.clone()), agent_guard(Level::Force)],
-                vec![]
-            ),
-            below,
-            "{cond:?}"
-        );
-    }
-    // Narrowed to its own judgments, it is accepted beside the guard below.
-    catalog(
-        vec![
-            counting(Some(Cond::All(vec![of(GUARD), denied.clone()]))),
-            agent_guard(Level::Force),
-        ],
-        vec![],
-    );
-    // An `any` narrows to what its branches allow: its own judgments only is accepted, and a
-    // branch that reads the guard below, or one that does not narrow, is rejected.
-    catalog(
-        vec![
-            counting(Some(Cond::Any(vec![of(GUARD), of(GUARD)]))),
-            agent_guard(Level::Force),
-        ],
-        vec![],
-    );
-    for cond in [
+        Cond::All(vec![of(OTHER), denied()]),
+        Cond::In(Field::Policy, vec![Lit::Text(OTHER.to_owned())]),
+        of(OTHER),
         Cond::Any(vec![of(GUARD), of(OTHER)]),
-        Cond::Any(vec![of(GUARD), denied]),
+        Cond::Any(vec![of(OTHER), denied()]),
+        Cond::Not(Box::new(of(OTHER))),
+        Cond::All(vec![denied(), Cond::Not(Box::new(of(OTHER)))]),
     ] {
         assert_eq!(
             rejected(
@@ -475,7 +488,19 @@ fn a_policy_reads_the_judgments_only_of_policies_above_it() {
             "{cond:?}"
         );
     }
-    // The guard below reads the root's judgments.
+    // Narrowed to its own judgments, or naming its own beside a branch that names nothing, it is
+    // accepted beside the guard below.
+    for cond in [
+        Cond::All(vec![of(GUARD), denied()]),
+        Cond::Any(vec![of(GUARD), of(GUARD)]),
+        Cond::Any(vec![of(GUARD), denied()]),
+    ] {
+        catalog(
+            vec![counting(Some(cond)), agent_guard(Level::Force)],
+            vec![],
+        );
+    }
+    // The guard below names the root's judgments.
     let mut reads_above = counting(Some(of(GUARD)));
     reads_above.id = id(OTHER);
     reads_above.name = "reads-above".parse().unwrap();
@@ -483,7 +508,207 @@ fn a_policy_reads_the_judgments_only_of_policies_above_it() {
     catalog(vec![test_guard(Level::Force), reads_above], vec![]);
 }
 
-/// FR35, UC25: a `last` of a judgment's field reads every policy's judgments, so the root's
+/// FR37, UC25: a filter of judgments that names no policy is accepted beside a policy below its
+/// author, and what was written is kept: the catalog's graph is the one it was accepted from.
+#[test]
+fn an_unnamed_read_of_judgments_is_accepted_beside_a_policy_below() {
+    for cond in [Some(denied()), None] {
+        let written = vec![counting(cond.clone()), agent_guard(Level::Force)];
+        let accepted = catalog(written.clone(), vec![]);
+        assert_eq!(accepted.graph().policies, written, "{cond:?}");
+    }
+    // At any depth of the predicate, and in the scope of a `once` or a `last` as well.
+    let mut deep = counting(None);
+    deep.rule = Rule::Structural(Pred::Not(Box::new(Pred::Once {
+        event: EventFilter {
+            kind: EventKind::Stop,
+            cond: None,
+        },
+        scope: Scope::Since(EventFilter {
+            kind: EventKind::Judged,
+            cond: Some(denied()),
+        }),
+    })));
+    catalog(vec![deep, agent_guard(Level::Force)], vec![]);
+}
+
+/// FR37, UC25, UC2: the user's rule that counts denials without naming a policy does not count
+/// a denial of the policy below it, even one the agent genuinely records in its own name: the
+/// user's guard goes on stopping, and the record is not aborted, since it moves no rule of the
+/// user's.
+#[test]
+fn an_unnamed_read_does_not_count_the_judgments_of_a_policy_below() {
+    let catalog = catalog(
+        vec![stops_until_denied(), agent_guard(Level::Force)],
+        vec![],
+    );
+    let before = [
+        agent(Body::AgentStart { agent_type: None }),
+        agent(Body::TaskStart),
+        agent(Body::Stop),
+    ];
+    let record = denial(OTHER, the_agent());
+    let report = catalog.admit(&catalog.fold(&before), &record, &TxPolicy::standard());
+    assert_eq!(report.decision, TxDecision::Commit);
+    assert!(report.uncovered.is_empty());
+
+    let mut events = before.to_vec();
+    events.push(record);
+    events.push(agent(Body::Stop));
+    assert_eq!(found(&catalog, &events, GUARD), Finding::Violated);
+}
+
+/// FR37, UC25, UC2: the same rule counts a denial of the user's own policy, which the user records
+/// in its name, and then lets the turn end.
+#[test]
+fn an_unnamed_read_counts_the_judgments_of_policies_of_its_own_author_and_above() {
+    let user_only = catalog(
+        vec![stops_until_denied(), agent_guard(Level::Force)],
+        vec![],
+    );
+    let mut events = vec![agent(Body::TaskStart), agent(Body::Stop)];
+    assert_eq!(found(&user_only, &events, GUARD), Finding::Violated);
+    events.push(denial(GUARD, the_user()));
+    events.push(agent(Body::Stop));
+    assert_eq!(found(&user_only, &events, GUARD), Finding::NotApplicable);
+
+    // A policy of the agent's counts the judgments of the user's and of its own, and not of the
+    // helper's below it.
+    let mut counts = stops_until_denied();
+    counts.id = id(OTHER);
+    counts.name = "agent-counts".parse().unwrap();
+    counts.author = the_agent();
+    let mut helper = agent_guard(Level::Force);
+    helper.id = id(REWARD);
+    helper.name = "helper-guard".parse().unwrap();
+    helper.author = the_helper();
+    let three = catalog(vec![test_guard(Level::Force), counts, helper], vec![]);
+    let counted = |policy: &str, by: Principal| {
+        let events = [
+            agent(Body::TaskStart),
+            denial(policy, by),
+            agent(Body::Stop),
+        ];
+        found(&three, &events, OTHER) == Finding::NotApplicable
+    };
+    assert!(counted(GUARD, the_user()), "the user's judgment counts");
+    assert!(counted(OTHER, the_agent()), "its own counts");
+    assert!(!counted(REWARD, the_helper()), "the helper's does not");
+}
+
+/// FR37, UC25: a rule that names no policy and a policy below it that is added by a change: the
+/// rule as written and what it comes to are the same, and the record of the policy below is not
+/// counted. A policy the user adds itself widens what the rule counts.
+#[test]
+fn a_change_by_one_below_leaves_the_rule_above_as_it_was() {
+    let before = catalog(vec![stops_until_denied()], vec![]);
+    let with_agent = graph_of(
+        vec![stops_until_denied(), agent_guard(Level::Force)],
+        vec![],
+    );
+    let changed = before.change(with_agent, &the_agent()).unwrap();
+    assert_eq!(changed.graph().policies[0], stops_until_denied());
+    assert_eq!(
+        changed.policies()[0],
+        before.policies()[0],
+        "the rule above comes to the same, written and compiled"
+    );
+    let stopped = [
+        agent(Body::TaskStart),
+        agent(Body::Stop),
+        denial(OTHER, the_agent()),
+        agent(Body::Stop),
+    ];
+    assert_eq!(found(&changed, &stopped, GUARD), Finding::Violated);
+    assert_eq!(found(&before, &stopped, GUARD), Finding::Violated);
+
+    // The user adds a policy of its own: the rule now counts its denials, and the written rule
+    // is again the same.
+    let with_user = graph_of(
+        vec![stops_until_denied(), other_user_guard(Level::Force)],
+        vec![],
+    );
+    let widened = before.change(with_user, &the_user()).unwrap();
+    assert_eq!(widened.graph().policies[0], stops_until_denied());
+    assert_ne!(widened.policies()[0], before.policies()[0]);
+    let counted = [
+        agent(Body::TaskStart),
+        agent(Body::Stop),
+        denial(OTHER, the_user()),
+        agent(Body::Stop),
+    ];
+    assert_eq!(found(&widened, &counted, GUARD), Finding::NotApplicable);
+    assert_eq!(found(&before, &counted, GUARD), Finding::Violated);
+}
+
+/// FR37, UC25: a judgment of a policy that is not in the catalog is not counted by a filter that
+/// names no policy, whoever writes it.
+#[test]
+fn an_unnamed_read_does_not_count_a_policy_that_is_not_in_the_catalog() {
+    let catalog = catalog(vec![stops_until_denied()], vec![]);
+    let events = [
+        agent(Body::TaskStart),
+        agent(Body::Stop),
+        denial(OTHER, the_user()),
+        agent(Body::Stop),
+    ];
+    assert_eq!(found(&catalog, &events, GUARD), Finding::Violated);
+}
+
+/// FR37, UC25: a meta policy reads judgments only by naming the policies: a filter that names
+/// none, and a `last` of a judgment's field, are rejected whether or not a policy is below, and a
+/// filter that names policies is accepted.
+#[test]
+fn a_meta_policy_reads_judgments_only_by_naming_the_policies() {
+    let meta = |mut guard: PolicyDef| {
+        guard.layer = DefLayer::Meta;
+        guard
+    };
+    let unscoped = vec![AcceptError::MetaReadsUnscoped(id(GUARD))];
+    for cond in [
+        Some(denied()),
+        None,
+        Some(Cond::Any(vec![of(GUARD), denied()])),
+    ] {
+        for beside in [vec![], vec![agent_guard(Level::Force)]] {
+            let mut policies = vec![meta(counting(cond.clone()))];
+            policies.extend(beside);
+            assert_eq!(rejected(policies, vec![]), unscoped, "{cond:?}");
+        }
+    }
+    // A `last` of a judgment's field, with no policy below.
+    let mut last = meta(test_guard(Level::Advise));
+    last.fixtures = vec![];
+    last.rule = Rule::Structural(Pred::Last {
+        field: Field::Judgment,
+        scope: Scope::Session,
+        value: Lit::Text("denied".to_owned()),
+    });
+    assert_eq!(rejected(vec![last], vec![]), unscoped);
+    // Naming the policies is accepted, beside a policy below as well.
+    for cond in [
+        Cond::All(vec![of(GUARD), denied()]),
+        Cond::In(Field::Policy, vec![Lit::Text(GUARD.to_owned())]),
+    ] {
+        catalog(
+            vec![meta(counting(Some(cond))), agent_guard(Level::Force)],
+            vec![],
+        );
+    }
+    // And one that names the policy below is rejected as any policy is.
+    assert_eq!(
+        rejected(
+            vec![meta(counting(Some(of(OTHER)))), agent_guard(Level::Force)],
+            vec![]
+        ),
+        vec![AcceptError::ReferencesBelow {
+            item: Target::Policy(id(GUARD)),
+            referenced: id(OTHER),
+        }]
+    );
+}
+
+/// FR37, UC25: a `last` of a judgment's field reads every policy's judgments, so the root's
 /// policy that holds one is rejected when there is a policy below it, and accepted when there
 /// is none.
 #[test]
