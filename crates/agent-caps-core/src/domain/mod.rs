@@ -73,7 +73,10 @@
 //!   loosening one takes effect only from one who covers the authors of what it loosens.
 //! - Evidence: what the caller appends (records of judgments, mode switches, temporary
 //!   adjustments and their cancels, scores). With the platform's transcript, it is what the state is folded from.
-//! - Slot: what one temporal operator (`once`, `count`, `last`) remembers between events.
+//! - Slot: what one temporal operator (`once`, `count`, `last`, `spent`) remembers between
+//!   events.
+//! - Meter and amount: what a platform measures as used, such as tokens, carried by an act
+//!   ([`event::Body::Used`]) and summed within a scope by [`predicate::Pred::Spent`].
 //! - Unknown: what could not be seen. A stopping guard that cannot tell denies.
 
 pub mod adjust;
