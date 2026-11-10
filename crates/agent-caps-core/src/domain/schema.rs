@@ -7,7 +7,9 @@
 //! catalog checks a predicate against when it accepts it.
 
 /// When an event happened, in milliseconds since the Unix epoch. The caller reads the clock;
-/// the domain only compares the values it is given.
+/// the domain only compares the values it is given. The time of an act advances the state's
+/// clock, which every end by time reads; the time of a claim does not (see
+/// [`super::state`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct At(i64);
 

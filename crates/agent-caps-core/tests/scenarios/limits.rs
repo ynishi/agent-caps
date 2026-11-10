@@ -75,7 +75,7 @@ fn stranger() -> Principal {
     Principal::new("stranger")
 }
 
-/// FR44, FR43, FR20: a review by an actor the hierarchy does not know may or may not close the
+/// FR44, FR46, FR20: a review by an actor the hierarchy does not know may or may not close the
 /// scope a raise lasts within. The raise is kept, possibly ended, and still holds, so not knowing
 /// ends no raise without a transaction; a later review by the reviewer ends it.
 #[test]
@@ -125,7 +125,7 @@ fn an_exemption_whose_scope_may_have_closed_covers_nothing() {
     );
 }
 
-/// FR44, FR43, FR20: a lowering that suspends the guard's Force binding, after the review of an
+/// FR44, FR46, FR20: a lowering that suspends the guard's Force binding, after the review of an
 /// actor of unknown place, suspends it no more: the guard is back at Force.
 #[test]
 fn a_suspension_whose_scope_may_have_closed_no_longer_holds() {
@@ -149,7 +149,7 @@ fn a_suspension_whose_scope_may_have_closed_no_longer_holds() {
     );
 }
 
-/// FR33, FR43, FR20: a commit whose result is not back may or may not close a scope that only a
+/// FR33, FR46, FR20: a commit whose result is not back may or may not close a scope that only a
 /// successful commit closes, so a raise within it is kept, possibly ended, and still holds.
 #[test]
 fn a_raise_within_a_since_whose_condition_is_unknown_still_holds() {
@@ -435,7 +435,7 @@ fn a_child_under_the_reviewer_does_not_close_a_since_only_the_reviewer_closes() 
     );
 }
 
-/// FR43, FR44: a temporary adjustment whose lifetime chooses by a principal outside the
+/// FR46, FR44: a temporary adjustment whose lifetime chooses by a principal outside the
 /// hierarchy is refused with its reason, as a rule that does is not accepted.
 #[test]
 fn a_lifetime_that_chooses_by_a_principal_outside_the_hierarchy_is_refused() {
@@ -507,7 +507,7 @@ fn a_review_by_an_actor_of_unknown_place_makes_the_count_unknown() {
     );
 }
 
-/// FR44, FR43, UC25: a raise that lasts until the next review by the reviewer ends at the acts of
+/// FR44, FR46, UC25: a raise that lasts until the next review by the reviewer ends at the acts of
 /// those under the reviewer, so a spawn that places a child there is asked of the one who raised:
 /// the helper, below the agent that raised, cannot place one; the agent can. With no such raise
 /// in effect, the helper's spawn reads nothing and takes effect.
@@ -559,7 +559,7 @@ fn a_spawn_that_changes_who_ends_a_raise_is_asked_of_the_one_who_raised() {
     );
 }
 
-/// FR43, FR44: an adjustment that lasts within a task or a turn ends when the scope starts again,
+/// FR46, FR44: an adjustment that lasts within a task or a turn ends when the scope starts again,
 /// though no rule counts in that scope (the test guard counts in a task any actor starts): a raise
 /// within a turn ends at the next prompt, and one within a task the reviewer starts ends at the
 /// reviewer's `TaskStart`, not at the agent's.

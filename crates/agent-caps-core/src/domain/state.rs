@@ -31,26 +31,57 @@
 //! [`StateChange`]s.
 //!
 //! ```text
-//! carry(at)      what the past brings, whatever the event is
+//! carry(event)   what the past and the time bring; of the event it reads only whether it is an
+//!                act and when
 //!   1. the scopes the previous event closed (kept in the state as `closing`): on true, start
 //!      again (slots to their start values, the adjustments that last within the scope end); on
 //!      unknown, make the slots of the scope unknown (a `once` that was true too) and mark the
 //!      adjustments that last within it as possibly ended (`Holding::MaybeEnded`)
-//!   2. the adjustments whose lifetime ran out by `at` end
+//!   1b. an act advances the clock to max(clock, at); a claim leaves it. `Scope::rolls(before,
+//!      after)`, for the scopes of the slots and of the adjustments in effect: a window of
+//!      `Every` whose boundary the clock crossed starts again, as in 1
+//!   2. the adjustments whose lifetime ran out by the clock end
 //! step(event)    what the event itself does
 //!   3. `starts_at(event, actors)`, for the scopes of the slots and of the adjustments in effect:
 //!      true starts it again, unknown is handled as in 1
 //!   4. the event steps every slot (`Selector::selects`), and updates the mode and the
 //!      adjustments; what a record that could not be read may have changed is settled here (see
-//!      the invariants); an adjustment whose lifetime has run out by the time of the event is
-//!      dropped
+//!      the invariants); an adjustment whose lifetime has run out by the clock as carried is
+//!      not added (`State::admits`)
 //!   5. `ends_at(event, actors)`, for the scopes of the slots and of the adjustments in effect: a
 //!      scope that is not false is kept in `closing` with its truth
 //! ```
 //!
 //! Steps 3 to 5 read the event and the hierarchy of actors, and nothing of time: whether an
 //! event is chosen, starts a scope or closes one is `Selector::selects`, which reads the actor
-//! with `Actors::is_under`.
+//! with `Actors::is_under`. Everything that happens by time happens in the carry and reads the
+//! clock alone: a window that starts again (1b), a lifetime that ends (2), and an adjustment
+//! refused as expired (`State::admits`, on the state as carried).
+//!
+//! # Time
+//!
+//! The clock is advanced by acts alone, to the latest time an act has carried; before the first
+//! act it has no time, and nothing has ended by time: an `Until` lasts, nothing is expired, and
+//! no window starts again. A claim's time never ends what loosens when it ends; it may end an
+//! exemption's cover. So a raise or a suspension ends by time, a window starts again and an
+//! adjustment is refused as expired only by the clock, while whether an exemption covers the
+//! judged event is read at the later of the clock and that event's time
+//! (`Clock::no_earlier_than`, read and never kept): an exemption that ends sooner only tightens.
+//! A claim dated in the future ends no raise, and a guard that judges a claim is not exempted by
+//! an exemption whose `Until` the claim's own time has passed. The time of an act is the
+//! adapter's to give, as its origin is; an act dated earlier than the clock does not move it
+//! back. A record that could not be read advances the clock only when it may have been an act
+//! (a kind of [`super::schema::Nature::Act`] among what it may have been); one that may have
+//! been only claims carries a claim's time, and moves nothing.
+//!
+//! Limits of reading time this way:
+//!
+//! - The clock moves only when an act comes, so a window does not start again and a lifetime
+//!   does not end between acts: the carry of the next act does it. A judgment happens only at an
+//!   event, and every read of time that loosens waits for an act, so this is never read wrongly
+//!   in the loosening direction.
+//! - A suspension (or a raise) past its `Until` lasts until the next act's time, as it does when
+//!   only claims come, a record that may have been only claims included.
 //!
 //! An adjustment ([`Body::Adjust`]) is held when the catalog's index admits it
 //! ([`super::adjust`]), with the principal of its event; a cancel ([`Body::Cancel`]) ends the
@@ -59,21 +90,25 @@
 //! Whether one may take effect, and why not, is one entry point the transaction reads too
 //! (`State::admits`).
 //!
-//! An adjustment that runs out by time (`Lifetime::Until`) ends in the carry, and no transaction
-//! judges that end: the lifetime is what the one who made the adjustment chose, and the time of an
-//! event is the adapter's to give, as the origin of an act is. The domain takes both as given. An
+//! An adjustment that runs out by time (`Lifetime::Until`, or `Within` a window of `Every`) ends
+//! in the carry, and no transaction judges that end: the lifetime is what the one who made the
+//! adjustment chose, and the time is the clock, which only the acts advance, whose time is the
+//! adapter's to give, as the origin of an act is. The domain takes both as given. An
 //! end that a claim brings about, a cancel or a claim that closes the scope an adjustment lasts
 //! within, is judged by its result.
 //!
-//! Each [`Scope`] answers the two questions of 3 and 5 about an event, each a [`Truth`], and
-//! every scope is folded by this one rule. A claim and an act are stepped by the same rule; a
-//! switch to the mode already in effect starts the mode's scope again, as any switch does.
+//! Each [`Scope`] answers the two questions of 3 and 5 about an event, each a [`Truth`], and the
+//! question of 1b about the clock, and every scope is folded by this one rule. A claim and an
+//! act are stepped by the same rule; a switch to the mode already in effect starts the mode's
+//! scope again, as any switch does.
 //!
 //! The event is judged on the state after the step, so a closing event is judged as the last
 //! event of the interval it closes.
 //!
 //! # What the state holds
 //!
+//! - The clock: no time before the first act, then the latest time an act has carried
+//!   (see Time). Only the carry advances it.
 //! - The mode in effect: the mode of the last switch that took effect.
 //! - One slot per temporal operator of the catalog's predicates. Each is updated
 //!   from its last value and the new event alone, and goes back to its start value when its
@@ -143,7 +178,7 @@ use super::event::{Body, Event};
 use super::name::{AdjustmentId, BindingId, Mode, PolicyId};
 use super::policy::ModeScope;
 use super::predicate::{By, Cond, EventFilter, Pred, Scope, Selector, Temporal, Truth};
-use super::schema::{At, EventKind, Judgment};
+use super::schema::{At, EventKind, Judgment, Nature};
 
 /// A value that was seen, or could not be.
 #[derive(Debug, Clone, PartialEq)]
@@ -470,10 +505,35 @@ fn reads(temporal: &Temporal, kind: EventKind) -> bool {
     temporal.selector().filter.kind == kind
 }
 
+/// The time as the acts tell it: no time before the first act, then the latest time an act has
+/// carried. Only [`State::carry`] advances it, and only for an act; a claim's time never moves it,
+/// and an act dated earlier never moves it back. Every read of time that ends what loosens when
+/// it ends (a lifetime, the window of [`Scope::Every`], an adjustment refused as expired) reads
+/// it; the one read that may take a claim's time is [`Clock::no_earlier_than`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Clock(Option<At>);
+
+impl Clock {
+    /// The time, once an act has carried one.
+    pub(super) fn at(&self) -> Option<At> {
+        self.0
+    }
+
+    /// The later of the clock and `at`: the clock an act at `at` advances it to in the carry, and,
+    /// read and never kept, the time an exemption's cover is read at on an event at `at`. A
+    /// claim's time may end an exemption sooner, since that only tightens; it is the one place a
+    /// claim's time is read.
+    pub(super) fn no_earlier_than(&self, at: At) -> Self {
+        Self(Some(self.0.map_or(at, |now| now.max(at))))
+    }
+}
+
 /// The state a judgment reads. Made by folding events from [`super::catalog::Catalog::start`]
 /// with [`super::catalog::Catalog::apply`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
+    /// The time as the acts tell it.
+    clock: Clock,
     mode: Known<Option<Mode>>,
     slots: Vec<Slot>,
     /// The temporary adjustments in effect, in the order they were made.
@@ -501,11 +561,26 @@ const PROMPT_SUBMIT: EventFilter = EventFilter {
 };
 
 impl Scope {
+    /// Whether the scope starts again by time, as the clock moved from `before` to `after` in the
+    /// carry to an event (step 1b of the module doc): only `Every`, when the clock's window
+    /// changed. False when either clock has no time yet. The one answer to "does time start this
+    /// scope again"; it reads the clock, and nothing of the event.
+    pub(super) fn rolls(&self, before: &Clock, after: &Clock) -> Truth {
+        let Self::Every(window) = self else {
+            return Truth::False;
+        };
+        match (before.at(), after.at()) {
+            (Some(was), Some(is)) => Truth::of(window.index(was) != window.index(is)),
+            _ => Truth::False,
+        }
+    }
+
     /// Whether the scope starts again before `event`, with the hierarchy of actors a `By` reads
-    /// the actor in. Every scope starts again at a session's start. `Task` and `Turn` start again
-    /// at their start event when their `By` chooses its actor (`chosen`, unknown when its place
-    /// is). Any mode switch starts the mode's scope again, and a record that may have been one
-    /// leaves it unknown. It reads the event, and nothing of time.
+    /// the actor in. Every scope bounded by events starts again at a session's start; `Every` is
+    /// bounded by time and never starts again here ([`Scope::rolls`]). `Task` and `Turn` start
+    /// again at their start event when their `By` chooses its actor (`chosen`, unknown when its
+    /// place is). Any mode switch starts the mode's scope again, and a record that may have been
+    /// one leaves it unknown. It reads the event, and nothing of time.
     pub(super) fn starts_at(&self, event: &Event, actors: &Actors, authority: &Authority) -> Truth {
         let at_session = matches!(event.body, Body::SessionStart);
         let started_by = |start: &EventFilter, by: &By| {
@@ -517,6 +592,7 @@ impl Scope {
         };
         match self {
             Self::Session | Self::Since(_) => Truth::of(at_session),
+            Self::Every(_) => Truth::False,
             Self::Task(by) => started_by(&TASK_START, by),
             Self::Turn(by) => started_by(&PROMPT_SUBMIT, by),
             Self::Mode => match &event.body {
@@ -616,9 +692,11 @@ fn chosen(
 }
 
 impl State {
-    /// The state before any event: no mode, every slot at its start value, no adjustment.
+    /// The state before any event: no time, no mode, every slot at its start value, no
+    /// adjustment.
     pub(super) fn start(table: &SlotTable) -> Self {
         Self {
+            clock: Clock(None),
             mode: Known::Known(None),
             slots: table.0.iter().map(Slot::start).collect(),
             adjustments: Vec::new(),
@@ -665,7 +743,7 @@ impl State {
     ) -> Result<(), Inadmissible> {
         match &event.body {
             Body::Adjust(adjustment) => {
-                index.admits(adjustment, &event.by, event.at, authority, |id| {
+                index.admits(adjustment, &event.by, &self.clock, authority, |id| {
                     self.holds_adjustment(id)
                 })
             }
@@ -679,15 +757,45 @@ impl State {
         &self.actors
     }
 
-    /// The state carried to an event at `at`: steps 1 and 2 of the module doc. It depends on the
-    /// past and the time alone, so it is the same whatever the event is and whoever it comes
-    /// from, and it is always kept.
-    pub(super) fn carry(mut self, table: &SlotTable, at: At) -> Self {
+    /// The state carried to `event`: steps 1, 1b and 2 of the module doc. It reads of the event
+    /// only whether it is an act and its time, never its actor, so it is the same whoever the
+    /// event comes from, and it is always kept. The one place that advances the clock: to the
+    /// later of the clock and the event's time, for an act alone.
+    pub(super) fn carry(mut self, table: &SlotTable, event: &Event) -> Self {
+        // 1. The scopes the previous event closed.
         for (scope, truth) in std::mem::take(&mut self.closing) {
             self.settle(table, &scope, truth);
         }
+        // 1b. The clock, and the scopes it starts again.
+        let before = self.clock;
+        // A record that could not be read is an act only when it may have been one: one that
+        // may have been only claims carries a claim's time, which moves no clock.
+        let act = match &event.body {
+            Body::Unreadable { may_have_been } => may_have_been
+                .iter()
+                .any(|kind| kind.nature() == Nature::Act),
+            body => body.kind().nature() == Nature::Act,
+        };
+        if act {
+            self.clock = before.no_earlier_than(event.at);
+        }
+        // A clock that did not move starts no window again.
+        if self.clock != before {
+            let rolling: Vec<(Scope, Truth)> = self
+                .scopes_in_use(table)
+                .filter_map(|scope| match scope.rolls(&before, &self.clock) {
+                    Truth::False => None,
+                    truth => Some((scope.clone(), truth)),
+                })
+                .collect();
+            for (scope, truth) in rolling {
+                self.settle(table, &scope, truth);
+            }
+        }
+        // 2. The lifetimes that ran out by the clock.
+        let clock = self.clock;
         self.adjustments
-            .retain(|held| held.adjustment.lifetime.lasts_at(at));
+            .retain(|held| held.adjustment.lifetime.lasts_at(&clock));
         self
     }
 
@@ -794,10 +902,8 @@ impl State {
             }
             _ => {}
         }
-        // An adjustment that has run out by the time of the event, one this event added
-        // included, is not in effect on it.
-        self.adjustments
-            .retain(|held| held.adjustment.lifetime.lasts_at(event.at));
+        // Nothing here ends by time: the step does not move the clock, the carry dropped what had
+        // run out by it, and `admits` refuses as expired one this event would add.
         // 5. The scopes this event closes, each once.
         let mut closing: Vec<(Scope, Truth)> = Vec::new();
         for scope in self.scopes_in_use(table) {
@@ -917,13 +1023,22 @@ impl State {
 
     /// Whether an exemption in effect covers the guard `guard` on `event`: the one place that
     /// reads an exemption's cover on an event. A cover that reads as unknown does not cover it.
+    /// Its lifetime is read at the later of the clock and the event's time
+    /// ([`Clock::no_earlier_than`]): an exemption that ends sooner only tightens, so a claim
+    /// judged after an exemption's `Until`, or past the boundary of the window of `Every` it lasts
+    /// within, is not covered, with no act in between.
     pub(super) fn exempts(&self, guard: PolicyId, event: &Event) -> bool {
+        let now = self.clock.no_earlier_than(event.at);
         self.adjustments.iter().any(|h| {
             // One that may have ended covers nothing (`HeldAdjustment::effect`).
             let Some((of, cover)) = h.effect().exemption else {
                 return false;
             };
-            let in_time = h.adjustment.lifetime.lasts_at(event.at);
+            // Held on the clock, so it was made in the clock's window: a window the event's time
+            // has left is one it no longer lasts within.
+            let window_left = matches!(&h.adjustment.lifetime,
+                Lifetime::Within(scope) if scope.rolls(&self.clock, &now) != Truth::False);
+            let in_time = h.adjustment.lifetime.lasts_at(&now) && !window_left;
             let covers = cover.is_none_or(|cover| event.body.holds(cover) == Truth::True);
             of == guard && in_time && covers
         })

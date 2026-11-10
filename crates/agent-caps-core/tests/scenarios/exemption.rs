@@ -217,12 +217,13 @@ fn a_principal_exempts_the_guards_it_covers_and_no_other() {
     );
 }
 
-/// FR34, FR43: an exemption whose `Until` has passed by the time it is claimed adds nothing: its
-/// transaction is aborted as expired, with no finding, and nothing is exempted.
+/// FR34, FR46, FR45: an exemption whose `Until` the clock has passed when it is claimed (an act
+/// at or after it came before) adds nothing: its transaction is aborted as expired, with no
+/// finding, and nothing is exempted.
 #[test]
 fn an_exemption_claimed_after_its_until_adds_nothing() {
     let catalog = catalog(vec![src_edit_guard()], vec![]);
-    let start = agent(Body::TaskStart);
+    let start = at(the_agent(), 200, Body::TaskStart);
     let late = at(
         the_user(),
         200,

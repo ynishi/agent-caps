@@ -21,6 +21,15 @@
 //! exemption covers nothing, a binding it adds still holds, and a binding it suspends is not
 //! suspended. What cannot be told never loosens a rule; a later known start or close ends it.
 //!
+//! # Time
+//!
+//! A lifetime that ends by time (`Until`, and `Within` a window of `Every`) is read with the
+//! state's clock ([`super::state`]), which only acts advance. A claim's time never ends what
+//! loosens when it ends; it may end an exemption's cover. So a raise or a suspension ends, and
+//! an adjustment is refused as [`Inadmissible::Expired`], only by the time of an act, while
+//! whether an exemption covers the judged event is read with the later of the clock and that
+//! event's time: an exemption that ends sooner only tightens.
+//!
 //! An adjustment and a cancel are claims, judged by their result alone ([`super::tx`]): what
 //! lowers a policy asks the authors of the bindings that carried what it lost (a temporary binding
 //! by the one who made the adjustment), an exemption that starts asks the guard's author and the
@@ -42,7 +51,8 @@
 //! - that names a meta policy or a binding of one: a meta policy is the target of no adjustment;
 //! - an exemption of a policy that is not a guard, or whose cover does not read as a predicate on
 //!   the guard's event would;
-//! - whose lifetime has run out by the time of its claim;
+//! - whose lifetime has run out by the clock, the latest time an act has carried (the time of
+//!   the claim itself is not read);
 //! - with a temporary binding stronger than one can be (see below), by the rule a binding of the
 //!   catalog keeps too (`may_bind_at`);
 //! - with a temporary binding whose maker is not within the work of the policy's author: one of
@@ -72,6 +82,7 @@ use super::authority::{Authority, NotWithin, Principal};
 use super::name::{AdjustmentId, BindingId, PolicyId, Reason};
 use super::predicate::{By, Cond, PredError, Reading, Scope, by_reading};
 use super::schema::{At, EventKind, Level};
+use super::state::Clock;
 
 /// How long an adjustment lasts.
 #[derive(Debug, Clone, PartialEq)]
@@ -85,7 +96,9 @@ pub enum Lifetime {
     /// the actors it chooses, so a spawn that places a child under its principal changes who
     /// ends it, and is asked of the one who made the adjustment ([`super::tx`]).
     Within(Scope),
-    /// Until the instant, compared with the time of the judged event.
+    /// Until the instant, compared with the state's clock, which only acts advance: it ends at
+    /// the first act at or after the instant. The cover of an exemption is read with the later of
+    /// the clock and the time of the judged event, so it covers no event at or after the instant.
     Until(At),
 }
 
@@ -100,12 +113,14 @@ impl Lifetime {
         }
     }
 
-    /// Whether the lifetime has not run out by the time of an event at `at`. Only `Until` ends by
-    /// time; `Next` ends when it is used and `Within` when its scope starts again, both in the
-    /// fold of the state.
-    pub(super) fn lasts_at(&self, at: At) -> bool {
+    /// Whether the lifetime has not run out by `clock`. Only `Until` ends by time; `Next` ends
+    /// when it is used and `Within` when its scope starts again (a window of `Every` included),
+    /// both in the fold of the state. Before the first act there is no time yet, and nothing has
+    /// run out. It takes a [`Clock`], never the time of an event, so a claim's time cannot end
+    /// what loosens when it ends.
+    pub(super) fn lasts_at(&self, clock: &Clock) -> bool {
         match self {
-            Self::Until(until) => at < *until,
+            Self::Until(until) => clock.at().is_none_or(|now| now < *until),
             Self::Next | Self::Within(_) => true,
         }
     }
@@ -254,7 +269,8 @@ impl Reach {
 pub enum Inadmissible {
     /// An adjustment in effect has the id.
     DuplicateId(AdjustmentId),
-    /// Its lifetime has run out by the time of its claim (an `Until` at or before it).
+    /// Its lifetime has run out by the clock: an `Until` at or before the latest time an act has
+    /// carried. The time of the claim itself is not read.
     Expired,
     /// The catalog has no policy with the id.
     UnknownPolicy(PolicyId),
@@ -301,7 +317,7 @@ impl fmt::Display for Inadmissible {
         };
         match self {
             Self::DuplicateId(id) => write!(f, "an adjustment in effect has the id {id}"),
-            Self::Expired => f.write_str("its lifetime ran out by the time of its claim"),
+            Self::Expired => f.write_str("its lifetime ran out by the time of the last act"),
             Self::UnknownPolicy(id) => write!(f, "no policy {id}"),
             Self::UnknownBinding(id) => write!(f, "no binding {id}"),
             Self::Meta(id) => write!(f, "{id} is a meta policy"),
@@ -389,15 +405,16 @@ impl AdjustIndex {
         &self,
         adjustment: &Adjustment,
         by: &Principal,
-        at: At,
+        clock: &Clock,
         authority: &Authority,
         held: impl Fn(AdjustmentId) -> bool,
     ) -> Result<(), Inadmissible> {
         if held(adjustment.id) {
             return Err(Inadmissible::DuplicateId(adjustment.id));
         }
-        // One that has run out by the time of its claim would be dropped in the same step.
-        if !adjustment.lifetime.lasts_at(at) {
+        // One that has run out by the clock would be dropped in the same step. The claim's own
+        // time is not read: it does not move the clock.
+        if !adjustment.lifetime.lasts_at(clock) {
             return Err(Inadmissible::Expired);
         }
         // A rule's `By` is held to the hierarchy when the catalog is accepted; a lifetime's here.

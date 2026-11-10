@@ -28,6 +28,7 @@ mod authority;
 mod binding;
 mod capability;
 mod claim;
+mod clock;
 mod commit_after_test;
 mod compose;
 mod deny_once;
