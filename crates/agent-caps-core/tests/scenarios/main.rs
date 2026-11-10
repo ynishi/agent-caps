@@ -2,7 +2,7 @@
 //! binary. Each module is one topic and says in its own doc which scenario it checks.
 //!
 //! The scenarios have three groups: judging (a verdict on an event), seeing (whether a policy set
-//! can express knowledge, a role or a procedure, and whether it reads naturally), and the
+//! can express a role or a procedure, and whether it reads naturally), and the
 //! effective form (which policies hold at which level, and what operating on the layers does,
 //! including who may change whose rules).
 //!
@@ -36,12 +36,12 @@ mod deny_once;
 mod effective;
 mod exemption;
 mod graph;
-mod knowledge;
 mod last;
 mod layers;
 mod limits;
 mod mode_switch;
 mod procedure;
+mod read_before_edit;
 mod refine;
 mod reward;
 mod role;
