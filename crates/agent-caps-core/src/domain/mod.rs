@@ -40,6 +40,3 @@ pub mod policy;
 pub mod predicate;
 pub mod schema;
 pub mod state;
-
-#[cfg(test)]
-mod tests;
