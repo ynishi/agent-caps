@@ -411,14 +411,10 @@ fn scope_pred(pred: &Pred, visible: &Cond) -> Pred {
             cmp: *cmp,
             n: *n,
         },
-        Pred::Last {
-            field,
-            scope,
-            value,
-        } => Pred::Last {
-            field: *field,
+        Pred::Last { event, scope, test } => Pred::Last {
+            event: scope_filter(event, visible),
             scope: scoped(scope),
-            value: value.clone(),
+            test: test.clone(),
         },
         Pred::All(preds) => Pred::All(preds.iter().map(|p| scope_pred(p, visible)).collect()),
         Pred::Any(preds) => Pred::Any(preds.iter().map(|p| scope_pred(p, visible)).collect()),

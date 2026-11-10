@@ -342,7 +342,7 @@ fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind
     );
 }
 
-/// FR37, FR33, UC25: a claim from one below the root does not close a `Since` scope that the
+/// FR41, FR33, UC25: a claim from one below the root does not close a `Since` scope that the
 /// root's guard reads: closing it moves the guard's slot, whose direction cannot be read. The
 /// same record from the root, the guard's author, closes it.
 #[test]
@@ -376,7 +376,7 @@ fn a_claim_from_below_does_not_close_a_since_scope_the_roots_guard_reads() {
     assert_eq!(after(record(the_user())), violated());
 }
 
-/// FR37, FR33, UC25: what an earlier event brings is not part of the next claim. An act that
+/// FR41, FR33, UC25: what an earlier event brings is not part of the next claim. An act that
 /// closed a `Since` scope of the root's guard is settled before the claim that follows it, and
 /// an exemption that ran out by the claim's time ends before it, so a genuine record of a
 /// judgment of the principal below, in its own name, counts after either.

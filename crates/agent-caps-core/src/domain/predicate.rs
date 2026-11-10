@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! Pred := Now(Cond) | ModeIs(mode) | ActorUnder(principal)
-//!       | Once(filter, scope) | Count(filter, scope) cmp n | Last(field, scope) == lit
+//!       | Once(filter, scope) | Count(filter, scope) cmp n | Last(filter, scope) test Cond
 //!       | All[Pred…] | Any[Pred…] | Not Pred
 //! Cond := field == lit | field in {lit…} | glob(field, pattern) | words(field, words)
 //!       | num(field) cmp n | All[Cond…] | Any[Cond…] | Not Cond
@@ -20,7 +20,8 @@
 //! - Every predicate stops, in time linear in its size per event: there is no loop, recursion,
 //!   user-defined function or regex. Shell patterns are matched without backtracking.
 //! - The past is read only through the three temporal operators, each one level deep: the
-//!   condition inside a [`Pred::Once`] or [`Pred::Count`] is a [`Cond`], which cannot hold one.
+//!   condition inside a [`Pred::Once`], [`Pred::Count`] or [`Pred::Last`] is a [`Cond`], which
+//!   cannot hold one.
 //!   The type, not a check, keeps them from nesting. Each temporal operator becomes one slot of
 //!   the state, updated from its last value and the new event alone.
 //! - A predicate is evaluated in three values ([`Truth`]). A value the event has but did not
@@ -242,15 +243,21 @@ pub enum Pred {
         /// What it is compared with.
         n: u32,
     },
-    /// The field had this value in the last event of its kind within the scope. False when there
-    /// was no such event.
+    /// The last event within the scope that matches the filter meets the condition. False when
+    /// there was no such event. The condition is read from that event as a condition of
+    /// [`Pred::Now`] is from the judged one, so it may compare a number
+    /// (`Last { Measured where oracle == "bench", Session, score >= 0.8 }`) and an event whose
+    /// value is not known gives unknown.
+    ///
+    /// `Last { event: EventFilter { kind, cond: None }, scope, test: Cond::Eq(field, value) }`
+    /// is "the field had this value in the last event of its kind".
     Last {
-        /// The field read.
-        field: Field,
+        /// The events looked at: the last one that matches counts.
+        event: EventFilter,
         /// Since when.
         scope: Scope,
-        /// The value it must have had.
-        value: Lit,
+        /// What must hold of that event, read from the kind of the filter.
+        test: Cond,
     },
     /// All of them hold (true when there are none).
     All(Vec<Pred>),
@@ -266,7 +273,7 @@ pub enum Pred {
 pub(super) enum Temporal {
     Once(EventFilter, Scope),
     Count(EventFilter, Scope),
-    Last(Field, Scope),
+    Last(EventFilter, Scope),
 }
 
 impl Temporal {
@@ -411,12 +418,9 @@ impl Pred {
                 event.check_into(errors);
                 scope.check_into(errors);
             }
-            Self::Last {
-                field,
-                scope,
-                value,
-            } => {
-                check_field(*field, field.kind(), lit_type(value), errors);
+            Self::Last { event, scope, test } => {
+                event.check_into(errors);
+                test.check_into(event.kind, errors);
                 scope.check_into(errors);
             }
             Self::All(preds) | Self::Any(preds) => {
@@ -440,7 +444,7 @@ impl Pred {
             Self::Now(_) | Self::ModeIs(_) | Self::ActorUnder(_) => None,
             Self::Once { event, scope } => Some(Temporal::Once(event.clone(), scope.clone())),
             Self::Count { event, scope, .. } => Some(Temporal::Count(event.clone(), scope.clone())),
-            Self::Last { field, scope, .. } => Some(Temporal::Last(*field, scope.clone())),
+            Self::Last { event, scope, .. } => Some(Temporal::Last(event.clone(), scope.clone())),
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
                     pred.temporals_into(out);
@@ -456,6 +460,43 @@ impl Pred {
             && !out.contains(&temporal)
         {
             out.push(temporal);
+        }
+    }
+}
+
+impl Pred {
+    /// The judgments the predicate reads, each read once, in the order they first appear: those
+    /// of the filter of each temporal operator and of the filter of a `Since` scope. The one
+    /// place that builds the read of every operator, a `last`'s included ([`last_read`]).
+    pub(super) fn judged_reads(&self) -> Vec<JudgedRead> {
+        let mut out = Vec::new();
+        self.judged_reads_into(&mut out);
+        out
+    }
+
+    fn judged_reads_into(&self, out: &mut Vec<JudgedRead>) {
+        let since = |scope: &Scope| match scope {
+            Scope::Since(filter) => judged_read(filter),
+            _ => None,
+        };
+        let found = match self {
+            Self::Now(_) | Self::ModeIs(_) | Self::ActorUnder(_) => Vec::new(),
+            Self::Once { event, scope } | Self::Count { event, scope, .. } => {
+                vec![judged_read(event), since(scope)]
+            }
+            Self::Last { event, scope, test } => vec![last_read(event, test), since(scope)],
+            Self::All(preds) | Self::Any(preds) => {
+                for pred in preds {
+                    pred.judged_reads_into(out);
+                }
+                return;
+            }
+            Self::Not(pred) => return pred.judged_reads_into(out),
+        };
+        for read in found.into_iter().flatten() {
+            if !out.contains(&read) {
+                out.push(read);
+            }
         }
     }
 }
@@ -555,14 +596,6 @@ pub(super) struct JudgedRead {
 }
 
 impl JudgedRead {
-    /// A read of every policy with none named: a `last` of a judgment's field.
-    pub(super) fn every() -> Self {
-        Self {
-            narrowed: None,
-            named: Vec::new(),
-        }
-    }
-
     /// Whether the read is of the policy because it is named, not because the read is of every
     /// policy. What a filter narrows to it names, so the narrowed policies are among `named`.
     pub(super) fn names(&self, id: PolicyId) -> bool {
@@ -578,11 +611,14 @@ pub(super) fn reads_unnarrowed(filter: &EventFilter) -> bool {
 }
 
 /// What a filter reads, when it looks for judgments. A filter with no condition narrows to no
-/// policy and names none. (A `last` of a judgment's field has no filter: it reads
-/// [`JudgedRead::every`].)
+/// policy and names none. The filter of a `once`, a `count`, a `last` and a `Since` scope are
+/// read alike.
 pub(super) fn judged_read(filter: &EventFilter) -> Option<JudgedRead> {
     (filter.kind == EventKind::Judged).then(|| match &filter.cond {
-        None => JudgedRead::every(),
+        None => JudgedRead {
+            narrowed: None,
+            named: Vec::new(),
+        },
         Some(cond) => {
             let mut named = Vec::new();
             named_policies(cond, &mut named);
@@ -592,6 +628,17 @@ pub(super) fn judged_read(filter: &EventFilter) -> Option<JudgedRead> {
             }
         }
     })
+}
+
+/// What a `last` reads, when its filter looks for judgments: what its filter reads
+/// ([`judged_read`]), and the policies its test names too. The test is read from the last event
+/// the filter matches, so a policy it names (`policy == id`) is a policy the `last` names as much
+/// as one in the filter, and is checked against the hierarchy alike. How far the `last` narrows
+/// is the filter's alone: the test picks among the events the filter lets through.
+pub(super) fn last_read(filter: &EventFilter, test: &Cond) -> Option<JudgedRead> {
+    let mut read = judged_read(filter)?;
+    named_policies(test, &mut read.named);
+    Some(read)
 }
 
 /// The policies a text of a condition on a judgment names. A text that is not an id as a
