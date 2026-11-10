@@ -14,7 +14,7 @@ use agent_caps_core::domain::policy::{
     PolicyGraph, RewardLevel, Rule,
 };
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
-use agent_caps_core::domain::schema::{At, EventKind, Field, Origin, Source};
+use agent_caps_core::domain::schema::{At, EventKind, Field, KindSet};
 use agent_caps_core::domain::state::Known;
 
 pub const GUARD: &str = "00000000-0000-7000-8000-000000000001";
@@ -29,20 +29,23 @@ pub fn words(text: &str) -> CommandWords {
     CommandWords::new(text.split_whitespace().map(str::to_owned).collect()).unwrap()
 }
 
-pub fn at(origin: Origin, millis: i64, body: Body) -> Event {
+/// The event, by the principal, at the instant.
+pub fn at(by: Principal, millis: i64, body: Body) -> Event {
     Event {
         at: At::from_millis(millis),
-        origin,
+        by,
         body,
     }
 }
 
+/// The event by the principal below the root of the scenarios' hierarchy.
 pub fn agent(body: Body) -> Event {
-    at(Origin::Agent, 0, body)
+    at(the_agent(), 0, body)
 }
 
+/// The event by the root of the scenarios' hierarchy.
 pub fn user(body: Body) -> Event {
-    at(Origin::User, 0, body)
+    at(the_user(), 0, body)
 }
 
 pub fn bash(command: &str, ok: Option<bool>) -> Event {
@@ -72,15 +75,33 @@ pub fn read(path: &str) -> Event {
     })
 }
 
-pub fn unreadable(source: Source) -> Event {
-    agent(Body::Unreadable { source })
+/// A record that could not be read, and may have been an event of any of the kinds.
+pub fn unreadable(may_have_been: &[EventKind]) -> Event {
+    agent(Body::Unreadable {
+        may_have_been: KindSet::new(may_have_been.iter().copied()),
+    })
+}
+
+/// The kinds of act a platform's transcript records, which a line lost from it may have been.
+pub const ACTS: [EventKind; 6] = [
+    EventKind::SessionStart,
+    EventKind::AgentStart,
+    EventKind::TaskStart,
+    EventKind::PromptSubmit,
+    EventKind::ToolUse,
+    EventKind::Stop,
+];
+
+/// A line of the transcript that could not be read: it may have been any act.
+pub fn lost_line() -> Event {
+    unreadable(&ACTS)
 }
 
 pub fn mode(name: &str) -> Mode {
     name.parse().unwrap()
 }
 
-/// The user switches to the mode.
+/// The root switches to the mode.
 pub fn mode_switch(name: &str) -> Event {
     user(Body::ModeSwitch { to: mode(name) })
 }
@@ -163,7 +184,7 @@ pub fn commit_filter(ok_only: bool) -> EventFilter {
     }
 }
 
-/// An exemption from the user for the guard of the scenarios.
+/// An exemption from the root for the guard of the scenarios.
 pub fn exemption(target: Option<Cond>, lifetime: Lifetime) -> Event {
     user(Body::Exempt(Exempt {
         guard: id(GUARD),

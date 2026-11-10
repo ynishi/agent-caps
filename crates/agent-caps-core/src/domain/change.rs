@@ -21,6 +21,10 @@
 //! change really comes from `by` is for whoever calls (an approval, the store); a catalog
 //! trusts the graph it accepts.
 //!
+//! Whether `by` may loosen an item is [`Authority::may_loosen`](super::authority::Authority::may_loosen)'s
+//! answer, and whether a policy's effect goes down is [`lowered`]'s: the same two that judge a
+//! claim at run time ([`super::tx`]).
+//!
 //! # What is compared
 //!
 //! - (a) looks at each item `by` does not cover, one difference at a time ([`classify`]): a
@@ -55,11 +59,10 @@
 //! - What the agent adds for a task and the end of the task, when its policies are removed, are
 //!   the application's: this module judges a change, and does not make one.
 
-use std::collections::HashMap;
 use std::fmt;
 
-use super::authority::Principal;
-use super::catalog::{Catalog, Effect, Rejected, Target, effective_in};
+use super::authority::{NotCovered, Principal};
+use super::catalog::{Catalog, Effect, Effective, Rejected, Target, effective_in, lowered};
 use super::name::{Mode, PolicyId};
 use super::policy::{DefLayer, Override, Polarity, Policy, PolicyDef, PolicyGraph};
 use super::state::Known;
@@ -253,10 +256,10 @@ impl Catalog {
         if !meta.is_empty() {
             return Err(ChangeRejected::Meta(meta));
         }
-        if !authority.contains(by) {
+        if let Err(NotCovered::UnknownPrincipal(_)) = authority.may_loosen(by, []) {
             return Err(ChangeRejected::UnknownPrincipal);
         }
-        let uncovered = |author: &Principal| !authority.covers(by, author);
+        let uncovered = |author: &Principal| authority.may_loosen(by, [author]).is_err();
         let modes = compared_modes(self, &next);
         let before_effects = effects(self, &modes);
         let after_effects = effects(&next, &modes);
@@ -290,9 +293,11 @@ impl Catalog {
                 Some(new) if new.author != old.author => true,
                 Some(new) if new.change == old.change => false,
                 _ => {
-                    // Removed or changed: by what the policy comes to.
-                    effect_direction(&before_effects, &after_effects, old.policy)
-                        == Direction::Loosens
+                    // Removed or changed: by what the policy comes to, under any compared mode.
+                    before_effects
+                        .iter()
+                        .zip(&after_effects)
+                        .any(|(b, a)| lowered(b, a).iter().any(|l| l.policy == old.policy))
                 }
             };
             if loosens {
@@ -320,18 +325,14 @@ impl Catalog {
             narrowed.policies.into_iter().map(Policy::new).collect();
         for (mode, after_of) in modes.iter().zip(&after_effects) {
             let known = Known::Known(mode.clone());
-            for floor in effective_in(&narrowed_policies, &narrowed.overrides, &known).policies {
-                let id = floor.policy.id();
-                if let Some(after) = after_of.get(&id)
-                    && *after < floor.effect
-                {
-                    loosenings.push(Loosening::BelowUncovered {
-                        policy: id,
-                        mode: mode.clone(),
-                        before: floor.effect,
-                        after: *after,
-                    });
-                }
+            let floor = effective_in(&narrowed_policies, &narrowed.overrides, &known);
+            for below in lowered(&floor, after_of) {
+                loosenings.push(Loosening::BelowUncovered {
+                    policy: below.policy,
+                    mode: mode.clone(),
+                    before: below.before,
+                    after: below.after,
+                });
             }
         }
 
@@ -376,32 +377,12 @@ fn compared_modes(before: &Catalog, after: &Catalog) -> Vec<Option<Mode>> {
     modes
 }
 
-/// The effect of each policy of the catalog under each mode, in the order of `modes`.
-fn effects(catalog: &Catalog, modes: &[Option<Mode>]) -> Vec<HashMap<PolicyId, Effect>> {
+/// What the catalog comes to under each mode, in the order of `modes`. A policy missing from
+/// the other catalog is not compared by [`lowered`]; its removal is judged as the removal of a
+/// policy.
+fn effects<'a>(catalog: &'a Catalog, modes: &[Option<Mode>]) -> Vec<Effective<'a>> {
     modes
         .iter()
-        .map(|mode| {
-            catalog
-                .effective(&Known::Known(mode.clone()))
-                .policies
-                .iter()
-                .map(|p| (p.policy.id(), p.effect))
-                .collect()
-        })
+        .map(|mode| catalog.effective(&Known::Known(mode.clone())))
         .collect()
-}
-
-/// The direction of what `policy` comes to, `after` against `before`, over all the modes: one
-/// mode lower loosens, else one higher tightens. A policy missing from either is neutral here;
-/// its removal is judged as the removal of a policy.
-fn effect_direction(
-    before: &[HashMap<PolicyId, Effect>],
-    after: &[HashMap<PolicyId, Effect>],
-    policy: PolicyId,
-) -> Direction {
-    before
-        .iter()
-        .zip(after)
-        .filter_map(|(b, a)| Some(Direction::of_order(b.get(&policy)?, a.get(&policy)?)))
-        .fold(Direction::Neutral, Direction::and)
 }

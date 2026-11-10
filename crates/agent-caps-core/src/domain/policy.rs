@@ -4,7 +4,7 @@
 //! reward), and how strongly ([`Level`]). Knowledge, procedures and roles are not parts of their
 //! own: each is a set of policies seen another way.
 //!
-//! A level is how much the agent is trusted with a rule, not when the rule is checked:
+//! A level is how much the one who acts is trusted with a rule, not when the rule is checked:
 //!
 //! ```text
 //! Level       Guard (must not)          Reward (should)
@@ -35,14 +35,14 @@ use super::predicate::{Pred, Truth};
 use super::schema::EventKind;
 use super::state::{SlotTable, State};
 
-/// How much the agent is trusted with a rule, least first. The level says what a failure
-/// costs the agent; it does not say when the check happens, which follows from the event the
+/// How much the one who acts is trusted with a rule, least first. The level says what a failure
+/// costs the one who acts; it does not say when the check happens, which follows from the event the
 /// policy judges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
     /// Only tells.
     Inform,
-    /// A guard warns, a reward recommends; the agent may decide otherwise.
+    /// A guard warns, a reward recommends; the one who acts may decide otherwise.
     Advise,
     /// A violation is stopped, and so is a finding that is unknown.
     Force,
@@ -103,7 +103,7 @@ pub enum Rule {
 pub enum DefLayer {
     /// Fixed: no override reaches it and no exemption covers it.
     Meta,
-    /// The user's own: the project and the mode may override it.
+    /// Its author's own: the project and the mode may override it.
     Base,
 }
 
@@ -240,7 +240,7 @@ pub enum Finding {
     Satisfied,
     /// The policy does not judge the event: another kind, or its `when` does not hold.
     NotApplicable,
-    /// The guard does not judge the event because the user exempted it.
+    /// The guard does not judge the event because an exemption in effect covers it.
     Exempted,
     /// Something the policy reads was not seen.
     Unknown,

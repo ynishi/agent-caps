@@ -24,6 +24,7 @@ mod common;
 
 mod accept;
 mod authority;
+mod claim;
 mod commit_after_test;
 mod compose;
 mod deny_once;
@@ -32,6 +33,7 @@ mod exemption;
 mod knowledge;
 mod last;
 mod layers;
+mod mode_switch;
 mod procedure;
 mod refine;
 mod reward;

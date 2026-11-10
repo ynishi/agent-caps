@@ -1,11 +1,22 @@
-//! The aggregate of the rules: the policies, the overrides of the layers above them, and the
-//! slots their predicates need.
+//! The aggregate of the rules: the policies, the overrides of the layers above them, the slots
+//! their predicates need, and what each policy reads.
 //!
 //! The catalog is accepted whole, every time: [`Catalog::accept`] is the only way to make one,
 //! and a catalog that exists keeps every invariant below. There is no operation that changes one
 //! policy of an accepted catalog; a changed graph is accepted again, and
 //! [`Catalog::change`] (see [`super::change`]) accepts it and judges whether the one who made
 //! the change may.
+//!
+//! ```text
+//! Catalog::accept (super::tx)
+//!   accept_structure        every invariant but the fixtures: authors, types, rewards,
+//!                           overrides, and what each policy reads (`Reads`)
+//!   the fixtures            folded by the same transaction as a run (Catalog::fold)
+//! ```
+//!
+//! This module holds the structure and the layering; folding events, and the transaction a claim
+//! goes through, are [`super::tx`]'s, so the fixtures are checked by the same function that
+//! decides at run time.
 //!
 //! The catalog keeps the [`Authority`] it was accepted with, and so the hierarchy one change is
 //! judged by is always the catalog's own. To change the hierarchy, accept the graph again with
@@ -37,9 +48,17 @@
 //! - The author of a meta policy is a root of the hierarchy ([`AcceptError::MetaAuthorNotRoot`]):
 //!   only the top places what nothing changes.
 //! - An item refers only to items whose author is its own or above it
-//!   ([`AcceptError::ReferencesBelow`]): a reward's `bound_by`, and the policy an override
-//!   targets. What is above never depends on what is below, so taking away one principal's work
-//!   and everyone's below it leaves a graph that is still accepted.
+//!   ([`AcceptError::ReferencesBelow`]): a reward's `bound_by`, the policy an override
+//!   targets, and every policy whose judgments a predicate of the policy reads. What is above
+//!   never depends on what is below, so taking away one principal's work and everyone's below it
+//!   leaves a graph that is still accepted.
+//! - Which judgments a predicate reads is read from the filters of its temporal operators and of
+//!   their `Since` scopes, one value per policy that the run-time checks read too: a filter of
+//!   judgments that holds `policy == id` or `policy in {ids}` (alone, or within an `all`) reads
+//!   those policies, and any other filter of judgments, and a `last` of a judgment's field, reads
+//!   every policy. So a genuine record of a judgment, written in the name of the judged policy's
+//!   author, is always one its reader may count ([`super::tx`]): what is checked here is what is
+//!   used there.
 //! - A reward is bound by a guard that exists, and is not stronger than it as defined. After the
 //!   overrides, a reward stronger than its guard is lowered to the guard's level, and a reward
 //!   whose guard is off is off; both are reported as [`Degraded`], never done silently.
@@ -53,25 +72,26 @@
 //!   least one fixture it fails on and one it holds on: an override cannot make a stopping guard
 //!   that was never checked on an example.
 //! - Every fixture of a structural policy gives the finding it expects, except those marked as
-//!   known gaps.
+//!   known gaps. A fixture is folded as a run is, so a claim in it takes effect, or not, as it
+//!   would at run time.
 //!
 //! # Errors
 //!
 //! [`Catalog::accept`] returns every [`AcceptError`] it finds at once, in [`Rejected`], so a
 //! policy graph can be fixed in one pass.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::authority::{Authority, Principal};
-use super::event::Event;
 use super::name::{Mode, PolicyId, PolicyName};
 use super::policy::{
-    Change, DefLayer, Expect, Finding, Level, Override, OverrideLayer, Polarity, Policy, PolicyDef,
+    Change, DefLayer, Expect, Level, Override, OverrideLayer, Polarity, Policy, PolicyDef,
     PolicyGraph, Rule,
 };
-use super::predicate::PredError;
-use super::state::{Known, SlotTable, State};
+use super::predicate::{Cond, EventFilter, Lit, Pred, PredError, Scope, Temporal};
+use super::schema::{EventKind, Field};
+use super::state::{GuardIndex, Known, SlotId, SlotTable, State};
 
 /// One item of a policy graph: a policy, or the override of a layer on a policy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -114,7 +134,9 @@ pub enum AcceptError {
         author: Principal,
     },
     /// The item refers to a policy whose author is below its own, or beside it: a reward bound
-    /// by it, or an override that targets it.
+    /// by it, an override that targets it, or a policy whose predicate reads its judgments. To
+    /// fix a predicate, narrow its filter of judgments to the policies of its own author or of
+    /// one above (`policy == id`, `policy in {ids}`).
     ReferencesBelow {
         /// The item.
         item: Target,
@@ -354,37 +376,226 @@ impl<'a> Effective<'a> {
     }
 }
 
+/// One policy that takes effect less strongly in one effective list than in another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Lowered {
+    /// The policy.
+    pub policy: PolicyId,
+    /// What it comes to in the first list.
+    pub before: Effect,
+    /// What it comes to in the second, below `before`.
+    pub after: Effect,
+}
+
+/// The policies that take effect less strongly in `after` than in `before`, in the order of
+/// `before`: the one answer to "does the effect of a policy go down", by the order of [`Effect`].
+/// A policy missing from either list is not compared; its removal is a question of its own.
+pub fn lowered(before: &Effective<'_>, after: &Effective<'_>) -> Vec<Lowered> {
+    let after_of: HashMap<PolicyId, Effect> = after
+        .policies
+        .iter()
+        .map(|a| (a.policy.id(), a.effect))
+        .collect();
+    before
+        .policies
+        .iter()
+        .filter_map(|b| {
+            let id = b.policy.id();
+            let after = *after_of.get(&id)?;
+            (after < b.effect).then_some(Lowered {
+                policy: id,
+                before: b.effect,
+                after,
+            })
+        })
+        .collect()
+}
+
+/// Which judged policies a filter of judgments reads.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum PolicySet {
+    /// Every policy: the filter does not narrow the policy.
+    All,
+    /// These policies only.
+    Only(Vec<PolicyId>),
+}
+
+impl PolicySet {
+    /// Whether the set holds the policy.
+    pub(super) fn contains(&self, id: PolicyId) -> bool {
+        match self {
+            Self::All => true,
+            Self::Only(ids) => ids.contains(&id),
+        }
+    }
+}
+
+/// What one policy reads, from its predicates (`when` and `rule`): the one value the run-time
+/// checks of a claim ([`super::tx`]) read (its slots and modes), and the check of references
+/// here reads (the judgments it reads).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct Reads {
+    /// The slots of its temporal operators (`once`, `count`, `last`), each with its scope.
+    slots: Vec<SlotId>,
+    /// The judgments those operators and the filters of their `Since` scopes read.
+    judged: Vec<PolicySet>,
+    /// The modes it reads with `ModeIs`. The mode's scope is read through `slots`.
+    modes: Vec<Mode>,
+}
+
+impl Reads {
+    /// What `policy` reads, with the slots of `table`.
+    fn of(policy: &Policy, table: &SlotTable) -> Self {
+        let mut reads = Self::default();
+        for pred in policy.preds() {
+            for temporal in pred.temporals() {
+                if let Some(slot) = table.id_of(&temporal)
+                    && !reads.slots.contains(&slot)
+                {
+                    reads.slots.push(slot);
+                }
+                let (judged, scope) = match &temporal {
+                    Temporal::Once(filter, scope) | Temporal::Count(filter, scope) => {
+                        (judged_of(filter), scope)
+                    }
+                    Temporal::Last(field, scope) => (
+                        (field.kind() == EventKind::Judged).then_some(PolicySet::All),
+                        scope,
+                    ),
+                };
+                let since = match scope {
+                    Scope::Since(filter) => judged_of(filter),
+                    _ => None,
+                };
+                for set in judged.into_iter().chain(since) {
+                    if !reads.judged.contains(&set) {
+                        reads.judged.push(set);
+                    }
+                }
+            }
+            modes_into(pred, &mut reads.modes);
+        }
+        reads
+    }
+
+    /// Whether the policy reads the slot.
+    pub(super) fn reads_slot(&self, slot: SlotId) -> bool {
+        self.slots.contains(&slot)
+    }
+
+    /// The modes the policy reads with `ModeIs`.
+    pub(super) fn modes(&self) -> &[Mode] {
+        &self.modes
+    }
+}
+
+/// The judged policies a filter reads, when it looks for judgments. A `last` of a judgment's
+/// field reads every policy's judgments.
+fn judged_of(filter: &EventFilter) -> Option<PolicySet> {
+    (filter.kind == EventKind::Judged).then(|| {
+        filter
+            .cond
+            .as_ref()
+            .and_then(judged_policies)
+            .map_or(PolicySet::All, PolicySet::Only)
+    })
+}
+
+/// The policies a condition on a judgment narrows to: `policy == id`, `policy in {ids}`, an
+/// `all` that holds one or more of them (the policies all of them allow), or an `any` whose every
+/// branch narrows (the policies one of them allows). `None` when it does not
+/// narrow. A text that is not an id narrows to no policy, since no judgment's policy reads as it.
+fn judged_policies(cond: &Cond) -> Option<Vec<PolicyId>> {
+    let ids = |lits: &[Lit]| {
+        lits.iter()
+            .filter_map(|lit| match lit {
+                Lit::Text(text) => text.parse::<PolicyId>().ok(),
+                Lit::Bool(_) => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    match cond {
+        Cond::Eq(Field::Policy, lit) => Some(ids(std::slice::from_ref(lit))),
+        Cond::In(Field::Policy, lits) => Some(ids(lits)),
+        Cond::All(conds) => conds
+            .iter()
+            .filter_map(judged_policies)
+            .reduce(|kept, other| kept.into_iter().filter(|id| other.contains(id)).collect()),
+        // An `any` narrows only when every branch does, to the policies some branch allows.
+        Cond::Any(conds) if !conds.is_empty() => conds
+            .iter()
+            .map(judged_policies)
+            .collect::<Option<Vec<_>>>()
+            .map(|sets| {
+                let mut union: Vec<PolicyId> = Vec::new();
+                for id in sets.into_iter().flatten() {
+                    if !union.contains(&id) {
+                        union.push(id);
+                    }
+                }
+                union
+            }),
+        _ => None,
+    }
+}
+
+/// Every mode `pred` reads with `ModeIs`, each once.
+fn modes_into(pred: &Pred, out: &mut Vec<Mode>) {
+    match pred {
+        Pred::ModeIs(mode) => {
+            if !out.contains(mode) {
+                out.push(mode.clone());
+            }
+        }
+        Pred::All(preds) | Pred::Any(preds) => preds.iter().for_each(|p| modes_into(p, out)),
+        Pred::Not(pred) => modes_into(pred, out),
+        Pred::Now(_) | Pred::Once { .. } | Pred::Count { .. } | Pred::Last { .. } => {}
+    }
+}
+
 /// The accepted rules.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Catalog {
     policies: Vec<Policy>,
     overrides: Vec<Override>,
     slots: SlotTable,
+    /// What each policy reads, in the order of `policies`.
+    reads: Vec<Reads>,
+    guards: GuardIndex,
     authority: Authority,
 }
 
 impl Catalog {
-    /// The catalog of `graph` under the hierarchy `authority`, when it keeps every invariant (see
-    /// the module doc). The catalog keeps the hierarchy.
-    pub fn accept(graph: PolicyGraph, authority: Authority) -> Result<Self, Rejected> {
+    /// The catalog of `graph` under the hierarchy `authority`, when it keeps every invariant of
+    /// the module doc but the one on fixtures, which [`Catalog::accept`] checks after it. The
+    /// catalog keeps the hierarchy.
+    pub(super) fn accept_structure(
+        graph: PolicyGraph,
+        authority: Authority,
+    ) -> Result<Self, Rejected> {
         let mut errors = Vec::new();
         check_authors(&graph, &authority, &mut errors);
         check_policies(&graph, &mut errors);
         check_overrides(&graph, &mut errors);
         let policies: Vec<Policy> = graph.policies.into_iter().map(Policy::new).collect();
         let slots = SlotTable::of(policies.iter().flat_map(Policy::preds));
-        let catalog = Self {
-            policies,
-            overrides: graph.overrides,
-            slots,
-            authority,
-        };
-        // Fixtures are run only on a graph whose predicates type-check.
+        let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
+        check_reads(&policies, &reads, &authority, &mut errors);
+        let guards = GuardIndex::new(
+            policies
+                .iter()
+                .filter(|p| p.is_guard() && p.layer() != DefLayer::Meta)
+                .map(|p| (p.id(), p.subject())),
+        );
         if errors.is_empty() {
-            catalog.check_fixtures(&mut errors);
-        }
-        if errors.is_empty() {
-            Ok(catalog)
+            Ok(Self {
+                policies,
+                overrides: graph.overrides,
+                slots,
+                reads,
+                guards,
+                authority,
+            })
         } else {
             Err(Rejected(errors))
         }
@@ -423,27 +634,18 @@ impl Catalog {
         State::start(&self.slots)
     }
 
-    /// The state after `event`. An exemption that does not type-check against the guard it
-    /// names (its target is read from the guard's subject, and the filter of a
-    /// `Within(Since(..))` from its own kind), or that names no guard outside the meta layer,
-    /// takes no effect.
-    pub fn apply(&self, state: State, event: &Event) -> State {
-        state.apply(&self.slots, event, |guard| {
-            self.policy(guard)
-                .filter(|p| p.is_guard() && p.layer() != DefLayer::Meta)
-                .map(Policy::subject)
-        })
-    }
-
-    /// The state after `events`, from the start.
-    pub fn fold<'e>(&self, events: impl IntoIterator<Item = &'e Event>) -> State {
-        events
-            .into_iter()
-            .fold(self.start(), |state, event| self.apply(state, event))
-    }
-
     pub(super) fn slots(&self) -> &SlotTable {
         &self.slots
+    }
+
+    /// The guards an exemption may name.
+    pub(super) fn guards(&self) -> &GuardIndex {
+        &self.guards
+    }
+
+    /// Each policy with what it reads, in the catalog's order.
+    pub(super) fn reads(&self) -> impl Iterator<Item = (&Policy, &Reads)> {
+        self.policies.iter().zip(&self.reads)
     }
 
     /// What the catalog comes to under `mode`: every policy with its effect, and what had to be
@@ -458,35 +660,6 @@ impl Catalog {
     /// Every mode an override names.
     pub(super) fn modes(&self) -> Vec<&Mode> {
         modes_of(&self.overrides)
-    }
-
-    fn check_fixtures(&self, errors: &mut Vec<AcceptError>) {
-        for policy in &self.policies {
-            for fixture in policy.fixtures() {
-                let Some((judged, before)) = fixture.events.split_last() else {
-                    errors.push(AcceptError::EmptyFixture {
-                        policy: policy.id(),
-                        fixture: fixture.name.clone(),
-                    });
-                    continue;
-                };
-                let state = self.apply(self.fold(before), judged);
-                let found = match policy.evaluate(&self.slots, &state, judged) {
-                    Finding::Violated => Expect::Violated,
-                    Finding::Satisfied => Expect::Satisfied,
-                    Finding::NotApplicable | Finding::Exempted => Expect::NotApplicable,
-                    Finding::Unknown => Expect::Unknown,
-                };
-                if found != fixture.expect && !fixture.known_gap {
-                    errors.push(AcceptError::FixtureFailed {
-                        policy: policy.id(),
-                        fixture: fixture.name.clone(),
-                        expected: fixture.expect,
-                        found,
-                    });
-                }
-            }
-        }
     }
 }
 
@@ -692,6 +865,34 @@ fn check_authors(graph: &PolicyGraph, authority: &Authority, errors: &mut Vec<Ac
                 item: item(),
                 referenced: o.policy,
             });
+        }
+    }
+}
+
+/// No policy reads the judgments of a policy whose author does not cover its own. A reference is
+/// checked only when both authors are of the hierarchy, as in [`check_authors`].
+fn check_reads(
+    policies: &[Policy],
+    reads: &[Reads],
+    authority: &Authority,
+    errors: &mut Vec<AcceptError>,
+) {
+    for (reader, reads) in policies.iter().zip(reads) {
+        if !authority.contains(reader.author()) {
+            continue;
+        }
+        for set in &reads.judged {
+            for read in policies.iter().filter(|p| set.contains(p.id())) {
+                let below = authority.contains(read.author())
+                    && !authority.covers(read.author(), reader.author());
+                let error = AcceptError::ReferencesBelow {
+                    item: Target::Policy(reader.id()),
+                    referenced: read.id(),
+                };
+                if below && !errors.contains(&error) {
+                    errors.push(error);
+                }
+            }
         }
     }
 }

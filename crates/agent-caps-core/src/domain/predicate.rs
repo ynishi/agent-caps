@@ -158,9 +158,10 @@ pub struct EventFilter {
 /// closes, and the interval starts again before the next event). The state folds both in one
 /// place, so every scope, the four fixed ones and [`Scope::Since`], is handled by one rule.
 ///
-/// The first four assume their start events are not lost to an unreadable record (a known gap:
-/// a lost start leaves the scope looking as if it had not started again). [`Scope::Since`] does
-/// not: when it cannot tell whether it closed, its slots become unknown.
+/// `Session`, `Agent` and `Task` assume their start events are not lost to an unreadable record
+/// (a known gap: a lost start leaves the scope looking as if it had not started again).
+/// [`Scope::Mode`] and [`Scope::Since`] do not: when a lost record may have been a mode switch,
+/// or the event a `Since` looks for, the scope's slots become unknown.
 ///
 /// # `Since`
 ///
@@ -171,9 +172,7 @@ pub struct EventFilter {
 /// unknown on an event (`ok` of a tool call whose result is not back) leaves it unknown whether
 /// the interval closed: the slots of the scope become unknown before the next event, and an
 /// exemption that lasts within the scope ends. A record that could not be read closes the scope
-/// as unknown only when an event of the filter's kind may have been lost from the unreadable
-/// record's [`Source`](super::schema::Source) ([`EventKind::may_be_lost_in`]): a mode switch or
-/// an exemption from either source, since the agent's own are read from the transcript.
+/// as unknown only when the filter's kind is one the record may have been.
 ///
 /// - `once(test passed, Since(commit))` asks whether a test passed since the last commit. It is
 ///   judged on the commit itself with the interval before it, so a second commit with no new
@@ -181,11 +180,12 @@ pub struct EventFilter {
 /// - `once(commit, Since(commit))` is true only on a commit, and `count(commit, Since(commit))`
 ///   is at most 1.
 /// - Closing an interval tightens a rule on `once` (what was seen before is forgotten) and
-///   loosens a limit on `count` (the count starts over). The filter has no condition on who the
-///   event comes from, so the agent's own acts can start a `count` over: with
-///   `count(edit, Since(commit)) <= 3`, an agent that commits after every third edit never
-///   reaches the limit. Write such a limit on a scope an act of the agent cannot close, or
-///   accept it.
+///   loosens a limit on `count` (the count starts over). An act takes effect whoever it comes
+///   from, so the acts of the one the rule is about can start a `count` over: with
+///   `count(edit, Since(commit)) <= 3`, one who commits after every third edit never reaches
+///   the limit. Write such a limit on a scope those acts cannot close, or accept it. A claim
+///   closes the scope only from one who covers the authors of the rules that read it
+///   ([`super::tx`]).
 /// - To let only a call that succeeded close the interval, restrict the filter to
 ///   `ok == true`. A call that failed, or that was stopped and never ran, does not match, and
 ///   the interval it belongs to goes on.
@@ -198,7 +198,8 @@ pub enum Scope {
     Session,
     /// From [`EventKind::AgentStart`].
     Agent,
-    /// From the last mode switch that took effect.
+    /// From the last mode switch that took effect, a switch to the mode already in effect
+    /// included.
     Mode,
     /// From [`EventKind::TaskStart`].
     Task,

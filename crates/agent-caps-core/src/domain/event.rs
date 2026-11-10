@@ -1,28 +1,32 @@
 //! What happened: the events that the state is folded from and that a policy judges.
 //!
-//! An event comes from one of two places. A platform adapter translates the platform's
-//! transcript (what the agent and the user did), and caps appends evidence (the verdicts it gave,
-//! the modes and exemptions it recorded, the scores it was sent). The domain sees both only as
-//! [`Event`] values, in the order the caller folds them. A record the adapter cannot read is not
-//! dropped but becomes [`Body::Unreadable`], so the state knows what it has not seen.
+//! The caller reads events from wherever they are kept (the platform's transcript through an
+//! adapter, the evidence the application appends) and gives them to the domain as [`Event`]
+//! values, in the order it folds them. Each event names the [`Principal`] it comes from; where
+//! that principal sits is the caller's arrangement ([`super::authority`]). Whether an event is an
+//! act or a claim is its kind's [`Nature`](super::schema::Nature). A record the adapter cannot
+//! read is not dropped but becomes [`Body::Unreadable`], with the kinds it may have been, so the
+//! state knows what it has not seen.
 //!
 //! The fold history holds only events that happened. An act judged before it runs (a
 //! [`Body::ToolUse`] whose `ok` is not known yet) is judged on a copy of the state with the act
 //! folded over it, and it enters the history when it is read back from the transcript, with
 //! its result. An act that was stopped never runs, so it is not in the history.
 
+use super::authority::Principal;
 use super::exempt::Exempt;
 use super::name::{CommandWords, Mode, PolicyId};
 use super::predicate::{Cond, Lit, Truth};
-use super::schema::{At, EventKind, Field, Judgment, Origin, Source};
+use super::schema::{At, EventKind, Field, Judgment, KindSet};
 
 /// One event: when, from whom, and what.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     /// When it happened.
     pub at: At,
-    /// Who it comes from.
-    pub origin: Origin,
+    /// The principal it comes from. An act takes effect whoever it is by; a claim takes effect
+    /// as its transaction decides ([`super::tx`]).
+    pub by: Principal,
     /// What happened.
     pub body: Body,
 }
@@ -41,10 +45,10 @@ pub enum Body {
     },
     /// A task started.
     TaskStart,
-    /// The user sent a prompt.
+    /// A prompt was submitted.
     PromptSubmit,
-    /// The agent used a tool: before the call when it is judged ahead, after it when it is read
-    /// back from the transcript.
+    /// A tool was used: before the call when it is judged ahead, after it when it is read back
+    /// from the transcript.
     ToolUse {
         /// The tool, as the platform names it.
         tool: String,
@@ -55,11 +59,11 @@ pub enum Body {
         /// Whether the call succeeded; `None` until that is known (unknown).
         ok: Option<bool>,
     },
-    /// The agent is about to end its turn.
+    /// A turn is about to end.
     Stop,
-    /// The mode changed.
+    /// The mode is switched.
     ModeSwitch {
-        /// The mode now in effect.
+        /// The mode to put in effect.
         to: Mode,
     },
     /// An oracle measured a score.
@@ -69,9 +73,10 @@ pub enum Body {
         /// The score.
         score: f64,
     },
-    /// The user exempted a guard for a while.
+    /// A guard is exempted for a while.
     Exempt(Exempt),
-    /// caps judged a policy.
+    /// A policy was judged. The record of a judgment is written in the name of the judged
+    /// policy's author ([`super::judge::Outcome::evidence`]).
     Judged {
         /// The policy.
         policy: PolicyId,
@@ -80,8 +85,9 @@ pub enum Body {
     },
     /// A record that could not be read.
     Unreadable {
-        /// Where it was.
-        source: Source,
+        /// The kinds of event it may have been, as the adapter tells from where the record was.
+        /// The state makes unknown what an event of each of them may have changed.
+        may_have_been: KindSet,
     },
 }
 

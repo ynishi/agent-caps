@@ -16,12 +16,17 @@
 //! - An exempted guard is left out of the verdict, and recorded as exempted so a one-time
 //!   exemption is used up.
 //! - A reward that is not followed is no failure: [`Recognition::None`].
+//! - The record of a judgment is written in the name of the judged policy's author. A record is
+//!   a claim ([`super::tx`]), and a rule reads the judgments only of policies whose authors cover
+//!   its own ([`super::catalog`]), so the genuine record always counts for the rules that read
+//!   it.
 
+use super::authority::Principal;
 use super::catalog::{Catalog, Degraded};
 use super::event::{Body, Event};
 use super::name::PolicyId;
 use super::policy::{Finding, Level};
-use super::schema::{At, Judgment, Origin};
+use super::schema::{At, Judgment};
 use super::state::State;
 
 /// Why a guard warned or denied.
@@ -54,10 +59,12 @@ pub enum Recognition {
 }
 
 /// What one guard found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GuardResult {
     /// The guard.
     pub policy: PolicyId,
+    /// Its author, in whose name the record of the judgment is written.
+    pub author: Principal,
     /// Its level in effect.
     pub level: Level,
     /// What it found.
@@ -85,10 +92,12 @@ impl GuardResult {
 }
 
 /// What one reward found.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RewardResult {
     /// The reward.
     pub policy: PolicyId,
+    /// Its author, in whose name the record of the judgment is written.
+    pub author: Principal,
     /// Its level in effect.
     pub level: Level,
     /// Whether it was followed.
@@ -110,19 +119,23 @@ pub struct Outcome {
 
 impl Outcome {
     /// The evidence of this judgment, for the caller to append and fold: one [`Body::Judged`]
-    /// per guard that judged the event and per reward that was followed.
+    /// per guard that judged the event and per reward that was followed, each by the author of
+    /// the judged policy.
     pub fn evidence(&self, at: At) -> Vec<Event> {
-        let judged = |policy, judgment| Event {
+        let judged = |policy, author: &Principal, judgment| Event {
             at,
-            origin: Origin::Caps,
+            by: author.clone(),
             body: Body::Judged { policy, judgment },
         };
-        let guards = self.guards.iter().map(|g| judged(g.policy, g.judgment()));
+        let guards = self
+            .guards
+            .iter()
+            .map(|g| judged(g.policy, &g.author, g.judgment()));
         let rewards = self
             .rewards
             .iter()
             .filter(|r| r.recognition == Recognition::Hit)
-            .map(|r| judged(r.policy, Judgment::Hit));
+            .map(|r| judged(r.policy, &r.author, Judgment::Hit));
         guards.chain(rewards).collect()
     }
 }
@@ -140,12 +153,14 @@ pub fn judge(catalog: &Catalog, state: &State, event: &Event) -> Outcome {
         if policy.is_guard() {
             guards.push(GuardResult {
                 policy: policy.id(),
+                author: policy.author().clone(),
                 level,
                 finding,
             });
         } else {
             rewards.push(RewardResult {
                 policy: policy.id(),
+                author: policy.author().clone(),
                 level,
                 recognition: if finding == Finding::Satisfied {
                     Recognition::Hit

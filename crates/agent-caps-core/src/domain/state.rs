@@ -2,9 +2,9 @@
 //!
 //! ```text
 //! transcript ─ platform adapter ─▶ events ─┐
-//! evidence (appended by caps) ─────────────┤
+//! evidence (appended by the caller) ───────┤
 //!                                          ▼
-//!                       State = fold(apply, initial, events)
+//!                       State = fold(Catalog::apply, initial, events)
 //! ```
 //!
 //! The same events always give the same state, so a judgment can be repeated. A cache of the
@@ -15,51 +15,64 @@
 //! from the transcript. An act that was stopped never runs, so it is not in the history and
 //! closes no interval; the same act is never folded twice.
 //!
-//! # How a scope is folded
+//! # How an event is folded
 //!
-//! Each [`Scope`] answers two questions about an event: does the scope start again before it
-//! (`starts_at`), and does the scope close on it (`ends_at`), each a [`Truth`]. `apply` folds
-//! every scope by one rule, in this order:
+//! Folding one event is two steps, and the module knows nothing of who an event comes from:
+//! neither step reads [`Event::by`]. Whether the step of a claim is kept is decided by its
+//! transaction ([`super::tx`]), which compares the state before and after the step as a list of
+//! [`StateChange`]s.
 //!
-//! 1. The scopes the previous event closed (kept in the state as `closing`): on true, start
-//!    again (slots to their start values, the exemptions that last within the scope end); on
-//!    unknown, make the slots of the scope unknown (a `once` that was true too) and end the
-//!    exemptions that last within it.
-//! 2. `starts_at(event)`: true starts the scope again, unknown is handled as in 1.
-//! 3. The event steps every slot, and updates the mode and the exemptions. What an unreadable
-//!    record may have changed in the content of a slot, the mode and the exemptions is settled
-//!    here (see the invariants).
-//! 4. `ends_at(event)`, for the scopes of the slots and of the exemptions in effect: a scope
-//!    that is not false is kept in `closing` with its truth.
+//! ```text
+//! carry(at)      what the past brings, whatever the event is
+//!   1. the scopes the previous event closed (kept in the state as `closing`): on true, start
+//!      again (slots to their start values, the exemptions that last within the scope end); on
+//!      unknown, make the slots of the scope unknown (a `once` that was true too) and end the
+//!      exemptions that last within it
+//!   2. the exemptions whose lifetime ran out by `at` end
+//! step(event)    what the event itself does
+//!   3. `starts_at(event)`, for every scope: true starts it again, unknown is handled as in 1
+//!   4. the event steps every slot, and updates the mode and the exemptions; what a record that
+//!      could not be read may have changed is settled here (see the invariants); an exemption
+//!      whose lifetime has run out by the time of the event is dropped
+//!   5. `ends_at(event)`, for the scopes of the slots and of the exemptions in effect: a scope
+//!      that is not false is kept in `closing` with its truth
+//! ```
 //!
-//! The event is judged on the state after step 3, so a closing event is judged as the last event
-//! of the interval it closes.
+//! Each [`Scope`] answers the two questions of 3 and 5 about an event, each a [`Truth`], and
+//! every scope is folded by this one rule. A claim and an act are stepped by the same rule; a
+//! switch to the mode already in effect starts the mode's scope again, as any switch does.
+//!
+//! The event is judged on the state after the step, so a closing event is judged as the last
+//! event of the interval it closes.
 //!
 //! # What the state holds
 //!
-//! - The mode in effect. Only a mode switch from the user or caps takes effect.
+//! - The mode in effect: the mode of the last switch that took effect.
 //! - One slot per temporal operator of the catalog's predicates. Each is updated
 //!   from its last value and the new event alone, and goes back to its start value when its
 //!   scope starts again.
-//! - The exemptions in effect. Only an exemption from the user takes effect, and each lasts
-//!   only for its lifetime.
+//! - The exemptions in effect. Each lasts only for its lifetime, and only one that names a guard
+//!   of the catalog outside the meta layer, and type-checks against it, is kept.
 //! - The scopes the last event closed, and whether that is known, until the next event.
 //!
 //! # Invariants
 //!
-//! - Each slot is [`Known`] or unknown. An unreadable record makes a slot unknown when the
-//!   record may have changed it: a `once` that has not yet seen its event, any count, any last
-//!   value. A `once` that has seen its event stays known, unless the record may have closed the
-//!   `Since` scope it counts in: then it becomes unknown before the next event.
-//! - An unreadable record of the evidence makes the mode unknown and ends every exemption, since
-//!   it may have been a mode switch or the use of an exemption. Losing a record never loosens a
-//!   rule.
+//! - Each slot is [`Known`] or unknown.
+//! - A record that could not be read changes, for each kind it may have been, what an event of
+//!   that kind may have changed, and nothing else: a slot that reads the kind becomes unknown (a
+//!   `once` that has seen its event stays known); a `Since` scope whose filter is of the kind
+//!   may have closed, so its slots become unknown before the next event; a mode switch makes the
+//!   mode unknown and the start of the mode's scope unknown; a judgment ends every exemption for
+//!   the next judgment, which it may have used up; an exemption changes nothing, since one that
+//!   was lost can only have loosened. Losing a record never loosens a rule.
+//! - The start of a session, an agent or a task is assumed not to be lost (a known gap, see
+//!   [`Scope`]).
 
 use super::event::{Body, Event, Read, Value};
 use super::exempt::{Exempt, Lifetime};
 use super::name::{Mode, PolicyId};
 use super::predicate::{EventFilter, Pred, Scope, Temporal, Truth};
-use super::schema::{EventKind, Judgment, Origin, Source};
+use super::schema::{At, EventKind, Judgment};
 
 /// A value that was seen, or could not be.
 #[derive(Debug, Clone, PartialEq)]
@@ -69,6 +82,11 @@ pub enum Known<T> {
     /// What would have told the value could not be read.
     Unknown,
 }
+
+/// One slot of a state: what one temporal operator of the catalog remembers. The id is
+/// meaningful only within the catalog whose state it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SlotId(usize);
 
 /// The temporal operators of a catalog, in a fixed order: slot `i` of a state holds what
 /// operator `i` remembers.
@@ -87,6 +105,11 @@ impl SlotTable {
         Self(table)
     }
 
+    /// The slot of the temporal operator, when it is one of the table.
+    pub(super) fn id_of(&self, temporal: &Temporal) -> Option<SlotId> {
+        self.find(temporal).map(SlotId)
+    }
+
     fn find(&self, temporal: &Temporal) -> Option<usize> {
         self.0.iter().position(|t| t == temporal)
     }
@@ -94,6 +117,45 @@ impl SlotTable {
     fn scopes(&self) -> impl Iterator<Item = &Scope> {
         self.0.iter().map(Temporal::scope)
     }
+}
+
+/// The guards an exemption may name, each with the kind of event it judges: the guards of the
+/// catalog outside the meta layer.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct GuardIndex(Vec<(PolicyId, EventKind)>);
+
+impl GuardIndex {
+    /// The index of the guards, each with its subject.
+    pub(super) fn new(guards: impl IntoIterator<Item = (PolicyId, EventKind)>) -> Self {
+        Self(guards.into_iter().collect())
+    }
+
+    /// The subject of the guard, or `None` when an exemption may not name it.
+    fn subject(&self, guard: PolicyId) -> Option<EventKind> {
+        self.0
+            .iter()
+            .find(|(id, _)| *id == guard)
+            .map(|(_, subject)| *subject)
+    }
+}
+
+/// One difference between a state and the state after one step: what the transaction of a claim
+/// judges ([`super::tx`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum StateChange {
+    /// The slot's value changed, or whether its scope closes on the event did.
+    Slot(SlotId),
+    /// An exemption of the guard was added.
+    ExemptionAdded(PolicyId),
+    /// An exemption of the guard ended.
+    ExemptionEnded(PolicyId),
+    /// The mode in effect changed.
+    Mode {
+        /// The mode before.
+        before: Known<Option<Mode>>,
+        /// The mode after.
+        after: Known<Option<Mode>>,
+    },
 }
 
 /// What one temporal operator remembers.
@@ -114,7 +176,7 @@ impl Slot {
         }
     }
 
-    /// The slot after a record that could not be read.
+    /// The slot after a record that could not be read, and may have been an event it reads.
     fn unread(self) -> Self {
         match self {
             Self::Once(Known::Known(true)) => self,
@@ -131,6 +193,18 @@ impl Slot {
             Self::Once(_) => Self::Once(Known::Unknown),
             Self::Count(_) => Self::Count(Known::Unknown),
             Self::Last(_) => Self::Last(Known::Unknown),
+        }
+    }
+
+    /// Whether two values of a slot are the same. A score is compared by its bits, so a NaN that
+    /// was not touched is not taken for a change.
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Last(Known::Known(Some(Value::Num(a)))),
+                Self::Last(Known::Known(Some(Value::Num(b)))),
+            ) => a.to_bits() == b.to_bits(),
+            _ => self == other,
         }
     }
 
@@ -170,6 +244,15 @@ impl Slot {
     }
 }
 
+/// Whether the temporal operator reads events of `kind`: the kind it looks for, or the kind of
+/// the field it remembers.
+fn reads(temporal: &Temporal, kind: EventKind) -> bool {
+    match temporal {
+        Temporal::Once(filter, _) | Temporal::Count(filter, _) => filter.kind == kind,
+        Temporal::Last(field, _) => field.kind() == kind,
+    }
+}
+
 /// The state a judgment reads. Made by folding events from [`super::catalog::Catalog::start`]
 /// with [`super::catalog::Catalog::apply`].
 #[derive(Debug, Clone, PartialEq)]
@@ -183,32 +266,38 @@ pub struct State {
 }
 
 impl Scope {
-    /// Whether the scope starts again before `event`. A mode switch takes effect, and so starts
-    /// the mode again, only from the user or from caps.
-    pub(super) fn starts_at(&self, event: &Event) -> Truth {
-        let body = &event.body;
-        let starts = match self {
-            Self::Session | Self::Since(_) => matches!(body, Body::SessionStart),
-            Self::Agent => matches!(body, Body::SessionStart | Body::AgentStart { .. }),
-            Self::Mode => {
-                matches!(body, Body::SessionStart)
-                    || (matches!(body, Body::ModeSwitch { .. }) && event.origin != Origin::Agent)
-            }
-            Self::Task => matches!(body, Body::SessionStart | Body::TaskStart),
-        };
-        Truth::of(starts)
+    /// Whether the scope starts again before an event of `body`. Any mode switch starts the
+    /// mode's scope again, and a record that may have been one leaves it unknown.
+    pub(super) fn starts_at(&self, body: &Body) -> Truth {
+        let at_session = matches!(body, Body::SessionStart);
+        match self {
+            Self::Session | Self::Since(_) => Truth::of(at_session),
+            Self::Agent => Truth::of(at_session || matches!(body, Body::AgentStart { .. })),
+            Self::Task => Truth::of(at_session || matches!(body, Body::TaskStart)),
+            Self::Mode => match body {
+                Body::SessionStart | Body::ModeSwitch { .. } => Truth::True,
+                Body::Unreadable { may_have_been }
+                    if may_have_been.contains(EventKind::ModeSwitch) =>
+                {
+                    Truth::Unknown
+                }
+                _ => Truth::False,
+            },
+        }
     }
 
-    /// Whether the scope closes on `event`, which then belongs to the interval it closes. Only
-    /// `Since` closes on an event. A record that could not be read may have been the event it
-    /// looks for only when events of that kind are recorded where the record was.
-    pub(super) fn ends_at(&self, event: &Event) -> Truth {
+    /// Whether the scope closes on an event of `body`, which then belongs to the interval it
+    /// closes. Only `Since` closes on an event. A record that could not be read may have been the
+    /// event it looks for only when the filter's kind is one it may have been.
+    pub(super) fn ends_at(&self, body: &Body) -> Truth {
         let Self::Since(filter) = self else {
             return Truth::False;
         };
-        match &event.body {
+        match body {
             body if body.kind() == filter.kind => matched(filter, body),
-            Body::Unreadable { source } if filter.kind.may_be_lost_in(*source) => Truth::Unknown,
+            Body::Unreadable { may_have_been } if may_have_been.contains(filter.kind) => {
+                Truth::Unknown
+            }
             _ => Truth::False,
         }
     }
@@ -242,27 +331,28 @@ impl State {
         &self.mode
     }
 
-    /// The state after `event`, by the rule in the module doc. `guard_subject` gives the kind
-    /// of event a guard judges, `None` for a guard that does not exist: an exemption takes
-    /// effect only if its guard exists and [`Exempt::check`] finds nothing wrong with it.
-    pub(super) fn apply(
-        mut self,
-        table: &SlotTable,
-        event: &Event,
-        guard_subject: impl Fn(PolicyId) -> Option<EventKind>,
-    ) -> Self {
-        let body = &event.body;
-        let loosening_allowed = event.origin != Origin::Agent;
-        // 1. The scopes the previous event closed.
+    /// The state carried to an event at `at`: steps 1 and 2 of the module doc. It depends on the
+    /// past and the time alone, so it is the same whatever the event is and whoever it comes
+    /// from, and it is always kept.
+    pub(super) fn carry(mut self, table: &SlotTable, at: At) -> Self {
         for (scope, truth) in std::mem::take(&mut self.closing) {
             self.settle(table, &scope, truth);
         }
-        // 2. The scopes that start again before this event. Settling is idempotent, so a scope
+        self.exempts.retain(|e| e.lifetime.lasts_at(at));
+        self
+    }
+
+    /// The state after `event`, from a state carried to it: steps 3 to 5 of the module doc.
+    /// `guards` holds the guards an exemption may name: one takes effect only if its guard is
+    /// there and [`Exempt::check`] finds nothing wrong with it.
+    pub(super) fn step(mut self, table: &SlotTable, event: &Event, guards: &GuardIndex) -> Self {
+        let body = &event.body;
+        // 3. The scopes that start again before this event. Settling is idempotent, so a scope
         // listed twice does no harm; only the few that start are cloned.
         let starting: Vec<(Scope, Truth)> = FIXED_SCOPES
             .iter()
             .chain(self.scopes_in_use(table))
-            .filter_map(|scope| match scope.starts_at(event) {
+            .filter_map(|scope| match scope.starts_at(body) {
                 Truth::False => None,
                 truth => Some((scope.clone(), truth)),
             })
@@ -270,19 +360,29 @@ impl State {
         for (scope, truth) in starting {
             self.settle(table, &scope, truth);
         }
-        // 3. The event itself.
+        // 4. The event itself.
         match body {
-            Body::Unreadable { source } => {
-                self.slots = self.slots.into_iter().map(Slot::unread).collect();
-                // What a lost record may have done to the mode and the exemptions. Only records
-                // that take effect matter here: a mode switch or an exemption from the agent,
-                // which a transcript record could be, never takes effect, so only a lost record
-                // of the evidence (caps's own) can have changed them. Whether a lost record may
-                // have closed a scope is a different question, answered by `ends_at` through
-                // `EventKind::may_be_lost_in`, where an agent's record still counts.
-                if *source == Source::Evidence {
+            Body::Unreadable { may_have_been } => {
+                // What an event of each kind it may have been may have changed. Whether it may
+                // have closed a scope is answered by `ends_at`, and whether it may have started
+                // the mode's scope again by `starts_at`.
+                self.slots = self
+                    .slots
+                    .into_iter()
+                    .zip(&table.0)
+                    .map(|(slot, temporal)| {
+                        if may_have_been.iter().any(|kind| reads(temporal, kind)) {
+                            slot.unread()
+                        } else {
+                            slot
+                        }
+                    })
+                    .collect();
+                if may_have_been.contains(EventKind::ModeSwitch) {
                     self.mode = Known::Unknown;
-                    self.exempts.clear();
+                }
+                if may_have_been.contains(EventKind::Judged) {
+                    self.exempts.retain(|e| e.lifetime != Lifetime::Next);
                 }
             }
             _ => {
@@ -295,13 +395,11 @@ impl State {
             }
         }
         match body {
-            Body::ModeSwitch { to } if loosening_allowed => {
-                self.mode = Known::Known(Some(to.clone()))
-            }
+            Body::ModeSwitch { to } => self.mode = Known::Known(Some(to.clone())),
             Body::Exempt(exempt)
-                if event.origin == Origin::User
-                    && guard_subject(exempt.guard)
-                        .is_some_and(|subject| exempt.check(subject).is_empty()) =>
+                if guards
+                    .subject(exempt.guard)
+                    .is_some_and(|subject| exempt.check(subject).is_empty()) =>
             {
                 self.exempts.push(exempt.clone());
             }
@@ -319,17 +417,64 @@ impl State {
             }
             _ => {}
         }
+        // An exemption that has run out by the time of the event, one this event added
+        // included, is not in effect on it.
         self.exempts.retain(|e| e.lifetime.lasts_at(event.at));
-        // 4. The scopes this event closes, each once.
+        // 5. The scopes this event closes, each once.
         let mut closing: Vec<(Scope, Truth)> = Vec::new();
         for scope in self.scopes_in_use(table) {
-            let truth = scope.ends_at(event);
+            let truth = scope.ends_at(body);
             if truth != Truth::False && !closing.iter().any(|(seen, _)| seen == scope) {
                 closing.push((scope.clone(), truth));
             }
         }
         self.closing = closing;
         self
+    }
+
+    /// The differences between `before` and `after`, two states of the catalog whose table is
+    /// `table`: each slot whose value, or whose scope's closing, differs; each exemption added or
+    /// ended (an exemption held twice counts twice); and the mode, when it differs.
+    pub(super) fn changes(table: &SlotTable, before: &State, after: &State) -> Vec<StateChange> {
+        let closing_of = |state: &State, scope: &Scope| {
+            state
+                .closing
+                .iter()
+                .find(|(closed, _)| closed == scope)
+                .map(|(_, truth)| *truth)
+        };
+        let mut changes = Vec::new();
+        for (at, temporal) in table.0.iter().enumerate() {
+            let scope = temporal.scope();
+            let same = match (before.slots.get(at), after.slots.get(at)) {
+                (Some(b), Some(a)) => b.same(a),
+                (b, a) => b == a,
+            };
+            if !same || closing_of(before, scope) != closing_of(after, scope) {
+                changes.push(StateChange::Slot(SlotId(at)));
+            }
+        }
+        let mut remaining: Vec<&Exempt> = before.exempts.iter().collect();
+        for exempt in &after.exempts {
+            match remaining.iter().position(|kept| *kept == exempt) {
+                Some(at) => {
+                    remaining.remove(at);
+                }
+                None => changes.push(StateChange::ExemptionAdded(exempt.guard)),
+            }
+        }
+        changes.extend(
+            remaining
+                .into_iter()
+                .map(|ended| StateChange::ExemptionEnded(ended.guard)),
+        );
+        if before.mode != after.mode {
+            changes.push(StateChange::Mode {
+                before: before.mode.clone(),
+                after: after.mode.clone(),
+            });
+        }
+        changes
     }
 
     /// The scopes of the slots and of the exemptions in effect, possibly with repeats.

@@ -8,15 +8,15 @@
 //! the `commit_after_test` module.
 
 use agent_caps_core::domain::event::{Body, Event};
-use agent_caps_core::domain::exempt::Lifetime;
+use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Expect, Level, PolicyDef, Rule};
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
-use agent_caps_core::domain::schema::{EventKind, Field, Source};
+use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
-    GUARD, agent, bash, catalog, commit_filter, edit, exemption, fixture, id, test_guard,
-    tested_in, unreadable, verdict, violated, words,
+    ACTS, GUARD, OTHER, agent, at, bash, catalog, commit_filter, edit, exemption, fixture, id,
+    outcome, test_guard, tested_in, the_agent, the_user, unreadable, verdict, violated, words,
 };
 
 fn test_run() -> Event {
@@ -284,15 +284,15 @@ fn two_since_scopes_close_on_one_event() {
 }
 
 /// FR33, FR20, UC3: an unreadable record closes a `Since` scope as unknown only when the filter's
-/// kind is recorded where the record was lost; elsewhere a fact already seen stays seen.
+/// kind is one the record may have been; otherwise a fact already seen stays seen.
 #[test]
-fn an_unreadable_record_closes_a_since_scope_only_where_its_kind_is_recorded() {
+fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind() {
     let stop = agent(Body::Stop);
     let tested_after_commit = catalog(
         vec![stop_guard_in(Scope::Since(commit_filter(false)))],
         vec![],
     );
-    let events = |lost| {
+    let events = |lost: &[EventKind]| {
         [
             agent(Body::TaskStart),
             test_run(),
@@ -300,42 +300,151 @@ fn an_unreadable_record_closes_a_since_scope_only_where_its_kind_is_recorded() {
             stop.clone(),
         ]
     };
-    // A commit is a tool use, recorded in the transcript: the lost line may have been one.
+    let claims = [
+        EventKind::ModeSwitch,
+        EventKind::Exempt,
+        EventKind::Judged,
+        EventKind::Measured,
+    ];
+    // A commit is a tool use: a lost line of the transcript may have been one.
+    assert_eq!(verdict(&tested_after_commit, &events(&ACTS)), unknown());
+    // A lost record that can only have been a claim cannot have been a tool use.
     assert_eq!(
-        verdict(&tested_after_commit, &events(Source::Transcript)),
-        unknown()
-    );
-    // A lost record of the evidence cannot have been a tool use.
-    assert_eq!(
-        verdict(&tested_after_commit, &events(Source::Evidence)),
+        verdict(&tested_after_commit, &events(&claims)),
         Verdict::Allow
     );
 
-    // The other way round, for a kind recorded in the evidence.
+    // The other way round, for a scope that closes on a judgment.
     let judged = EventFilter {
         kind: EventKind::Judged,
         cond: None,
     };
     let tested_after_judgment = catalog(vec![stop_guard_in(Scope::Since(judged))], vec![]);
+    assert_eq!(verdict(&tested_after_judgment, &events(&claims)), unknown());
     assert_eq!(
-        verdict(&tested_after_judgment, &events(Source::Evidence)),
-        unknown()
-    );
-    assert_eq!(
-        verdict(&tested_after_judgment, &events(Source::Transcript)),
+        verdict(&tested_after_judgment, &events(&ACTS)),
         Verdict::Allow
     );
 
-    // A mode switch the agent writes is read from the transcript and closes the scope like any
-    // other, so a lost record of either source may have been one.
+    // A scope that closes on a mode switch: unknown when the record may have been one.
     let switched = EventFilter {
         kind: EventKind::ModeSwitch,
         cond: None,
     };
     let tested_after_switch = catalog(vec![stop_guard_in(Scope::Since(switched))], vec![]);
-    for lost in [Source::Transcript, Source::Evidence] {
-        assert_eq!(verdict(&tested_after_switch, &events(lost)), unknown());
-    }
+    assert_eq!(
+        verdict(&tested_after_switch, &events(&[EventKind::ModeSwitch])),
+        unknown()
+    );
+    assert_eq!(
+        verdict(&tested_after_switch, &events(&ACTS)),
+        Verdict::Allow
+    );
+}
+
+/// FR35, FR33, UC25: a claim from one below the root does not close a `Since` scope that the
+/// root's guard reads: closing it moves the guard's slot, whose direction cannot be read. The
+/// same record from the root, the guard's author, closes it.
+#[test]
+fn a_claim_from_below_does_not_close_a_since_scope_the_roots_guard_reads() {
+    let judged = EventFilter {
+        kind: EventKind::Judged,
+        cond: Some(Cond::Eq(Field::Policy, Lit::Text(GUARD.to_owned()))),
+    };
+    let catalog = catalog(vec![stop_guard_in(Scope::Since(judged))], vec![]);
+    let record = |by| {
+        at(
+            by,
+            0,
+            Body::Judged {
+                policy: id(GUARD),
+                judgment: Judgment::Allowed,
+            },
+        )
+    };
+    let after = |claim| {
+        verdict(
+            &catalog,
+            &[agent(Body::TaskStart), test_run(), claim, agent(Body::Stop)],
+        )
+    };
+    // From below: the scope stays open, and the test is still seen within it.
+    assert_eq!(after(record(the_agent())), Verdict::Allow);
+    // From the author: the scope closes, and the test before it is forgotten.
+    assert_eq!(after(record(the_user())), violated());
+}
+
+/// FR35, FR33, UC25: what an earlier event brings is not part of the next claim. An act that
+/// closed a `Since` scope of the root's guard is settled before the claim that follows it, and
+/// an exemption that ran out by the claim's time ends before it, so a genuine record of a
+/// judgment of the principal below, in its own name, counts after either.
+#[test]
+fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
+    // The principal below writes an advising guard that warns once: it counts the records of
+    // its own warnings.
+    let mut once = test_guard(Level::Advise);
+    once.id = id(OTHER);
+    once.name = "warn-once".parse().unwrap();
+    once.author = the_agent();
+    once.fixtures = vec![];
+    once.rule = Rule::Structural(Pred::Not(Box::new(tested_in(Scope::Task))));
+    once.when = Some(Pred::Count {
+        event: EventFilter {
+            kind: EventKind::Judged,
+            cond: Some(Cond::All(vec![
+                Cond::Eq(Field::Policy, Lit::Text(OTHER.to_owned())),
+                Cond::Eq(Field::Judgment, Lit::Text("warned".to_owned())),
+            ])),
+        },
+        scope: Scope::Session,
+        cmp: Cmp::Lt,
+        n: 1,
+    });
+    let catalog = catalog(
+        vec![stop_guard_in(Scope::Since(commit_filter(false))), once],
+        vec![],
+    );
+    let warned = at(
+        the_agent(),
+        20,
+        Body::Judged {
+            policy: id(OTHER),
+            judgment: Judgment::Warned,
+        },
+    );
+    let judged = |events: &[Event]| -> Vec<_> {
+        outcome(&catalog, events)
+            .guards
+            .iter()
+            .map(|g| g.policy)
+            .collect()
+    };
+    let start = || [agent(Body::TaskStart), test_run()];
+
+    // Without the record, the guard below warns.
+    let mut events = start().to_vec();
+    events.extend([commit(Some(true)), agent(Body::Stop)]);
+    assert_eq!(judged(&events), vec![id(GUARD), id(OTHER)]);
+
+    // The record right after the commit that closed the root's scope counts.
+    let mut events = start().to_vec();
+    events.extend([commit(Some(true)), warned.clone(), agent(Body::Stop)]);
+    assert_eq!(judged(&events), vec![id(GUARD)]);
+
+    // So it does after an exemption of the root's guard that ran out before it.
+    let until = at(
+        the_user(),
+        0,
+        Body::Exempt(Exempt {
+            guard: id(GUARD),
+            target: None,
+            lifetime: Lifetime::Until(At::from_millis(10)),
+            reason: "briefly".parse().unwrap(),
+        }),
+    );
+    let mut events = start().to_vec();
+    events.extend([until, warned, at(the_agent(), 20, Body::Stop)]);
+    assert_eq!(judged(&events), vec![id(GUARD)]);
 }
 
 /// FR33, FR20: when the filter's condition is not known on an event (`ok` of a call whose result
@@ -355,7 +464,7 @@ fn a_filter_whose_condition_is_unknown_leaves_the_close_unknown() {
     assert_eq!(after(commit(Some(true))), violated());
 }
 
-/// FR33, FR9, UC1: an exemption that lasts within `Since(g)` ends after `g`: `g` itself is judged
+/// FR33, FR34, UC1: an exemption that lasts within `Since(g)` ends after `g`: `g` itself is judged
 /// with it, the next event without it. A `g` that failed does not end it, and one whose result is
 /// not known ends it, since it is not known whether it did.
 #[test]
