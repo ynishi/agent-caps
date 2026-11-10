@@ -5,8 +5,10 @@
 //! reward). It holds no strength of its own. A [`Binding`] is one author's statement that a policy
 //! takes effect at a [`Level`] where its [`ModeScope`] holds; a policy takes effect at the
 //! strongest level of its bindings that hold, and with none it is off. Adding a binding therefore
-//! never lowers a policy. Knowledge, procedures and roles are not parts of their own: each is a set
-//! of policies seen another way.
+//! never lowers a policy. Procedures and roles are not parts of their own: each is a set of
+//! policies seen another way. Knowledge, a document meant for the agent's context, is no part of
+//! the domain: it is not a rule, and putting it into a context is the platform's. What can be
+//! observed of it, such as an edit without the read, is an ordinary policy.
 //!
 //! ```text
 //! PolicyDef   what must hold or is recommended    (when, rule, subject, fixtures, author)

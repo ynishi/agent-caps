@@ -116,6 +116,15 @@ and this project adheres to
 
 ### Changed
 
+- Knowledge, a document meant for the agent's context, is no longer seen as
+  part of the Core domain (#12). Putting it into the agent's context is a
+  platform's form of context, as an instruction file or a skill is (FR51,
+  Adapter, undecided). What can be observed of it, an edit of an area
+  without having read its design document in the task, is an ordinary guard
+  bound at Advise, which warns and does not stop (UC28, which replaces
+  UC13). The scenario no longer writes knowledge as a reward with a guard
+  that cannot fail to carry it; a reward is still always bound by a guard.
+  No API changes.
 - Breaking, before 1.0: a catalog is accepted from sets of policies, and
   keeps them (#47). The new module `domain::set` has `SetId` (a surrogate
   key in the hyphenated UUID form, as `PolicyId` is; `NameError::SetId` for
