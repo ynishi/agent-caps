@@ -140,13 +140,7 @@
 //!   counts only those of the policies in the catalog whose authors cover its own: those of one
 //!   below it, and those of a policy that is not in the catalog, are not counted, even when a
 //!   branch of an `any` names it. To count a policy, narrow to it; one below cannot be
-//!   named, and neither can a `last` of a judgment's field be used beside one. A Meta rule
-//!   reads judgments only by naming the policies.
-//! - A spawn is judged by how rules read the actor directly. A rule that counts the judgments
-//!   of another rule sees the acts of whoever that rule applies to, a placed child included:
-//!   placing a child where a guard applies can add the guard's denials, as the actor's own
-//!   acts could. Acts are not judged as claims, so this goes through as the counting rule
-//!   was written.
+//!   named. A Meta rule reads judgments only by naming the policies.
 //! - After a record that may have been a spawn is lost, every leaf placed later has an
 //!   unknown place for the rest of the fold, so a stopping rule that reads the actor stops
 //!   those leaves.

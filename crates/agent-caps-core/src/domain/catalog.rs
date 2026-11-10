@@ -86,8 +86,9 @@
 //!   names with `policy == id` or `policy in {ids}` (alone, within an `all`, or in an `any` every
 //!   branch of which does), and then reads those. Every policy a filter names, wherever in the
 //!   filter, is read as named: a policy named below is [`AcceptError::ReferencesBelow`], whatever
-//!   the shape of the filter. A `last` of a judgment's field has no filter to narrow, so it reads
-//!   every policy, and is not accepted beside a policy below.
+//!   the shape of the filter. A `last` has a filter as `once` and `count` do, and is read the same
+//!   way; a policy named in its test (`policy == id`, which it reads from the last event the
+//!   filter takes) is named as one in its filter is.
 //! - A filter of judgments that narrows to no policy sees the judgments of the policies of the
 //!   catalog whose authors cover the author of its policy, its own and those above, and no
 //!   others: a rule counts what it may trust. Who is visible is decided here, once, from the
@@ -104,11 +105,10 @@
 //!   author itself cannot be made by one who does not cover it ([`super::change`]); so a change
 //!   that [`super::change::classify`] reads from the written policies alone cannot loosen a rule
 //!   through the predicates it does not read. A meta policy never changes, so it does not depend
-//!   on a set that grows: it reads no judgment without naming the policies, neither in a filter
-//!   that narrows to none nor in a `last` of a judgment's field
-//!   ([`AcceptError::MetaReadsUnscoped`]). So a genuine record of a judgment, written in the name of
-//!   the judged policy's author, is always one its reader may count ([`super::tx`]): what is
-//!   checked here is what is used there.
+//!   on a set that grows: it reads no judgment without naming the policies, in no filter that
+//!   narrows to none, that of a `last` included ([`AcceptError::MetaReadsUnscoped`]). So a
+//!   genuine record of a judgment, written in the name of the judged policy's author, is always
+//!   one its reader may count ([`super::tx`]): what is checked here is what is used there.
 //! - A reward is bound by a guard that exists, and is not stronger than it as defined. After the
 //!   overrides, a reward stronger than its guard is lowered to the guard's level, and a reward
 //!   whose guard is off is off; both are reported as [`Degraded`], never done silently.
@@ -141,8 +141,8 @@ use super::policy::{
     PolicyGraph, Rule,
 };
 use super::predicate::{
-    EventFilter, JudgedRead, PredError, Reading, Scope, Site, StateAtom, Temporal, Truth,
-    judged_read, note_reading, state_readings,
+    EventFilter, JudgedRead, PredError, Reading, Site, StateAtom, Truth, note_reading,
+    state_readings,
 };
 use super::schema::EventKind;
 use super::state::{GuardIndex, Known, SlotId, SlotTable, State, matched};
@@ -189,12 +189,11 @@ pub enum AcceptError {
     },
     /// The item refers to a policy whose author is below its own, or beside it: a reward bound
     /// by it, an override that targets it, or a policy whose predicate names it in a filter of
-    /// judgments (`policy == id`, `policy in {ids}`, wherever in the filter), or reads every
-    /// policy's judgments with a `last` of a judgment's field. A filter of judgments that narrows
-    /// to no policy (names none, or names one only where it does not narrow, as in
-    /// `any(policy == id, judgment == denied)`) is not this for what it does not name: it sees
-    /// only the policies its author may count. To fix a predicate, name only the policies of its
-    /// own author or of one above.
+    /// judgments (`policy == id`, `policy in {ids}`, wherever in the filter; the filter of a
+    /// `last` included). A filter of judgments that narrows to no policy (names none, or names
+    /// one only where it does not narrow, as in `any(policy == id, judgment == denied)`) is not
+    /// this for what it does not name: it sees only the policies its author may count. To fix a
+    /// predicate, name only the policies of its own author or of one above.
     ReferencesBelow {
         /// The item.
         item: Target,
@@ -211,9 +210,9 @@ pub enum AcceptError {
         principal: Principal,
     },
     /// The meta policy reads judgments without naming the policies: a filter of judgments that
-    /// narrows to no policy, or a `last` of a judgment's field. What such a read sees grows with
-    /// the policies of the catalog, and a meta policy depends on nothing that changes. To fix
-    /// it, name the policies whose judgments it reads.
+    /// narrows to no policy, that of a `last` included. What such a read sees grows with the
+    /// policies of the catalog, and a meta policy depends on nothing that changes. To fix it,
+    /// name the policies whose judgments it reads.
     MetaReadsUnscoped(PolicyId),
     /// Two policies have the id.
     DuplicateId(PolicyId),
@@ -815,8 +814,9 @@ pub(super) struct Reads {
     slots: Vec<SlotId>,
     /// The judgments those operators and the filters of their `Since` scopes read.
     judged: Vec<JudgedRead>,
-    /// The modes it reads with `ModeIs`. The mode's scope is read through `slots`.
-    modes: Vec<Mode>,
+    /// The modes it reads with `ModeIs`, each with the direction it reads it in. A mode read in
+    /// two directions is `Unreadable`. The mode's scope is read through `slots`.
+    modes: Vec<(Mode, Reading)>,
     /// The principals it reads with `ActorUnder`, each with the direction it reads it in. A
     /// principal read in two directions is `Unreadable`.
     actors: Vec<(Principal, Reading)>,
@@ -833,23 +833,10 @@ impl Reads {
                 {
                     reads.slots.push(slot);
                 }
-                let (judged, scope) = match &temporal {
-                    Temporal::Once(filter, scope) | Temporal::Count(filter, scope) => {
-                        (judged_read(filter), scope)
-                    }
-                    Temporal::Last(field, scope) => (
-                        (field.kind() == EventKind::Judged).then(JudgedRead::every),
-                        scope,
-                    ),
-                };
-                let since = match scope {
-                    Scope::Since(filter) => judged_read(filter),
-                    _ => None,
-                };
-                for read in judged.into_iter().chain(since) {
-                    if !reads.judged.contains(&read) {
-                        reads.judged.push(read);
-                    }
+            }
+            for read in pred.judged_reads() {
+                if !reads.judged.contains(&read) {
+                    reads.judged.push(read);
                 }
             }
         }
@@ -862,11 +849,7 @@ impl Reads {
         for (pred, site) in when.into_iter().chain([(policy.rule(), sites.1)]) {
             for (atom, reading) in state_readings(pred, site) {
                 match atom {
-                    StateAtom::Mode(mode) => {
-                        if !reads.modes.contains(mode) {
-                            reads.modes.push(mode.clone());
-                        }
-                    }
+                    StateAtom::Mode(mode) => note_reading(&mut reads.modes, mode.clone(), reading),
                     StateAtom::Actor(principal) => {
                         note_reading(&mut reads.actors, principal.clone(), reading);
                     }
@@ -881,13 +864,27 @@ impl Reads {
         &self.actors
     }
 
+    /// Whether the policy reads the judgments of `id`: a filter of judgments that narrows to no
+    /// policy reads every one it may count, and one that narrows or names reads those. The
+    /// transaction of a claim asks this to find the rules that read what a policy's wider reach
+    /// would write.
+    pub(super) fn reads_judgments_of(&self, id: PolicyId) -> bool {
+        self.judged.iter().any(|read| {
+            read.names(id)
+                || read
+                    .narrowed
+                    .as_ref()
+                    .is_none_or(|narrowed| narrowed.contains(&id))
+        })
+    }
+
     /// Whether the policy reads the slot.
     pub(super) fn reads_slot(&self, slot: SlotId) -> bool {
         self.slots.contains(&slot)
     }
 
-    /// The modes the policy reads with `ModeIs`.
-    pub(super) fn modes(&self) -> &[Mode] {
+    /// The modes the policy reads with `ModeIs`, each with the direction it reads it in.
+    pub(super) fn modes(&self) -> &[(Mode, Reading)] {
         &self.modes
     }
 }
@@ -1296,11 +1293,10 @@ fn compile_policies(defs: Vec<PolicyDef>, authority: &Authority) -> Vec<Policy> 
 ///
 /// What is read is [`Reads`], made from the predicates the catalog uses. A filter that narrows to
 /// no policy has been narrowed to the policies its author may count, so it reads none below; a
-/// policy named, in any shape of filter, and a `last` of a judgment's field, which reads every
-/// policy, are what can be below. A meta policy's reads are made from its predicates as
-/// written, so a read of every policy is the one thing its check looks for; the policies it
-/// names are checked as any other's, and it is not also told off for every policy below that a
-/// read of every policy would reach.
+/// policy named, in any shape of filter (a `last`'s included), is what can be below. A meta
+/// policy's reads are made from its predicates as written, so a read of every policy is the one
+/// thing its check looks for; the policies it names are checked as any other's, and it is not
+/// also told off for every policy below that a read of every policy would reach.
 fn check_reads(
     policies: &[Policy],
     reads: &[Reads],

@@ -36,9 +36,12 @@ fn an_ill_typed_since_filter_is_rejected() {
             n: 2,
         },
         Pred::Last {
-            field: Field::Ok,
+            event: EventFilter {
+                kind: EventKind::ToolUse,
+                cond: None,
+            },
             scope: bad(),
-            value: Lit::Bool(true),
+            test: Cond::Eq(Field::Ok, Lit::Bool(true)),
         },
     ]));
     let error = AcceptError::Predicate {

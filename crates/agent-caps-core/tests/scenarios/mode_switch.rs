@@ -1,9 +1,10 @@
 //! A mode switch is a claim (#17): it takes effect when it only tightens, from anyone, and when it
 //! loosens only from one who covers the authors of what it loosens. It loosens when a policy
-//! takes effect less strongly after it, when a policy reads the mode it leaves or enters (such a
-//! rule's direction cannot be read), and when it starts the mode's scope again over a slot that
-//! moves. A switch to the mode already in effect starts the mode's scope again, as any switch
-//! does.
+//! takes effect less strongly after it, when a policy that applies inside a mode it reads sees
+//! the mode left (and, where the policy reads the mode in a direction that cannot be told, entered
+//! as well), and when it starts the mode's scope again over a slot that moves. A switch into a
+//! mode a policy applies inside tightens it. A switch to the mode already in effect starts the
+//! mode's scope again, as any switch does.
 
 use agent_caps_core::domain::catalog::Catalog;
 use agent_caps_core::domain::event::{Body, Event};
@@ -14,9 +15,13 @@ use agent_caps_core::domain::predicate::{Cond, Pred, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::state::Known;
 
+use agent_caps_core::domain::tx::{
+    FindingDetail, TxDecision, TxPolicy, TxReport, Verdict as TxVerdict,
+};
+
 use super::common::{
-    GUARD, OTHER, agent, bash, catalog, id, in_mode, mode, mode_switch, test_guard, tested_in,
-    verdict, words,
+    GUARD, OTHER, agent, bash, catalog, id, in_mode, mode, mode_switch, push_after_allowed,
+    test_guard, tested_in, the_user, unreadable, verdict, words,
 };
 
 /// The principal below the root switches to the mode.
@@ -169,4 +174,156 @@ fn a_switch_from_below_does_not_leave_a_mode_the_roots_guard_reads() {
         ),
         Known::Known(Some(mode("fix")))
     );
+}
+
+/// The root's guard that holds everywhere but in the `strict` mode: it reads the mode under a
+/// `not`, so the direction it reads it in cannot be told.
+fn outside_strict_guard() -> PolicyDef {
+    let mut guard = strict_guard();
+    guard.when = Some(Pred::Not(Box::new(Pred::ModeIs(mode("strict")))));
+    guard
+}
+
+/// FR11, UC21, UC25: a guard of the root's that applies inside `strict` is held more by a switch
+/// into it, which takes effect from below, and less by one out of it, which does not; a switch
+/// between modes it does not read is neither.
+#[test]
+fn a_switch_from_below_into_a_mode_a_guard_applies_inside_takes_effect_and_out_of_it_does_not() {
+    let catalog = catalog(vec![strict_guard()], vec![]);
+    let strict = Known::Known(Some(mode("strict")));
+    assert_eq!(mode_after(&catalog, &[switch_below("strict")]), strict);
+    assert_eq!(
+        mode_after(&catalog, &[mode_switch("strict"), switch_below("fix")]),
+        strict
+    );
+    assert_eq!(
+        mode_after(&catalog, &[mode_switch("explore"), switch_below("fix")]),
+        Known::Known(Some(mode("fix")))
+    );
+    // The root's switch out of it takes effect.
+    assert_eq!(
+        mode_after(&catalog, &[mode_switch("strict"), mode_switch("fix")]),
+        Known::Known(Some(mode("fix")))
+    );
+}
+
+/// FR11, UC21, UC25: a guard of the root's that reads `strict` under a `not` cannot be told to
+/// hold more or less by a switch into it or out of it, so neither takes effect from below; a
+/// switch between modes it does not read does.
+#[test]
+fn a_switch_from_below_into_a_mode_a_guard_reads_under_a_not_does_not_take_effect() {
+    let catalog = catalog(vec![outside_strict_guard()], vec![]);
+    assert_eq!(
+        mode_after(&catalog, &[switch_below("strict")]),
+        Known::Known(None)
+    );
+    assert_eq!(
+        mode_after(&catalog, &[mode_switch("strict"), switch_below("fix")]),
+        Known::Known(Some(mode("strict")))
+    );
+    assert_eq!(
+        mode_after(&catalog, &[switch_below("fix")]),
+        Known::Known(Some(mode("fix")))
+    );
+}
+
+/// FR11, FR20, UC25: when the mode before the switch is not known, the mode it goes to is counted
+/// as entered and every other mode as left (it may have been there): a switch from below into the
+/// mode a guard applies inside takes effect, one to another mode does not, and a guard that reads
+/// the mode under a `not` lets neither.
+#[test]
+fn a_switch_from_below_after_a_lost_mode_switch_counts_the_mode_it_goes_to_as_entered() {
+    let lost = || unreadable(&[EventKind::ModeSwitch]);
+    let inside = catalog(vec![strict_guard()], vec![]);
+    assert_eq!(
+        mode_after(&inside, &[lost(), switch_below("strict")]),
+        Known::Known(Some(mode("strict")))
+    );
+    assert_eq!(
+        mode_after(&inside, &[lost(), switch_below("fix")]),
+        Known::Unknown
+    );
+    let outside = catalog(vec![outside_strict_guard()], vec![]);
+    for to in ["strict", "fix"] {
+        assert_eq!(
+            mode_after(&outside, &[lost(), switch_below(to)]),
+            Known::Unknown,
+            "unknown -> {to}"
+        );
+    }
+    // A switch from the root settles it whatever the guards read.
+    assert_eq!(
+        mode_after(&outside, &[lost(), mode_switch("fix")]),
+        Known::Known(Some(mode("fix")))
+    );
+}
+
+/// The root's advising guard on the end of a turn that holds only in the `strict` mode.
+fn strict_stop_guard() -> PolicyDef {
+    let mut guard = test_guard(Level::Advise);
+    guard.when = Some(Pred::ModeIs(mode("strict")));
+    guard.fixtures = vec![];
+    guard
+}
+
+/// The transaction of `event` from the start.
+fn admit_first(catalog: &Catalog, event: &Event) -> TxReport {
+    catalog.admit(&catalog.start(), event, &TxPolicy::standard())
+}
+
+/// FR11, UC21, UC25, FR41: a switch into the mode a guard applies inside makes it apply to more
+/// events, and so writes more judgments of it. A root rule that reads that guard's judgments (its
+/// last judgment within the session) is moved by that, so the switch from below, which would
+/// otherwise only tighten, does not take effect; the root's does.
+#[test]
+fn a_switch_from_below_does_not_take_effect_when_a_root_rule_reads_the_judgments_of_a_guard_it_widens()
+ {
+    let catalog = catalog(vec![strict_stop_guard(), push_after_allowed(GUARD)], vec![]);
+    let strict = Known::Known(Some(mode("strict")));
+    assert_eq!(
+        mode_after(&catalog, &[switch_below("strict")]),
+        Known::Known(None)
+    );
+    assert_eq!(mode_after(&catalog, &[mode_switch("strict")]), strict);
+
+    let report = admit_first(&catalog, &switch_below("strict"));
+    assert_eq!(report.decision, TxDecision::Abort);
+    let [found] = report.findings.as_slice() else {
+        panic!("one finding was expected: {report:?}")
+    };
+    assert_eq!(found.check.as_str(), "mode");
+    // The guard that applies to more stays tightened; the rule that reads its judgments loosens.
+    assert_eq!(
+        found.verdict,
+        TxVerdict::Loosens {
+            authors: vec![the_user()],
+            detail: FindingDetail::Mode {
+                lowered: vec![],
+                reading: vec![id(OTHER)],
+            },
+        }
+    );
+    assert_eq!(
+        admit_first(&catalog, &mode_switch("strict")).decision,
+        TxDecision::Commit
+    );
+}
+
+/// FR11, UC21, UC25, FR41: with no rule that reads the guard's judgments, the same switch from
+/// below tightens and takes effect, whatever else the catalog holds.
+#[test]
+fn a_switch_from_below_into_a_mode_takes_effect_when_no_rule_reads_the_judgments_of_the_guard() {
+    let mut unrelated = push_after_allowed(GUARD);
+    unrelated.rule = Rule::Structural(tested_in(Scope::Task));
+    let catalog = catalog(vec![strict_stop_guard(), unrelated], vec![]);
+    assert_eq!(
+        mode_after(&catalog, &[switch_below("strict")]),
+        Known::Known(Some(mode("strict")))
+    );
+    let report = admit_first(&catalog, &switch_below("strict"));
+    assert_eq!(report.decision, TxDecision::Commit);
+    assert!(matches!(
+        report.findings.as_slice(),
+        [found] if matches!(found.verdict, TxVerdict::Tightens(_))
+    ));
 }

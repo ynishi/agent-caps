@@ -32,8 +32,8 @@ use agent_caps_core::domain::tx::{
 };
 
 use super::common::{
-    GUARD, OTHER, REWARD, at, catalog, clippy_reward, fixture, id, rejected, test_guard, the_agent,
-    the_helper, the_reviewer, the_user, unreadable, verdict, violated,
+    GUARD, OTHER, REWARD, at, catalog, clippy_reward, fixture, id, push_after_allowed, rejected,
+    test_guard, the_agent, the_helper, the_reviewer, the_user, unreadable, verdict, violated,
 };
 
 /// The event, by the actor.
@@ -301,6 +301,58 @@ fn placing_a_child_under_a_role_loosens_a_rule_that_applies_outside_it() {
         verdict(&catalog, &[by_user, read_by(&r3, "secrets/key")]),
         Verdict::Allow
     );
+}
+
+/// UC14, FR38, UC25, FR41: a child placed under the reviewer makes the reviewer's guard apply to
+/// it, and so writes more judgments of that guard. A root rule that reads the guard's judgments is
+/// moved by that, so the placement from below, which would otherwise only tighten, does not take
+/// effect; the root's does.
+#[test]
+fn placing_a_child_where_a_guard_applies_loosens_a_rule_that_reads_that_guards_judgments() {
+    // The reader makes the guard's placements the root's to make, so its fixtures are spawned by
+    // the root.
+    let mut guard = reviewer_guard();
+    let child = leaf("r0");
+    guard.fixtures = vec![
+        fixture(
+            "an edit by a sub agent the root placed under the reviewer",
+            vec![spawn(&the_user(), &child, &the_reviewer()), edit_by(&child)],
+            Expect::Violated,
+        ),
+        fixture(
+            "a read by a sub agent the root placed under the reviewer",
+            vec![
+                spawn(&the_user(), &child, &the_reviewer()),
+                read_by(&child, "src/a.rs"),
+            ],
+            Expect::Satisfied,
+        ),
+    ];
+    let catalog = catalog(vec![guard, push_after_allowed(GUARD)], vec![]);
+    let (helper, r5) = (the_helper(), leaf("r5"));
+    let placing = spawn(&helper, &r5, &the_reviewer());
+
+    let report = admit(&catalog, &[], &placing);
+    assert_eq!(report.decision, TxDecision::Abort);
+    assert_eq!(
+        report.uncovered,
+        vec![NotCovered::Uncovered(vec![the_user()])]
+    );
+    // The guard that applies to more stays tightened; the rule that reads its judgments loosens.
+    assert_eq!(
+        spawn_finding(&report),
+        &TxVerdict::Loosens {
+            authors: vec![the_user()],
+            detail: FindingDetail::Spawn {
+                child: r5.clone(),
+                under: the_reviewer(),
+                loosened: vec![id(OTHER)],
+            },
+        }
+    );
+
+    let by_user = spawn(&the_user(), &r5, &the_reviewer());
+    assert_eq!(admit(&catalog, &[], &by_user).decision, TxDecision::Commit);
 }
 
 /// UC14, FR38, UC25: a child placed above its spawner leaves the principals between, and a rule

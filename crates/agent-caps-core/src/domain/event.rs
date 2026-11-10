@@ -163,6 +163,25 @@ impl Body {
         }
     }
 
+    /// Whether the two are the same event body, the score of a measurement compared by its bits:
+    /// a NaN is the same as itself, where `==` takes it for a difference. The state compares what
+    /// a slot holds this way, so a score that was not touched is not taken for a change.
+    pub(super) fn same_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Measured {
+                    oracle: a,
+                    score: x,
+                },
+                Self::Measured {
+                    oracle: b,
+                    score: y,
+                },
+            ) => a == b && x.to_bits() == y.to_bits(),
+            _ => self == other,
+        }
+    }
+
     /// The value of `field` in this event.
     pub(super) fn read(&self, field: Field) -> Read {
         let absent = |value: Option<Value>| value.map_or(Read::Absent, Read::Found);

@@ -116,6 +116,33 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: `Pred::Last` is `Last { event: EventFilter, scope, test:
+  Cond }` in place of `Last { field, scope, value }`: the last event within the
+  scope that matches the filter, and a condition on it, the same condition a
+  `Now`, a `Once` or a `Count` takes, so a score can be compared
+  (`Last { Measured where oracle == "bench", Session, score >= 0.8 }`). The old
+  form is `Last { event: EventFilter { kind: field.kind(), cond: None }, scope,
+  test: Cond::Eq(field, value) }`. The slot holds the last matching event, and
+  the condition is checked and evaluated as any other (no new error). A `last`
+  of judgments now has a filter, so it can name policies, is limited to the
+  policies its author may count when it names none, and is accepted beside a
+  policy below when it names none of them; a policy named in its test is
+  checked like one named in its filter (a `last` of judgments whose test names a
+  policy below is `ReferencesBelow`); the ledger's FR37 is withdrawn for FR41,
+  which says so.
+- A mode switch is judged by the direction in which a policy reads the mode
+  (`Reads::modes` carries it, as the actors do): it tightens a policy that
+  applies inside a mode it enters, and loosens one that applies inside a mode it
+  leaves or that reads the mode in a direction that cannot be told (under a
+  `not`, in a guard's `rule`, in a reward), as a placement of a spawned child
+  does. Before, any policy that read the mode before or after loosened. A mode
+  that is not known before the switch counts the mode it goes to as entered, and
+  every other mode as left. One rule of direction (`Move`, `direction`) serves
+  the mode check and the spawn check. A policy a claim makes apply to more
+  writes more judgments, so every other policy that reads its judgments is
+  loosened by the claim too, for a mode switch and for a spawn alike: a lower
+  principal's switch or placement that makes a guard apply to more no longer
+  takes effect while a rule of a higher author reads that guard's judgments.
 - Breaking, before 1.0: `judge(catalog, state, event, &Capabilities)` takes the
   platform's capabilities (`Capabilities::full()` lowers nothing).
   `GuardResult` and `RewardResult` have `written` and `enforced` in place of
@@ -196,6 +223,9 @@ and this project adheres to
 
 ### Fixed
 
+- "The latest bench score is at least 0.8" can be written: the last score of an
+  oracle compared as a number, so a high score that a low one followed no
+  longer lets a turn end (#4).
 - A record of a judgment or a measured score no longer counts whoever writes
   it: one that would move a rule's slot counts only from one who covers the
   rule's author, so a `denied` written by one below the guard's author does not

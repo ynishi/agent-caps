@@ -295,6 +295,27 @@ pub fn src_edit_guard() -> PolicyDef {
     guard
 }
 
+/// The root's advising guard on a `git push` (it has no fixtures, so it does not stop), whose rule
+/// reads the judgments of the policy `read`: the last of them within the session was an
+/// `allowed`. A rule that reads another's judgments.
+pub fn push_after_allowed(read: &str) -> PolicyDef {
+    let mut guard = test_guard(Level::Advise);
+    guard.id = id(OTHER);
+    guard.name = "push-after-allowed".parse().unwrap();
+    guard.subject = EventKind::ToolUse;
+    guard.when = Some(Pred::Now(Cond::Words(Field::Command, words("git push"))));
+    guard.rule = Rule::Structural(Pred::Last {
+        event: EventFilter {
+            kind: EventKind::Judged,
+            cond: Some(Cond::Eq(Field::Policy, Lit::Text(read.to_owned()))),
+        },
+        scope: Scope::Session,
+        test: Cond::Eq(Field::Judgment, Lit::Text("allowed".to_owned())),
+    });
+    guard.fixtures = vec![];
+    guard
+}
+
 /// A reward within the guard: run clippy before stopping.
 pub fn clippy_reward(level: RewardLevel) -> PolicyDef {
     PolicyDef {

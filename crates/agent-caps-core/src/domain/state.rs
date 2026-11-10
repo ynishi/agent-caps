@@ -95,7 +95,7 @@
 //! - The start of a session or a task is assumed not to be lost (a known gap, see [`Scope`]).
 
 use super::authority::{Authority, Principal};
-use super::event::{Body, Event, Read, Value};
+use super::event::{Body, Event};
 use super::exempt::{Exempt, Lifetime};
 use super::name::{Mode, PolicyId};
 use super::predicate::{EventFilter, Pred, Scope, Temporal, Truth};
@@ -306,8 +306,8 @@ impl Actors {
 enum Slot {
     Once(Known<bool>),
     Count(Known<u32>),
-    /// `Known(None)`: no event of the field's kind within the scope.
-    Last(Known<Option<Value>>),
+    /// The last event that matched the filter within the scope; `Known(None)`: there was none.
+    Last(Known<Option<Body>>),
 }
 
 impl Slot {
@@ -339,14 +339,11 @@ impl Slot {
         }
     }
 
-    /// Whether two values of a slot are the same. A score is compared by its bits, so a NaN that
-    /// was not touched is not taken for a change.
+    /// Whether two values of a slot are the same. The score of an event it holds is compared by
+    /// its bits ([`Body::same_as`]), so a NaN that was not touched is not taken for a change.
     fn same(&self, other: &Self) -> bool {
         match (self, other) {
-            (
-                Self::Last(Known::Known(Some(Value::Num(a)))),
-                Self::Last(Known::Known(Some(Value::Num(b)))),
-            ) => a.to_bits() == b.to_bits(),
+            (Self::Last(Known::Known(Some(a))), Self::Last(Known::Known(Some(b)))) => a.same_as(b),
             _ => self == other,
         }
     }
@@ -374,25 +371,28 @@ impl Slot {
                     (_, _) => Known::Unknown,
                 })
             }
-            (Self::Last(last), Temporal::Last(field, _)) => match body.read(*field) {
-                Read::OtherKind => Self::Last(last),
-                Read::Unknown => Self::Last(Known::Unknown),
-                // No value to compare with: the same as no event, every comparison is false.
-                Read::Absent => Self::Last(Known::Known(None)),
-                Read::Found(value) => Self::Last(Known::Known(Some(value))),
-            },
+            (Self::Last(last), Temporal::Last(filter, _)) => {
+                if body.kind() != filter.kind {
+                    return Self::Last(last);
+                }
+                match matched(filter, body) {
+                    Truth::True => Self::Last(Known::Known(Some(body.clone()))),
+                    Truth::False => Self::Last(last),
+                    Truth::Unknown => Self::Last(Known::Unknown),
+                }
+            }
             // A slot always has the shape of its operator: both come from the same table.
             (slot, _) => slot,
         }
     }
 }
 
-/// Whether the temporal operator reads events of `kind`: the kind it looks for, or the kind of
-/// the field it remembers.
+/// Whether the temporal operator reads events of `kind`: the kind it looks for.
 fn reads(temporal: &Temporal, kind: EventKind) -> bool {
     match temporal {
-        Temporal::Once(filter, _) | Temporal::Count(filter, _) => filter.kind == kind,
-        Temporal::Last(field, _) => field.kind() == kind,
+        Temporal::Once(filter, _) | Temporal::Count(filter, _) | Temporal::Last(filter, _) => {
+            filter.kind == kind
+        }
     }
 }
 
@@ -728,11 +728,11 @@ impl State {
                 _ => Truth::Unknown,
             },
             Pred::Last {
-                field,
+                event: filter,
                 scope,
-                value,
-            } => match slot(Temporal::Last(*field, scope.clone())) {
-                Some(Slot::Last(Known::Known(Some(last)))) => last.equals(value),
+                test,
+            } => match slot(Temporal::Last(filter.clone(), scope.clone())) {
+                Some(Slot::Last(Known::Known(Some(last)))) => last.holds(test),
                 Some(Slot::Last(Known::Known(None))) => Truth::False,
                 _ => Truth::Unknown,
             },

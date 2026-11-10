@@ -158,12 +158,14 @@ pub enum Verdict {
 pub enum FindingDetail {
     /// An exemption of the guard is added.
     ExemptionAdded(PolicyId),
-    /// The mode changes: these policies take effect less strongly, and these read a mode it
-    /// changes from or to.
+    /// The mode changes: these policies take effect less strongly, and these are loosened by the
+    /// mode they read (see [`checks`]).
     Mode {
         /// The policies that take effect less strongly.
         lowered: Vec<Lowered>,
-        /// The policies that read the mode before or after.
+        /// The policies loosened by reading the mode: one that applies inside a mode it sees
+        /// left, one that reads a mode in a direction that cannot be told, entered or left, and
+        /// one that reads the judgments of a policy that comes to apply to more.
         reading: Vec<PolicyId>,
     },
     /// The slot changes, and these policies read it.
@@ -175,7 +177,7 @@ pub enum FindingDetail {
     },
     /// A spawn places a child where these policies, which read the actor, take effect less
     /// strongly or in a direction that cannot be read, against a place directly under the
-    /// spawner.
+    /// spawner, or which read the judgments of a policy that comes to apply to more.
     Spawn {
         /// The new actor.
         child: Principal,
