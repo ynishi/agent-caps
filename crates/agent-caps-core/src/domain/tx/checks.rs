@@ -3,10 +3,13 @@
 //! ```text
 //! check        looks at                     finds                                   authors
 //! RuleCheck    the whole state before and   loosens when a policy's effect goes     of a lowered policy, the
-//!              after: each policy's effect  down or an exemption of it starts;      bindings that carried what
-//!              (Catalog::effective) and     tightens when one goes up or an         was lowered; of an exempted
-//!              the exemptions in effect     exemption ends (rule_moves)             one, its author and every
-//!                                                                                   binding's, under any mode
+//!              after: each policy's effect  down, an exemption of it starts or a    bindings that carried what
+//!              (Catalog::effective_in),     binding of it is suspended; tightens    was lowered, temporary ones
+//!              the bindings suspended and   when one goes up or an exemption ends   included; of an exempted
+//!              the exemptions in effect     (rule_moves)                            one, its author and every
+//!                                                                                   binding's in the catalog,
+//!                                                                                   under any mode; of a
+//!                                                                                   suspended binding, its own
 //! ModeCheck    Mode { before, after }       loosens when a policy that reads a      each policy that loosens
 //!                                           mode with ModeIs sees it left, or
 //!                                           entered where its direction cannot
@@ -27,34 +30,49 @@
 //!
 //! The move of a state atom is looked at by one check: [`ModeCheck`] the mode as rules read it
 //! with `ModeIs`, [`SlotCheck`] a slot, [`SpawnCheck`] the actor. How the rules take effect, the
-//! strength of each policy and the exemptions in effect, is [`RuleCheck`]'s, which compares the
-//! whole state before and after, once per claim, whichever [`StateChange`] moved it (a mode switch,
-//! an exemption added or ended). All four are applied to every claim ([`super::TxPolicy`] cannot
-//! leave one out). What a policy reads, a slot, a mode or an actor, is the catalog's one value of
-//! it, the same one [`Catalog::accept`] checks references with. A check names the authors;
-//! whether the claim's author may loosen their rules is the floor's question, not the check's.
+//! strength of each policy, the bindings suspended and the exemptions in effect, is
+//! [`RuleCheck`]'s, which compares the whole state before and after, once per claim, whichever
+//! [`StateChange`] moved it (a mode switch, a temporary adjustment added, used up, run out or
+//! cancelled). All four are applied to every claim ([`super::TxPolicy`] cannot leave one out).
+//! What a policy reads, a slot, a mode or an actor, is the catalog's one value of it, the same one
+//! [`Catalog::accept`] checks references with. A check names the authors; whether the claim's
+//! author may loosen their rules is the floor's question, not the check's.
 //!
 //! # How the rules move
 //!
-//! `rule_moves` is the one answer to how the rules take effect differently between two points,
-//! each a catalog, a mode and the exemptions in effect. [`RuleCheck`] reads it for a claim (one
-//! catalog, the state before and after), and [`Catalog::change`] reads it for a change of the
-//! catalog (two catalogs, under each compared mode, with no exemption).
+//! `rule_moves` is the one answer to how the rules take effect differently between two points.
+//! [`RuleCheck`] reads it for a claim (one catalog, the state before and after, each with its
+//! temporary adjustments), and [`Catalog::change`] reads it for a change of the catalog (two
+//! catalogs, under each compared mode, with no temporary adjustment).
 //!
-//! - A policy goes down when its effect ([`Catalog::effective`], by the order of
-//!   [`Effect`]) is lower after than before. The authors asked are
-//!   those of the bindings, in the catalog before, that held or may have held before
-//!   ([`ModeScope::holds`] not false) and are stronger than the effect after: the bindings that
-//!   carried the strength that was lost, and no others.
-//! - An exemption starts for each one held after and not before, counted one by one, so an
+//! - A policy goes down when its effect ([`Catalog::effective`] for a catalog alone,
+//!   [`Catalog::effective_in`] for a state, by the order of [`Effect`]) is lower after than
+//!   before. The authors asked are those of the bindings in effect before (in the catalog and not
+//!   suspended, and those the temporary adjustments add, by the one who made each) that held or
+//!   may have held before ([`ModeScope::holds`] not false) and are stronger than the effect
+//!   after: the bindings that carried the strength that was lost, and no others. So cancelling
+//!   another's raise asks the one who raised.
+//! - An exemption starts for each one held after and not before, told apart by its id, so an
 //!   exemption beside a narrower one of the same guard is still one that starts. The authors
-//!   asked are the guard's author and the author of every binding of it, under any mode: an
-//!   exemption reaches the guard whatever the mode becomes, so one placed while the guard is off
-//!   under the mode still needs those whose bindings turn it on elsewhere.
-//! - A policy that goes up, and an exemption that ends, tighten.
+//!   asked are the guard's author and the author of every binding of it in the catalog under any
+//!   mode: an exemption reaches the guard whatever the mode becomes, so one placed while the guard
+//!   is off under the mode still needs those whose bindings turn it on elsewhere. A temporary
+//!   binding of the guard is by the guard's author or one below it ([`super::super::adjust`]),
+//!   so whoever covers the guard's author covers it, and it adds no one.
+//! - A binding of the catalog is suspended for each one that an adjustment which starts suspends,
+//!   and that asks the binding's author whether or not the policy goes down. Otherwise one could
+//!   hide the loss with an equal temporary binding of one's own, suspend another's binding, and
+//!   later cancel one's own: the same rule as a binding kept by [`Catalog::change`]. This holds
+//!   under the mark of a lost adjustment too, where the suspension changes no effect.
+//! - A policy that goes up, and an exemption that ends, tighten. A suspension that ends is judged
+//!   by the result alone. A cancel is no move of its own: it is judged by what ending the
+//!   adjustment moves, so cancelling a lowering or an exemption tightens and is open to anyone.
+//!   So is a claim that closes the scope an adjustment lasts within: the point after it is the
+//!   state as the next event finds it, with such adjustments ended.
 //!
-//! A mode that is not known is the strongest side by [`Catalog::effective`] alone, so not knowing
-//! it is never a way to loosen a rule.
+//! A mode that is not known is the strongest side by [`Catalog::effective`] alone, and a lost
+//! record of an adjustment by [`Catalog::effective_in`] alone, so not knowing either is never a
+//! way to loosen a rule.
 //!
 //! # Which way a move of an atom goes
 //!
@@ -129,12 +147,11 @@
 use super::{AdjustmentCheck, CheckFinding, CheckName, Combine, Confidence, FindingDetail};
 use super::{TxDecision, TxInput, Verdict};
 use crate::domain::authority::Principal;
-use crate::domain::catalog::{Catalog, Effect, lowered};
-use crate::domain::exempt::Exempt;
-use crate::domain::name::{Mode, PolicyId};
+use crate::domain::catalog::{Catalog, Effect, Effective, InEffect, lowered};
+use crate::domain::name::{AdjustmentId, BindingId, Mode, PolicyId};
 use crate::domain::policy::ModeScope;
 use crate::domain::predicate::{Reading, Truth};
-use crate::domain::state::{Ancestry, Known, State, StateChange};
+use crate::domain::state::{Ancestry, HeldAdjustment, Known, State, StateChange};
 
 /// The domain's checks, in the order their findings are reported.
 pub(super) fn domain() -> [&'static dyn AdjustmentCheck; 4] {
@@ -293,27 +310,84 @@ pub enum RuleMove {
         /// The guard.
         policy: PolicyId,
     },
+    /// A binding of it is suspended by a temporary adjustment that starts: a loosening as to the
+    /// binding's author, whether or not the policy goes down.
+    Suspended {
+        /// The policy of the binding.
+        policy: PolicyId,
+        /// The binding.
+        binding: BindingId,
+        /// The binding's author.
+        authors: Vec<Principal>,
+    },
 }
 
-/// One point the rules are compared at: a catalog, the mode, and the exemptions in effect, each
-/// one as many times as it is held.
+/// One point the rules are compared at.
 #[derive(Debug, Clone, Copy)]
-pub(in crate::domain) struct Point<'a> {
-    /// The catalog.
-    pub(in crate::domain) catalog: &'a Catalog,
-    /// The mode in effect.
-    pub(in crate::domain) mode: &'a Known<Option<Mode>>,
-    /// The exemptions in effect.
-    pub(in crate::domain) exemptions: &'a [Exempt],
+pub(in crate::domain) enum Point<'a> {
+    /// A catalog alone, under a mode, with no temporary adjustment: a point of a change of the
+    /// catalog.
+    Catalog {
+        /// The catalog.
+        catalog: &'a Catalog,
+        /// The mode.
+        mode: &'a Known<Option<Mode>>,
+    },
+    /// A state of a catalog, its temporary adjustments with it: a point of a claim.
+    State {
+        /// The catalog.
+        catalog: &'a Catalog,
+        /// The state.
+        state: &'a State,
+    },
 }
 
 impl<'a> Point<'a> {
-    /// The point of a state of `catalog`.
-    fn of(catalog: &'a Catalog, state: &'a State) -> Self {
-        Self {
-            catalog,
-            mode: state.mode(),
-            exemptions: state.exemptions(),
+    fn catalog(&self) -> &'a Catalog {
+        match *self {
+            Self::Catalog { catalog, .. } | Self::State { catalog, .. } => catalog,
+        }
+    }
+
+    fn mode(&self) -> &'a Known<Option<Mode>> {
+        match *self {
+            Self::Catalog { mode, .. } => mode,
+            Self::State { state, .. } => state.mode(),
+        }
+    }
+
+    /// What takes effect with `bindings`, this point's [`Point::bindings`]: [`Catalog::effective`]
+    /// for a catalog alone, and [`Catalog::effective_in`] for a state.
+    fn effective(&self, bindings: &[InEffect<'_>]) -> Effective<'a> {
+        match *self {
+            Self::Catalog { catalog, mode } => catalog.effective_with(bindings, mode),
+            Self::State { catalog, state } => catalog.effective_in_with(bindings, state),
+        }
+    }
+
+    /// The bindings in effect, permanent and temporary, each with its author. Made once per
+    /// point, and read for the effect and for the authors of a lowering.
+    fn bindings(&self) -> Vec<InEffect<'a>> {
+        match *self {
+            Self::Catalog { catalog, .. } => catalog.bindings().iter().map(InEffect::of).collect(),
+            Self::State { catalog, state } => catalog.bindings_in(state),
+        }
+    }
+
+    /// The temporary adjustments in effect: none for a catalog alone.
+    fn held(&self) -> &'a [HeldAdjustment] {
+        match *self {
+            Self::Catalog { .. } => &[],
+            Self::State { state, .. } => state.adjustments(),
+        }
+    }
+
+    /// Whether an adjustment in effect has the id ([`State`]'s one answer); none for a catalog
+    /// alone.
+    fn holds(&self, id: AdjustmentId) -> bool {
+        match *self {
+            Self::Catalog { .. } => false,
+            Self::State { state, .. } => state.holds_adjustment(id),
         }
     }
 }
@@ -323,17 +397,18 @@ impl<'a> Point<'a> {
 /// policy missing from either catalog is not compared; its removal or addition is a question of
 /// its own.
 pub(in crate::domain) fn rule_moves(before: &Point<'_>, after: &Point<'_>) -> Vec<RuleMove> {
-    let from = before.catalog.effective(before.mode);
-    let to = after.catalog.effective(after.mode);
+    let carried = before.bindings();
+    let from = before.effective(&carried);
+    let to = after.effective(&after.bindings());
     let mut moves = Vec::new();
     for down in lowered(&from, &to) {
         let mut authors = Vec::new();
-        for b in before.catalog.bindings().iter().filter(|b| {
+        for b in carried.iter().filter(|b| {
             b.policy == down.policy
-                && b.mode.holds(before.mode) != Truth::False
+                && b.mode.holds(before.mode()) != Truth::False
                 && Effect::On(b.level) > down.after
         }) {
-            add_author(&mut authors, &b.author);
+            add_author(&mut authors, b.author);
         }
         moves.push(RuleMove::Lowered {
             policy: down.policy,
@@ -343,28 +418,44 @@ pub(in crate::domain) fn rule_moves(before: &Point<'_>, after: &Point<'_>) -> Ve
     for up in lowered(&to, &from) {
         moves.push(RuleMove::Raised { policy: up.policy });
     }
-    let mut remaining: Vec<&Exempt> = before.exemptions.iter().collect();
-    for exempt in after.exemptions {
-        match remaining.iter().position(|kept| *kept == exempt) {
-            Some(at) => {
-                remaining.remove(at);
+    // The adjustments are told apart by their ids, which are unique among those in effect.
+    for started in after
+        .held()
+        .iter()
+        .filter(|held| !before.holds(held.adjustment.id))
+    {
+        if let Some(guard) = started.adjustment.exempted() {
+            moves.push(RuleMove::Exempted {
+                policy: guard,
+                authors: exemption_authors(after.catalog(), guard),
+            });
+        }
+        for id in started.adjustment.suspended() {
+            if let Some(b) = after.catalog().bindings().iter().find(|b| b.id == *id) {
+                moves.push(RuleMove::Suspended {
+                    policy: b.policy,
+                    binding: b.id,
+                    authors: vec![b.author.clone()],
+                });
             }
-            None => moves.push(RuleMove::Exempted {
-                policy: exempt.guard,
-                authors: exemption_authors(after.catalog, exempt.guard),
-            }),
         }
     }
-    for ended in remaining {
-        moves.push(RuleMove::Unexempted {
-            policy: ended.guard,
-        });
+    for ended in before
+        .held()
+        .iter()
+        .filter(|held| !after.holds(held.adjustment.id))
+    {
+        if let Some(guard) = ended.adjustment.exempted() {
+            moves.push(RuleMove::Unexempted { policy: guard });
+        }
     }
     moves
 }
 
-/// Who an exemption of `guard` asks: the guard's author, and the author of every binding of it,
-/// whatever its mode scope.
+/// Who an exemption of `guard` asks: the guard's author, and the author of every binding of it in
+/// the catalog, whatever its mode scope. A temporary binding of it is by the guard's author or
+/// one below it ([`crate::domain::authority::Authority::within`]), so whoever covers the guard's
+/// author covers that one too.
 fn exemption_authors(catalog: &Catalog, guard: PolicyId) -> Vec<Principal> {
     let mut authors = authors_of(catalog, &[guard]);
     for b in catalog.bindings().iter().filter(|b| b.policy == guard) {
@@ -379,13 +470,15 @@ pub(in crate::domain) fn rules_verdict(readers: &[&Catalog], moves: Vec<RuleMove
     let moved: Vec<Moved> = moves
         .iter()
         .map(|m| match m {
-            RuleMove::Lowered { policy, authors } | RuleMove::Exempted { policy, authors } => {
-                Moved {
-                    policy: *policy,
-                    direction: Direction::Loosens,
-                    authors: authors.clone(),
-                }
-            }
+            RuleMove::Lowered { policy, authors }
+            | RuleMove::Exempted { policy, authors }
+            | RuleMove::Suspended {
+                policy, authors, ..
+            } => Moved {
+                policy: *policy,
+                direction: Direction::Loosens,
+                authors: authors.clone(),
+            },
             RuleMove::Raised { policy } | RuleMove::Unexempted { policy } => Moved {
                 policy: *policy,
                 direction: Direction::Tightens,
@@ -406,21 +499,37 @@ pub(in crate::domain) fn rules_verdict(readers: &[&Catalog], moves: Vec<RuleMove
     })
 }
 
-/// How the rules take effect, before and after the claim: each policy's effect and the exemptions
-/// in effect, read from the whole state by `rule_moves`, once per claim, whatever moved them.
-/// No finding when nothing moves.
+/// How the rules take effect, before and after the claim: each policy's effect
+/// ([`Catalog::effective_in`]), the bindings suspended and the exemptions in effect, read from the
+/// whole state by `rule_moves`, once per claim, whatever moved them. No finding when nothing
+/// moves.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RuleCheck;
 
 impl AdjustmentCheck for RuleCheck {
     fn judge(&self, input: &TxInput<'_>) -> Vec<CheckFinding> {
-        let before = Point::of(input.catalog, input.before);
-        let after = Point::of(input.catalog, input.after);
-        // One catalog: the rules move only with the mode or the exemptions. Most claims, a record
-        // of a judgment among them, move neither, and need no catalog computed.
-        if before.mode == after.mode && before.exemptions == after.exemptions {
+        // The state after, as the next event finds it: an adjustment that lasts within a scope the
+        // claim closes ends with the claim, so its end is the claim's result.
+        let ended = input.after.with_closed_scopes_ended();
+        let (was, is) = (input.before, &*ended);
+        // One catalog: the rules move only with the mode or the temporary adjustments. Most
+        // claims, a record of a judgment among them, move neither, and need no catalog computed.
+        let same_adjustments = was
+            .adjustments()
+            .iter()
+            .map(|h| h.adjustment.id)
+            .eq(is.adjustments().iter().map(|h| h.adjustment.id));
+        if was.mode() == is.mode()
+            && was.adjustments_lost() == is.adjustments_lost()
+            && same_adjustments
+        {
             return Vec::new();
         }
+        let point = |state| Point::State {
+            catalog: input.catalog,
+            state,
+        };
+        let (before, after) = (point(was), point(is));
         let moves = rule_moves(&before, &after);
         if moves.is_empty() {
             return Vec::new();
@@ -443,8 +552,8 @@ impl AdjustmentCheck for ModeCheck {
             .filter_map(|change| match change {
                 StateChange::Mode { before, after } => Some(mode_verdict(input, before, after)),
                 StateChange::Slot(_)
-                | StateChange::ExemptionAdded(_)
-                | StateChange::ExemptionEnded(_)
+                | StateChange::AdjustmentAdded(_)
+                | StateChange::AdjustmentEnded(_)
                 | StateChange::ActorAdded { .. } => None,
             })
             .map(|verdict| finding("mode", verdict))
@@ -516,8 +625,8 @@ impl AdjustmentCheck for SlotCheck {
                     })
                 }
                 StateChange::Mode { .. }
-                | StateChange::ExemptionAdded(_)
-                | StateChange::ExemptionEnded(_)
+                | StateChange::AdjustmentAdded(_)
+                | StateChange::AdjustmentEnded(_)
                 | StateChange::ActorAdded { .. } => None,
             })
             .map(|verdict| finding("slot", verdict))
@@ -541,8 +650,8 @@ impl AdjustmentCheck for SpawnCheck {
                 }
                 StateChange::Slot(_)
                 | StateChange::Mode { .. }
-                | StateChange::ExemptionAdded(_)
-                | StateChange::ExemptionEnded(_) => None,
+                | StateChange::AdjustmentAdded(_)
+                | StateChange::AdjustmentEnded(_) => None,
             })
             .map(|verdict| finding("spawn", verdict))
             .collect()

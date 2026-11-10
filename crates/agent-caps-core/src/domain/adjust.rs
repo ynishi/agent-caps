@@ -1,0 +1,450 @@
+//! A temporary adjustment: what it changes, for how long, and whether it may take effect.
+//!
+//! ```text
+//! Adjustment { id, change: Temporary, lifetime, reason }
+//!   Temporary::Exempt { guard, cover }   the guard does not judge the events the cover covers
+//!   Temporary::Rebind { add, suspend }   bindings added (under every mode) and bindings of the
+//!                                        catalog suspended, on every event
+//! Body::Adjust(Adjustment)               held from then on, while its lifetime lasts
+//! Body::Cancel { id }                    the adjustment in effect with that id ends
+//! ```
+//!
+//! An adjustment has two axes and no list of grains: what it changes and how long it lasts
+//! ([`Lifetime`]). Every adjustment ends; one that should outlive the session is not an adjustment
+//! but a permanent binding in the catalog, so a lasting exception is always a visible change to
+//! the rules. A raise for a while is a Force binding added; a lowering for a while is a Force
+//! binding suspended with an Advise binding added, in one adjustment.
+//!
+//! An adjustment and a cancel are claims, judged by their result alone ([`super::tx`]): what
+//! lowers a policy asks the authors of the bindings that carried what it lost (a temporary binding
+//! by the one who made the adjustment), an exemption that starts asks the guard's author and the
+//! author of every binding of it in the catalog, and a binding suspended asks its author whether
+//! or not the policy goes down. So cancelling a raise is a loosening, of the one who raised;
+//! cancelling a lowering or an exemption tightens, and is open to anyone. A temporary binding is
+//! by the guard's author or one below it (see below), so whoever covers the guard's author covers
+//! it too, and need not be asked of it.
+//!
+//! # Whether an adjustment may take effect
+//!
+//! Whether one may take effect at all, whoever makes it, is decided in one place, the index the
+//! catalog builds (`AdjustIndex::admits`), which the state's fold and the transaction both read
+//! through [`super::state`]. One that it refuses takes no effect: its transaction is aborted and
+//! reports why ([`Inadmissible`]). It refuses an adjustment
+//!
+//! - whose id is held by an adjustment in effect;
+//! - that names a policy or a binding the catalog does not have;
+//! - that names a meta policy or a binding of one: a meta policy is the target of no adjustment;
+//! - an exemption of a policy that is not a guard, or whose cover does not read as a predicate on
+//!   the guard's event would;
+//! - whose lifetime has run out by the time of its claim;
+//! - with a temporary binding stronger than one can be (see below), by the rule a binding of the
+//!   catalog keeps too (`may_bind_at`);
+//! - with a temporary binding whose maker is not within the work of the policy's author: one of
+//!   the hierarchy, the author or below it ([`Authority::within`], the same answer a binding of
+//!   the catalog is held to). One outside the hierarchy, a leaf a spawn added, one beside the
+//!   author or above it cannot bind the policy, so nobody is left with a binding that its
+//!   author's superiors cannot loosen;
+//! - a rebinding that lasts for the next judgment: a policy that a rebinding turns off writes no
+//!   record of a judgment, so the lifetime would never end;
+//! - a rebinding that neither adds nor suspends anything;
+//! - whose lifetime lasts within a `Since` scope whose filter does not read as a predicate would.
+//!
+//! A cancel of an id that no adjustment in effect has is refused too
+//! ([`Inadmissible::NotHeld`]).
+//!
+//! The strongest a temporary binding can make a policy is one value per policy, decided here
+//! (`Reach::ceiling`): Force for a guard with a fixture it fails on and one it holds on (so a
+//! stopping guard is always one that was checked on an example), Advise for any other guard and
+//! for a reward, and nothing for a meta policy. The same value is what a lost record of an
+//! adjustment makes each policy ([`super::catalog::Catalog::effective_in`]).
+
+use std::fmt;
+
+use super::authority::{Authority, NotWithin, Principal};
+use super::name::{AdjustmentId, BindingId, PolicyId, Reason};
+use super::predicate::{Cond, PredError, Scope};
+use super::schema::{At, EventKind, Level};
+
+/// How long an adjustment lasts.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Lifetime {
+    /// The next judgment it covers, and no more: the record of the
+    /// [`super::schema::Judgment::Exempted`] judgment uses it up. An exemption only.
+    Next,
+    /// Until the scope starts again. Within [`Scope::Since`], until the event after the one the
+    /// filter matched: that event is judged with the adjustment still in effect.
+    Within(Scope),
+    /// Until the instant, compared with the time of the judged event.
+    Until(At),
+}
+
+impl Lifetime {
+    /// Whether the lifetime has not run out by the time of an event at `at`. Only `Until` ends by
+    /// time; `Next` ends when it is used and `Within` when its scope starts again, both in the
+    /// fold of the state.
+    pub(super) fn lasts_at(&self, at: At) -> bool {
+        match self {
+            Self::Until(until) => at < *until,
+            Self::Next | Self::Within(_) => true,
+        }
+    }
+}
+
+/// A binding added for a while: the policy takes effect at least at the level, under every mode,
+/// by the one who made the adjustment.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemporaryBinding {
+    /// The policy it puts into effect.
+    pub policy: PolicyId,
+    /// The level.
+    pub level: Level,
+}
+
+/// What a temporary adjustment changes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Temporary {
+    /// The guard does not judge the events the cover covers. It does not change the strength the
+    /// guard takes effect at.
+    Exempt {
+        /// The guard it exempts from.
+        guard: PolicyId,
+        /// The events it covers, read on the judged event; `None` covers every event the guard
+        /// judges. A cover that reads as unknown does not cover the event.
+        cover: Option<Cond>,
+    },
+    /// Bindings added and bindings of the catalog suspended, on every event (there is no cover).
+    Rebind {
+        /// The bindings added, each under every mode.
+        add: Vec<TemporaryBinding>,
+        /// The bindings of the catalog that do not hold while it lasts.
+        suspend: Vec<BindingId>,
+    },
+}
+
+/// One temporary adjustment, as a claim states it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Adjustment {
+    /// Its id, which a cancel names.
+    pub id: AdjustmentId,
+    /// What it changes.
+    pub change: Temporary,
+    /// How long it lasts.
+    pub lifetime: Lifetime,
+    /// Why it was made.
+    pub reason: Reason,
+}
+
+impl Adjustment {
+    /// The guard it exempts from, when it is an exemption.
+    pub(super) fn exempted(&self) -> Option<PolicyId> {
+        match &self.change {
+            Temporary::Exempt { guard, .. } => Some(*guard),
+            Temporary::Rebind { .. } => None,
+        }
+    }
+
+    /// The bindings it adds, none for an exemption.
+    pub(super) fn added(&self) -> &[TemporaryBinding] {
+        match &self.change {
+            Temporary::Rebind { add, .. } => add,
+            Temporary::Exempt { .. } => &[],
+        }
+    }
+
+    /// The bindings it suspends, none for an exemption.
+    pub(super) fn suspended(&self) -> &[BindingId] {
+        match &self.change {
+            Temporary::Rebind { suspend, .. } => suspend,
+            Temporary::Exempt { .. } => &[],
+        }
+    }
+}
+
+/// What an adjustment may do to a policy, by what the policy is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Reach {
+    /// A meta policy: nothing.
+    Meta,
+    /// A guard, with the kind of event it judges and whether it has a fixture it fails on and one
+    /// it holds on.
+    Guard {
+        /// The kind of event it judges, which an exemption's cover is read from.
+        subject: EventKind,
+        /// Whether it has the fixtures a stopping guard needs.
+        stops: bool,
+    },
+    /// A reward.
+    Reward,
+}
+
+/// What a policy is, as to the level a binding of it may have: the one fact the rule of
+/// [`may_bind_at`] reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BoundKind {
+    /// A guard, and whether it has a fixture it fails on and one it holds on.
+    Guard {
+        /// Whether it has the fixtures a stopping guard needs.
+        stops: bool,
+    },
+    /// A reward.
+    Reward,
+}
+
+/// Why a binding of a policy may not be at a level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TooStrong {
+    /// A reward at Force: a recommendation cannot stop.
+    RewardForce,
+    /// A guard at Force that lacks a fixture it fails on or one it holds on.
+    MissingFixtures,
+}
+
+/// Whether a binding of a policy of `kind` may be at `level`: no reward at Force, and a guard at
+/// Force only with the fixtures of a stopping guard (so a stopping guard was always checked on an
+/// example). The one answer, read by `Catalog::accept` for a binding of the catalog and by
+/// [`AdjustIndex::admits`] for a temporary one; whether the policy may be bound at all (a meta
+/// policy) is each caller's own question.
+pub(super) fn may_bind_at(kind: BoundKind, level: Level) -> Result<(), TooStrong> {
+    match kind {
+        _ if !level.stops() => Ok(()),
+        BoundKind::Reward => Err(TooStrong::RewardForce),
+        BoundKind::Guard { stops: false } => Err(TooStrong::MissingFixtures),
+        BoundKind::Guard { stops: true } => Ok(()),
+    }
+}
+
+impl Reach {
+    /// The strongest level a temporary binding can give a policy of this reach: Force for a guard
+    /// with the fixtures a stopping guard needs, Advise for any other guard and for a reward, and
+    /// `None` for a meta policy.
+    fn ceiling(self) -> Option<Level> {
+        match self {
+            Self::Meta => None,
+            Self::Guard { stops: true, .. } => Some(Level::Force),
+            Self::Guard { stops: false, .. } | Self::Reward => Some(Level::Advise),
+        }
+    }
+}
+
+/// Why a claimed adjustment, or a cancel, cannot take effect, whoever makes it. Its transaction
+/// is aborted and reports this ([`super::tx::TxReport::inadmissible`]), so the one who claimed it
+/// learns that it did not take effect, and why.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Inadmissible {
+    /// An adjustment in effect has the id.
+    DuplicateId(AdjustmentId),
+    /// Its lifetime has run out by the time of its claim (an `Until` at or before it).
+    Expired,
+    /// The catalog has no policy with the id.
+    UnknownPolicy(PolicyId),
+    /// The catalog has no binding with the id.
+    UnknownBinding(BindingId),
+    /// The policy, or the policy of a suspended binding, is of the meta layer.
+    Meta(PolicyId),
+    /// The exemption names a policy that is not a guard.
+    NotAGuard(PolicyId),
+    /// The exemption's cover does not read as a predicate on the guard's event would.
+    ExemptionError(Vec<PredError>),
+    /// A temporary binding puts the reward into effect at Force.
+    RewardForce(PolicyId),
+    /// A temporary binding puts the guard into effect at Force, and the guard lacks a fixture it
+    /// fails on or one it holds on.
+    MissingFixtures(PolicyId),
+    /// A rebinding lasts for the next judgment, which a policy it turns off would never record.
+    NextOnRebind,
+    /// The filter of a `Within(Since(..))` lifetime does not read as a predicate would.
+    SinceFilterError(Vec<PredError>),
+    /// A rebinding adds nothing and suspends nothing.
+    Empty,
+    /// The one who makes a temporary binding is not in the hierarchy (one outside it, or a leaf a
+    /// spawn added).
+    AuthorUnknown(Principal),
+    /// The one who makes a temporary binding is neither the policy's author nor below it.
+    AuthorAbove {
+        /// The policy.
+        policy: PolicyId,
+        /// The one who makes the binding.
+        author: Principal,
+    },
+    /// A cancel names an id that no adjustment in effect has.
+    NotHeld(AdjustmentId),
+}
+
+impl fmt::Display for Inadmissible {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let errors = |f: &mut fmt::Formatter<'_>, errors: &[PredError]| {
+            errors.iter().try_for_each(|e| write!(f, "; {e}"))
+        };
+        match self {
+            Self::DuplicateId(id) => write!(f, "an adjustment in effect has the id {id}"),
+            Self::Expired => f.write_str("its lifetime ran out by the time of its claim"),
+            Self::UnknownPolicy(id) => write!(f, "no policy {id}"),
+            Self::UnknownBinding(id) => write!(f, "no binding {id}"),
+            Self::Meta(id) => write!(f, "{id} is a meta policy"),
+            Self::NotAGuard(id) => write!(f, "{id} is not a guard"),
+            Self::ExemptionError(e) => {
+                f.write_str("the cover does not type-check")?;
+                errors(f, e)
+            }
+            Self::RewardForce(id) => write!(f, "a temporary binding gives the reward {id} Force"),
+            Self::MissingFixtures(id) => write!(
+                f,
+                "a temporary binding makes {id} stop, and it lacks the fixtures of a stopping guard"
+            ),
+            Self::NextOnRebind => f.write_str("a rebinding cannot last for the next judgment"),
+            Self::SinceFilterError(e) => {
+                f.write_str("the filter of the lifetime does not type-check")?;
+                errors(f, e)
+            }
+            Self::Empty => f.write_str("the rebinding adds and suspends nothing"),
+            Self::AuthorUnknown(p) => write!(f, "{p} is not in the hierarchy"),
+            Self::AuthorAbove { policy, author } => {
+                write!(f, "{author} is neither the author of {policy} nor below it")
+            }
+            Self::NotHeld(id) => write!(f, "no adjustment in effect has the id {id}"),
+        }
+    }
+}
+
+impl std::error::Error for Inadmissible {}
+
+/// What the catalog tells about its policies and bindings for adjustments: the one place that
+/// decides whether an adjustment may take effect, and the strongest a temporary binding can make
+/// each policy. Built by the catalog when it is accepted.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(super) struct AdjustIndex {
+    /// Each policy with its reach and its author.
+    policies: Vec<(PolicyId, Reach, Principal)>,
+    /// Each binding of the catalog, with its policy.
+    bindings: Vec<(BindingId, PolicyId)>,
+}
+
+impl AdjustIndex {
+    /// The index of the policies, each with its reach and author, and of the bindings, each with
+    /// its policy.
+    pub(super) fn new(
+        policies: impl IntoIterator<Item = (PolicyId, Reach, Principal)>,
+        bindings: impl IntoIterator<Item = (BindingId, PolicyId)>,
+    ) -> Self {
+        Self {
+            policies: policies.into_iter().collect(),
+            bindings: bindings.into_iter().collect(),
+        }
+    }
+
+    fn policy(&self, policy: PolicyId) -> Option<(Reach, &Principal)> {
+        self.policies
+            .iter()
+            .find(|(id, _, _)| *id == policy)
+            .map(|(_, reach, author)| (*reach, author))
+    }
+
+    fn reach(&self, policy: PolicyId) -> Option<Reach> {
+        self.policy(policy).map(|(reach, _)| reach)
+    }
+
+    /// Each policy outside the meta layer with the strongest level a temporary binding can give it
+    /// ([`Reach::ceiling`]) and its author, in the catalog's order: what a lost record of an
+    /// adjustment may have bound.
+    pub(super) fn ceilings(&self) -> impl Iterator<Item = (PolicyId, Level, &Principal)> {
+        self.policies
+            .iter()
+            .filter_map(|(id, reach, author)| reach.ceiling().map(|level| (*id, level, author)))
+    }
+
+    /// Whether `adjustment`, made by `by`, may take effect, while `held` says which ids the
+    /// adjustments in effect have: see the module doc. `by` is read only as the author of the
+    /// bindings it adds, which must be within the policy's author's work by `authority`
+    /// ([`Authority::within`], the answer a binding of the catalog is held to); who may loosen
+    /// what is the transaction's floor, not this.
+    pub(super) fn admits(
+        &self,
+        adjustment: &Adjustment,
+        by: &Principal,
+        at: At,
+        authority: &Authority,
+        held: impl Fn(AdjustmentId) -> bool,
+    ) -> Result<(), Inadmissible> {
+        if held(adjustment.id) {
+            return Err(Inadmissible::DuplicateId(adjustment.id));
+        }
+        // One that has run out by the time of its claim would be dropped in the same step.
+        if !adjustment.lifetime.lasts_at(at) {
+            return Err(Inadmissible::Expired);
+        }
+        if let Lifetime::Within(Scope::Since(filter)) = &adjustment.lifetime {
+            let errors = filter.check();
+            if !errors.is_empty() {
+                return Err(Inadmissible::SinceFilterError(errors));
+            }
+        }
+        match &adjustment.change {
+            Temporary::Exempt { guard, cover } => match self.reach(*guard) {
+                None => Err(Inadmissible::UnknownPolicy(*guard)),
+                Some(Reach::Meta) => Err(Inadmissible::Meta(*guard)),
+                Some(Reach::Reward) => Err(Inadmissible::NotAGuard(*guard)),
+                Some(Reach::Guard { subject, .. }) => {
+                    let errors = cover
+                        .as_ref()
+                        .map_or_else(Vec::new, |cover| cover.check(subject));
+                    if errors.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(Inadmissible::ExemptionError(errors))
+                    }
+                }
+            },
+            Temporary::Rebind { add, suspend } => {
+                if add.is_empty() && suspend.is_empty() {
+                    return Err(Inadmissible::Empty);
+                }
+                if adjustment.lifetime == Lifetime::Next {
+                    return Err(Inadmissible::NextOnRebind);
+                }
+                for binding in add {
+                    self.bindable(binding, by, authority)?;
+                }
+                for id in suspend {
+                    let Some((_, policy)) = self.bindings.iter().find(|(b, _)| b == id) else {
+                        return Err(Inadmissible::UnknownBinding(*id));
+                    };
+                    if self.reach(*policy) == Some(Reach::Meta) {
+                        return Err(Inadmissible::Meta(*policy));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Whether `by` may add the temporary binding: its policy is of the catalog and not of the
+    /// meta layer, its level is no stronger than [`Reach::ceiling`], and `by` is within the
+    /// work of the policy's author.
+    fn bindable(
+        &self,
+        binding: &TemporaryBinding,
+        by: &Principal,
+        authority: &Authority,
+    ) -> Result<(), Inadmissible> {
+        let policy = binding.policy;
+        let Some((reach, owner)) = self.policy(policy) else {
+            return Err(Inadmissible::UnknownPolicy(policy));
+        };
+        let kind = match reach {
+            Reach::Meta => return Err(Inadmissible::Meta(policy)),
+            Reach::Guard { stops, .. } => BoundKind::Guard { stops },
+            Reach::Reward => BoundKind::Reward,
+        };
+        may_bind_at(kind, binding.level).map_err(|e| match e {
+            TooStrong::RewardForce => Inadmissible::RewardForce(policy),
+            TooStrong::MissingFixtures => Inadmissible::MissingFixtures(policy),
+        })?;
+        authority.within(by, owner).map_err(|e| match e {
+            NotWithin::UnknownPrincipal(p) => Inadmissible::AuthorUnknown(p),
+            NotWithin::NotBelow { principal, .. } => Inadmissible::AuthorAbove {
+                policy,
+                author: principal,
+            },
+        })
+    }
+}

@@ -108,7 +108,10 @@
 //! - [`domain::change`]: whether one who changes a catalog may, judged by the difference.
 //! - [`domain::predicate`]: the structural rule language.
 //! - [`domain::event`] and [`domain::schema`]: what happened, and the fields a rule can read.
-//! - [`domain::state`]: the fold of the events a judgment reads.
+//! - [`domain::adjust`]: temporary adjustments (exemptions, bindings added and suspended for a
+//!   while) and whether one may take effect.
+//! - [`domain::state`]: the fold of the events a judgment reads, the adjustments in effect among
+//!   it.
 //! - [`domain::tx`]: how a claim takes effect, as a transaction judged by the difference it makes.
 //! - [`domain::judge`]: the verdict of one event.
 //! - [`_requirements`]: the ledger of use cases, principles and functional requirements.
@@ -125,7 +128,8 @@
 //! # Security
 //!
 //! A policy graph is trusted as the user's own rules once it is accepted. Events are not: a claim
-//! (a mode switch, an exemption, a record of a judgment or a score) that loosens a rule takes
+//! (a mode switch, a temporary adjustment or its cancel, a record of a judgment or a score) that
+//! loosens a rule takes
 //! effect only from one who covers the rule's author in the hierarchy the caller gives, and a
 //! record that cannot be read never loosens a rule. That an act (a tool use, the end of a turn)
 //! really happened on the platform is the adapter's guarantee, since nobody can forge it by

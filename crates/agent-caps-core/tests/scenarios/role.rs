@@ -16,10 +16,10 @@
 //! What cannot be written now (FR39): a rule that counts the events of one actor since it was
 //! spawned. The scope of an agent was removed with the event that started it.
 
+use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::authority::{NotCovered, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Catalog};
 use agent_caps_core::domain::event::{Body, Event};
-use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::GlobPattern;
 use agent_caps_core::domain::policy::{DefLayer, Expect, Level, Polarity, PolicyDef, Rule};
@@ -30,9 +30,9 @@ use agent_caps_core::domain::tx::{
 };
 
 use super::common::{
-    GUARD, OTHER, REWARD, Written, at, catalog, clippy_reward, fixture, id, push_after_allowed,
-    rejected, test_guard, the_agent, the_helper, the_reviewer, the_user, unreadable, verdict,
-    violated, written,
+    GUARD, OTHER, REWARD, Written, at, catalog, clippy_reward, exempt_n, fixture, id,
+    push_after_allowed, rejected, test_guard, the_agent, the_helper, the_reviewer, the_user,
+    unreadable, verdict, violated, written,
 };
 
 /// The event, by the actor.
@@ -496,15 +496,7 @@ fn a_spawned_leaf_cannot_loosen_by_a_claim() {
     let catalog = catalog(vec![reviewer_guard()], vec![]);
     let r1 = leaf("r1");
     let placed = spawn(&the_agent(), &r1, &the_reviewer());
-    let exemption = by(
-        &r1,
-        Body::Exempt(Exempt {
-            guard: id(GUARD),
-            target: None,
-            lifetime: Lifetime::Next,
-            reason: "for now".parse().unwrap(),
-        }),
-    );
+    let exemption = by(&r1, exempt_n(1, GUARD, None, Lifetime::Next));
 
     let report = admit(&catalog, std::slice::from_ref(&placed), &exemption);
     assert_eq!(report.decision, TxDecision::Abort);

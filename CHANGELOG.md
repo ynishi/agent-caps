@@ -116,6 +116,61 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: an exemption is one kind of temporary adjustment, and
+  a temporary adjustment can also add and suspend bindings for a while (#39).
+  The module `domain::exempt` is now `domain::adjust`. `Body::Exempt(Exempt)`
+  is replaced by `Body::Adjust(Adjustment { id: AdjustmentId, change:
+  Temporary, lifetime, reason })`, with `Temporary::Exempt { guard, cover }`
+  (the old `target` is `cover`) or `Temporary::Rebind { add:
+  Vec<TemporaryBinding { policy, level }>, suspend: Vec<BindingId> }`, and
+  `Body::Cancel { id }` ends the adjustment in effect with that id.
+  `EventKind::Exempt` is replaced by `EventKind::Adjust` and
+  `EventKind::Cancel`, both claims. To translate,
+  `Body::Exempt(Exempt { guard, target, lifetime, reason })` becomes
+  `Body::Adjust(Adjustment { id, change: Temporary::Exempt { guard, cover:
+  target }, lifetime, reason })` with an id of the caller's that no
+  adjustment in effect holds; `Exempt::check` is gone (whether one may take
+  effect is decided inside the catalog). `AdjustmentId` (and
+  `NameError::AdjustmentId`) is new. An adjustment or a cancel that cannot
+  take effect, whoever makes it, is aborted, and the new field
+  `TxReport::inadmissible: Option<Inadmissible>` says why: its id is held
+  (`DuplicateId`), its lifetime has run out by the time of its claim
+  (`Expired`), it names a policy or binding the catalog lacks
+  (`UnknownPolicy`, `UnknownBinding`) or one of the meta layer (`Meta`), an
+  exemption names no guard (`NotAGuard`) or its cover does not type-check
+  (`ExemptionError`), a `Since` filter of its lifetime does not type-check
+  (`SinceFilterError`), a temporary binding is Force on a reward
+  (`RewardForce`) or on a guard without the fixtures of a stopping guard
+  (`MissingFixtures`), a rebinding lasts for `Lifetime::Next`
+  (`NextOnRebind`) or changes nothing (`Empty`), the maker of a temporary
+  binding is not in the hierarchy, a spawned leaf included (`AuthorUnknown`),
+  or is neither the policy's author nor below it (`AuthorAbove`), the same
+  rule a binding of the catalog keeps, now asked of both through the new
+  `Authority::within` (with `NotWithin`); a cancel of an id that is not held
+  is `NotHeld`. Code that builds a `TxReport` sets the new field.
+  `StateChange::ExemptionAdded(PolicyId)` and
+  `ExemptionEnded(PolicyId)` are `AdjustmentAdded(AdjustmentId)` and
+  `AdjustmentEnded(AdjustmentId)`. `State::adjustments()` lists the
+  adjustments in effect, each a `HeldAdjustment { by, adjustment }`, and
+  `State::adjustments_lost()` tells whether a record that may have been an
+  adjustment or a cancel was lost. `Catalog::effective_in(&State)` adds the
+  state's adjustments to `Catalog::effective`, and `judge` and the checks of a
+  claim read it; under a lost record of an adjustment no suspension holds and
+  every policy outside the meta layer takes effect at least as strongly as a
+  temporary binding could make it (Force for a guard with stopping fixtures,
+  Advise otherwise). A lost record that may have been a cancel also ends every
+  exemption held. An adjustment and a cancel are judged by their result
+  through `rule_moves`: a temporary binding that carried a lost strength asks
+  the one who made it, so cancelling another's raise asks the raiser; a claim
+  that closes the `Within(Since(..))` scope of an adjustment is judged by that
+  adjustment's end; and the new `RuleMove::Suspended { policy, binding,
+  authors }` asks the suspended binding's author whether or not the policy
+  goes down. An adjustment that runs out by time is not judged: its lifetime
+  is its maker's choice, and event times are the adapter's to give.
+  `Catalog::enforced_in(&State, &Capabilities)` lists what is enforced with
+  the state's adjustments; `Catalog::enforced(mode, caps)` stays the catalog
+  as written. The ledger
+  withdraws P14 for P18 and FR30 and FR32 for FR43; UC6 and UC25 cite FR43.
 - Breaking, before 1.0: a policy holds no strength; a binding does (#39).
   `Binding { id: BindingId, policy, level, mode: ModeScope, author }` puts a
   policy into effect at a level where its scope holds (`ModeScope::Any`,

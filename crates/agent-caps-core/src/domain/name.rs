@@ -1,6 +1,6 @@
 //! The values with a rule of their own that the rest of the domain refers to: the id and name of a
-//! policy, the id of a binding, a mode, the words of a command, a shell pattern and the reason of
-//! an exemption.
+//! policy, the id of a binding and of a temporary adjustment, a mode, the words of a command, a
+//! shell pattern and the reason of an adjustment.
 //!
 //! Each is made only through its constructor, so a value of the type always keeps its rule.
 
@@ -14,6 +14,8 @@ pub enum NameError {
     PolicyId(String),
     /// A binding id that is not a UUID in its hyphenated form.
     BindingId(String),
+    /// An adjustment id that is not a UUID in its hyphenated form.
+    AdjustmentId(String),
     /// A name (of a policy or a mode) that is empty or has a character other than an ASCII
     /// letter, a digit, `-` or `_`.
     Name(String),
@@ -26,7 +28,7 @@ pub enum NameError {
 impl fmt::Display for NameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PolicyId(text) | Self::BindingId(text) => {
+            Self::PolicyId(text) | Self::BindingId(text) | Self::AdjustmentId(text) => {
                 write!(f, "`{text}` is not a hyphenated UUID")
             }
             Self::Name(text) => write!(
@@ -80,6 +82,28 @@ impl FromStr for BindingId {
 }
 
 impl fmt::Display for BindingId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write_uuid(f, self.0)
+    }
+}
+
+/// The surrogate key of a temporary adjustment, unique among the adjustments in effect. The one who
+/// makes the adjustment gives it, so a later claim can cancel that adjustment and no other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AdjustmentId(u128);
+
+impl FromStr for AdjustmentId {
+    type Err = NameError;
+
+    /// Reads the hyphenated form `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, in either case.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        parse_uuid(text)
+            .map(Self)
+            .ok_or_else(|| NameError::AdjustmentId(text.to_owned()))
+    }
+}
+
+impl fmt::Display for AdjustmentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_uuid(f, self.0)
     }

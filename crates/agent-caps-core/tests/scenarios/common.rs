@@ -1,4 +1,5 @@
-//! Helpers shared by the scenarios: ids, events, principals, fixtures, bindings, and the two entry
+//! Helpers shared by the scenarios: ids, events, principals, fixtures, bindings, temporary
+//! adjustments, and the two entry
 //! points every scenario goes through (`Catalog::accept` for a graph, `Catalog::fold` plus
 //! `judge` for a verdict). Nothing here decides anything the domain decides. A helper that only one
 //! module uses lives in that module.
@@ -9,12 +10,14 @@
 
 use std::ops::{Deref, DerefMut};
 
+use agent_caps_core::domain::adjust::{Adjustment, Lifetime, Temporary};
 use agent_caps_core::domain::authority::{Authority, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Catalog, Effect, Rejected};
 use agent_caps_core::domain::event::{Body, Event};
-use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Outcome, Verdict, judge};
-use agent_caps_core::domain::name::{BindingId, CommandWords, GlobPattern, Mode, PolicyId};
+use agent_caps_core::domain::name::{
+    AdjustmentId, BindingId, CommandWords, GlobPattern, Mode, PolicyId,
+};
 use agent_caps_core::domain::policy::{
     Binding, DefLayer, Expect, Fixture, Level, ModeScope, ModeSet, Polarity, PolicyDef,
     PolicyGraph, Rule,
@@ -248,14 +251,38 @@ pub fn commit_filter(ok_only: bool) -> EventFilter {
     }
 }
 
-/// An exemption from the root for the guard of the scenarios.
-pub fn exemption(target: Option<Cond>, lifetime: Lifetime) -> Event {
-    user(Body::Exempt(Exempt {
-        guard: id(GUARD),
-        target,
+/// The id of the `n`th temporary adjustment of a scenario.
+pub fn adjustment_id(n: u8) -> AdjustmentId {
+    format!("a{n:07x}-0000-7000-8000-000000000000")
+        .parse()
+        .unwrap()
+}
+
+/// The `n`th temporary adjustment, changing `change` for the lifetime.
+pub fn adjustment(n: u8, change: Temporary, lifetime: Lifetime) -> Body {
+    Body::Adjust(Adjustment {
+        id: adjustment_id(n),
+        change,
         lifetime,
         reason: "for now".parse().unwrap(),
-    }))
+    })
+}
+
+/// The `n`th temporary adjustment, an exemption of `guard` with the cover, for the lifetime.
+pub fn exempt_n(n: u8, guard: &str, cover: Option<Cond>, lifetime: Lifetime) -> Body {
+    adjustment(
+        n,
+        Temporary::Exempt {
+            guard: id(guard),
+            cover,
+        },
+        lifetime,
+    )
+}
+
+/// An exemption from the root for the guard of the scenarios.
+pub fn exemption(cover: Option<Cond>, lifetime: Lifetime) -> Event {
+    user(exempt_n(1, GUARD, cover, lifetime))
 }
 
 pub fn fixture(name: &str, events: Vec<Event>, expect: Expect) -> Fixture {

@@ -17,27 +17,45 @@
 //!
 //! # How an event is folded
 //!
-//! Folding one event is two steps, and the module knows nothing of who an event comes from:
-//! neither step reads [`Event::by`]. (Evaluating `ActorUnder` reads the `by` of the event being
-//! judged, which is a fact the rule asks for, not a decision about trust.) Whether the step of a
-//! claim is kept is decided by its transaction ([`super::tx`]), which compares the state before
-//! and after the step as a list of [`StateChange`]s.
+//! Folding one event is two steps, and the module decides nothing of trust by who an event comes
+//! from: [`Event::by`] is read only for whether an adjustment may take effect at all, where the
+//! maker of a temporary binding must be within the work of its policy's author, the rule a binding
+//! of the catalog keeps ([`super::adjust`]). A temporary adjustment that is held keeps who made it
+//! ([`HeldAdjustment::by`]), since a binding it adds is that one's, and the transaction asks that
+//! one when the binding is lost; keeping it is a record, not a decision. (Evaluating `ActorUnder`
+//! reads the `by` of the event being judged, which is a fact the rule asks for, not a decision
+//! about trust.) Whether the step of a claim is kept is decided by its transaction
+//! ([`super::tx`]), which compares the state before and after the step as a list of
+//! [`StateChange`]s.
 //!
 //! ```text
 //! carry(at)      what the past brings, whatever the event is
 //!   1. the scopes the previous event closed (kept in the state as `closing`): on true, start
-//!      again (slots to their start values, the exemptions that last within the scope end); on
+//!      again (slots to their start values, the adjustments that last within the scope end); on
 //!      unknown, make the slots of the scope unknown (a `once` that was true too) and end the
-//!      exemptions that last within it
-//!   2. the exemptions whose lifetime ran out by `at` end
+//!      adjustments that last within it
+//!   2. the adjustments whose lifetime ran out by `at` end
 //! step(event)    what the event itself does
 //!   3. `starts_at(event)`, for every scope: true starts it again, unknown is handled as in 1
-//!   4. the event steps every slot, and updates the mode and the exemptions; what a record that
-//!      could not be read may have changed is settled here (see the invariants); an exemption
+//!   4. the event steps every slot, and updates the mode and the adjustments; what a record that
+//!      could not be read may have changed is settled here (see the invariants); an adjustment
 //!      whose lifetime has run out by the time of the event is dropped
-//!   5. `ends_at(event)`, for the scopes of the slots and of the exemptions in effect: a scope
+//!   5. `ends_at(event)`, for the scopes of the slots and of the adjustments in effect: a scope
 //!      that is not false is kept in `closing` with its truth
 //! ```
+//!
+//! An adjustment ([`Body::Adjust`]) is held when the catalog's index admits it
+//! ([`super::adjust`]), with the principal of its event; a cancel ([`Body::Cancel`]) ends the
+//! held adjustment with its id, and one with no such adjustment does nothing; the record of an
+//! [`Judgment::Exempted`] judgment uses up one exemption for the next judgment of that guard.
+//! Whether one may take effect, and why not, is one entry point the transaction reads too
+//! (`State::admits`).
+//!
+//! An adjustment that runs out by time (`Lifetime::Until`) ends in the carry, and no transaction
+//! judges that end: the lifetime is what the one who made the adjustment chose, and the time of an
+//! event is the adapter's to give, as the origin of an act is. The domain takes both as given. An
+//! end that a claim brings about, a cancel or a claim that closes the scope an adjustment lasts
+//! within, is judged by its result.
 //!
 //! Each [`Scope`] answers the two questions of 3 and 5 about an event, each a [`Truth`], and
 //! every scope is folded by this one rule. A claim and an act are stepped by the same rule; a
@@ -52,8 +70,12 @@
 //! - One slot per temporal operator of the catalog's predicates. Each is updated
 //!   from its last value and the new event alone, and goes back to its start value when its
 //!   scope starts again.
-//! - The exemptions in effect. Each lasts only for its lifetime, and only one that names a guard
-//!   of the catalog outside the meta layer, and type-checks against it, is kept.
+//! - The temporary adjustments in effect, each with who made it ([`State::adjustments`]). Each
+//!   lasts only for its lifetime or until it is cancelled, and only one the catalog's index
+//!   admits is kept.
+//! - Whether a record that may have been an adjustment or a cancel was lost. It is kept for the
+//!   whole fold, as the mark of a lost spawn is, and how the rules take effect under it is
+//!   [`super::catalog::Catalog::effective_in`]'s.
 //! - The scopes the last event closed, and whether that is known, until the next event.
 //! - The leaves that spawns added to the hierarchy of actors, each with its place and whether
 //!   that place is known, and whether a record that may have been a spawn was lost.
@@ -90,14 +112,17 @@
 //!   `once` that has seen its event stays known); a `Since` scope whose filter is of the kind
 //!   may have closed, so its slots become unknown before the next event; a mode switch makes the
 //!   mode unknown and the start of the mode's scope unknown; a judgment ends every exemption for
-//!   the next judgment, which it may have used up; an exemption changes nothing, since one that
-//!   was lost can only have loosened. Losing a record never loosens a rule.
+//!   the next judgment, which it may have used up; an adjustment or a cancel sets the mark that
+//!   the temporary adjustments are not known, and a cancel also ends every exemption held, which
+//!   it may have cancelled. Losing a record never loosens a rule.
 //! - The start of a session or a task is assumed not to be lost (a known gap, see [`Scope`]).
 
+use std::borrow::Cow;
+
+use super::adjust::{AdjustIndex, Adjustment, Inadmissible, Lifetime, Temporary};
 use super::authority::{Authority, Principal};
 use super::event::{Body, Event};
-use super::exempt::{Exempt, Lifetime};
-use super::name::{Mode, PolicyId};
+use super::name::{AdjustmentId, Mode, PolicyId};
 use super::policy::ModeScope;
 use super::predicate::{EventFilter, Pred, Scope, Temporal, Truth};
 use super::schema::{At, EventKind, Judgment};
@@ -147,24 +172,14 @@ impl SlotTable {
     }
 }
 
-/// The guards an exemption may name, each with the kind of event it judges: the guards of the
-/// catalog outside the meta layer.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub(super) struct GuardIndex(Vec<(PolicyId, EventKind)>);
-
-impl GuardIndex {
-    /// The index of the guards, each with its subject.
-    pub(super) fn new(guards: impl IntoIterator<Item = (PolicyId, EventKind)>) -> Self {
-        Self(guards.into_iter().collect())
-    }
-
-    /// The subject of the guard, or `None` when an exemption may not name it.
-    fn subject(&self, guard: PolicyId) -> Option<EventKind> {
-        self.0
-            .iter()
-            .find(|(id, _)| *id == guard)
-            .map(|(_, subject)| *subject)
-    }
+/// A temporary adjustment in effect, with the principal whose claim made it: the author of the
+/// bindings it adds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeldAdjustment {
+    /// Who made it.
+    pub by: Principal,
+    /// The adjustment.
+    pub adjustment: Adjustment,
 }
 
 /// One difference between a state and the state after one step: what the transaction of a claim
@@ -173,10 +188,10 @@ impl GuardIndex {
 pub enum StateChange {
     /// The slot's value changed, or whether its scope closes on the event did.
     Slot(SlotId),
-    /// An exemption of the guard was added.
-    ExemptionAdded(PolicyId),
-    /// An exemption of the guard ended.
-    ExemptionEnded(PolicyId),
+    /// The temporary adjustment was added.
+    AdjustmentAdded(AdjustmentId),
+    /// The temporary adjustment ended: cancelled, used up, or at the end of its lifetime.
+    AdjustmentEnded(AdjustmentId),
     /// The mode in effect changed.
     Mode {
         /// The mode before.
@@ -403,7 +418,11 @@ fn reads(temporal: &Temporal, kind: EventKind) -> bool {
 pub struct State {
     mode: Known<Option<Mode>>,
     slots: Vec<Slot>,
-    exempts: Vec<Exempt>,
+    /// The temporary adjustments in effect, in the order they were made.
+    adjustments: Vec<HeldAdjustment>,
+    /// Whether a record that may have been an adjustment or a cancel was lost. Kept for the
+    /// whole fold.
+    adjustments_lost: bool,
     /// The scopes the last event closed, with whether it did: they start again (or become
     /// unknown) before the next event.
     closing: Vec<(Scope, Truth)>,
@@ -458,17 +477,18 @@ pub(super) fn matched(filter: &EventFilter, body: &Body) -> Truth {
         .map_or(Truth::True, |cond| body.holds(cond))
 }
 
-/// The scopes with a fixed start event, which an exemption may last within whether or not a slot
+/// The scopes with a fixed start event, which an adjustment may last within whether or not a slot
 /// counts in them.
 static FIXED_SCOPES: [Scope; 3] = [Scope::Session, Scope::Mode, Scope::Task];
 
 impl State {
-    /// The state before any event: no mode, every slot at its start value, no exemption.
+    /// The state before any event: no mode, every slot at its start value, no adjustment.
     pub(super) fn start(table: &SlotTable) -> Self {
         Self {
             mode: Known::Known(None),
             slots: table.0.iter().map(Slot::start).collect(),
-            exempts: Vec::new(),
+            adjustments: Vec::new(),
+            adjustments_lost: false,
             closing: Vec::new(),
             actors: Actors::default(),
         }
@@ -479,9 +499,45 @@ impl State {
         &self.mode
     }
 
-    /// The exemptions in effect, each one as many times as it is held.
-    pub(super) fn exemptions(&self) -> &[Exempt] {
-        &self.exempts
+    /// The temporary adjustments in effect, in the order they were made, each with who made it:
+    /// what can be seen and cancelled. After a record that may have been an adjustment or a
+    /// cancel was lost, this is what is known of them ([`State::adjustments_lost`]).
+    pub fn adjustments(&self) -> &[HeldAdjustment] {
+        &self.adjustments
+    }
+
+    /// Whether a record that may have been an adjustment or a cancel was lost in the fold, so the
+    /// adjustments in effect are not known. Every rule then takes effect as strongly as a
+    /// temporary binding could make it ([`super::catalog::Catalog::effective_in`]).
+    pub fn adjustments_lost(&self) -> bool {
+        self.adjustments_lost
+    }
+
+    /// Whether an adjustment in effect has the id: the one answer, read by the fold, by whether
+    /// an adjustment or a cancel may take effect, and by the transaction's comparison.
+    pub(super) fn holds_adjustment(&self, id: AdjustmentId) -> bool {
+        self.adjustments.iter().any(|h| h.adjustment.id == id)
+    }
+
+    /// Whether `event` may take effect on this state as an adjustment or a cancel, whoever makes
+    /// it: an adjustment as `index` admits it, made by the event's principal, and a cancel when an
+    /// adjustment in effect has its id. Any other event is not one, and is `Ok`. The one entry
+    /// point the fold and the transaction both read.
+    pub(super) fn admits(
+        &self,
+        event: &Event,
+        index: &AdjustIndex,
+        authority: &Authority,
+    ) -> Result<(), Inadmissible> {
+        match &event.body {
+            Body::Adjust(adjustment) => {
+                index.admits(adjustment, &event.by, event.at, authority, |id| {
+                    self.holds_adjustment(id)
+                })
+            }
+            Body::Cancel { id } if !self.holds_adjustment(*id) => Err(Inadmissible::NotHeld(*id)),
+            _ => Ok(()),
+        }
     }
 
     /// The leaves that spawns added to the hierarchy of actors.
@@ -496,20 +552,20 @@ impl State {
         for (scope, truth) in std::mem::take(&mut self.closing) {
             self.settle(table, &scope, truth);
         }
-        self.exempts.retain(|e| e.lifetime.lasts_at(at));
+        self.adjustments
+            .retain(|held| held.adjustment.lifetime.lasts_at(at));
         self
     }
 
     /// The state after `event`, from a state carried to it: steps 3 to 5 of the module doc.
-    /// `guards` holds the guards an exemption may name: one takes effect only if its guard is
-    /// there and [`Exempt::check`] finds nothing wrong with it. `authority` is the hierarchy the
-    /// catalog was accepted with: a spawn's shape is checked against it, and nothing else of it
-    /// is read here.
+    /// `index` is the catalog's: an adjustment is held only when it admits it. `authority` is the
+    /// hierarchy the catalog was accepted with: a spawn's shape is checked against it, and so is
+    /// the maker of a temporary binding (`AdjustIndex::admits`); nothing else of it is read here.
     pub(super) fn step(
         mut self,
         table: &SlotTable,
         event: &Event,
-        guards: &GuardIndex,
+        index: &AdjustIndex,
         authority: &Authority,
     ) -> Self {
         let body = &event.body;
@@ -548,7 +604,19 @@ impl State {
                     self.mode = Known::Unknown;
                 }
                 if may_have_been.contains(EventKind::Judged) {
-                    self.exempts.retain(|e| e.lifetime != Lifetime::Next);
+                    self.adjustments
+                        .retain(|held| held.adjustment.lifetime != Lifetime::Next);
+                }
+                // It may have cancelled an exemption: ending one only stops a guard from being
+                // skipped. What it may have done to bindings is the mark's.
+                if may_have_been.contains(EventKind::Cancel) {
+                    self.adjustments
+                        .retain(|held| held.adjustment.exempted().is_none());
+                }
+                if may_have_been.contains(EventKind::Adjust)
+                    || may_have_been.contains(EventKind::Cancel)
+                {
+                    self.adjustments_lost = true;
                 }
                 // It may have added a leaf, so the leaves added from now on are of unknown place.
                 if may_have_been.contains(EventKind::Spawn) {
@@ -567,31 +635,32 @@ impl State {
         match body {
             Body::ModeSwitch { to } => self.mode = Known::Known(Some(to.clone())),
             Body::Spawn { child, under } => self.actors.add(child, under, authority),
-            Body::Exempt(exempt)
-                if guards
-                    .subject(exempt.guard)
-                    .is_some_and(|subject| exempt.check(subject).is_empty()) =>
-            {
-                self.exempts.push(exempt.clone());
+            Body::Adjust(adjustment) if self.admits(event, index, authority).is_ok() => {
+                self.adjustments.push(HeldAdjustment {
+                    by: event.by.clone(),
+                    adjustment: adjustment.clone(),
+                });
             }
+            Body::Cancel { id } => self.adjustments.retain(|held| held.adjustment.id != *id),
             Body::Judged {
                 policy,
                 judgment: Judgment::Exempted,
                 ..
             } => {
-                let used = self
-                    .exempts
-                    .iter()
-                    .position(|e| e.guard == *policy && e.lifetime == Lifetime::Next);
+                let used = self.adjustments.iter().position(|held| {
+                    held.adjustment.exempted() == Some(*policy)
+                        && held.adjustment.lifetime == Lifetime::Next
+                });
                 if let Some(at) = used {
-                    self.exempts.remove(at);
+                    self.adjustments.remove(at);
                 }
             }
             _ => {}
         }
-        // An exemption that has run out by the time of the event, one this event added
+        // An adjustment that has run out by the time of the event, one this event added
         // included, is not in effect on it.
-        self.exempts.retain(|e| e.lifetime.lasts_at(event.at));
+        self.adjustments
+            .retain(|held| held.adjustment.lifetime.lasts_at(event.at));
         // 5. The scopes this event closes, each once.
         let mut closing: Vec<(Scope, Truth)> = Vec::new();
         for scope in self.scopes_in_use(table) {
@@ -605,9 +674,9 @@ impl State {
     }
 
     /// The differences between `before` and `after`, two states of the catalog whose table is
-    /// `table`: each slot whose value, or whose scope's closing, differs; each exemption added or
-    /// ended (an exemption held twice counts twice); the mode, when it differs; and each leaf
-    /// added to the hierarchy of actors.
+    /// `table`: each slot whose value, or whose scope's closing, differs; each adjustment added or
+    /// ended, by its id; the mode, when it differs; and each leaf added to the hierarchy of
+    /// actors.
     pub(super) fn changes(table: &SlotTable, before: &State, after: &State) -> Vec<StateChange> {
         let closing_of = |state: &State, scope: &Scope| {
             state
@@ -627,19 +696,19 @@ impl State {
                 changes.push(StateChange::Slot(SlotId(at)));
             }
         }
-        let mut remaining: Vec<&Exempt> = before.exempts.iter().collect();
-        for exempt in &after.exempts {
-            match remaining.iter().position(|kept| *kept == exempt) {
-                Some(at) => {
-                    remaining.remove(at);
-                }
-                None => changes.push(StateChange::ExemptionAdded(exempt.guard)),
-            }
-        }
+        let ids = |state: &State| -> Vec<AdjustmentId> {
+            state.adjustments.iter().map(|h| h.adjustment.id).collect()
+        };
+        let (was, is) = (ids(before), ids(after));
         changes.extend(
-            remaining
-                .into_iter()
-                .map(|ended| StateChange::ExemptionEnded(ended.guard)),
+            is.iter()
+                .filter(|id| !was.contains(id))
+                .map(|id| StateChange::AdjustmentAdded(*id)),
+        );
+        changes.extend(
+            was.iter()
+                .filter(|id| !is.contains(id))
+                .map(|id| StateChange::AdjustmentEnded(*id)),
         );
         if before.mode != after.mode {
             changes.push(StateChange::Mode {
@@ -656,17 +725,20 @@ impl State {
         changes
     }
 
-    /// The scopes of the slots and of the exemptions in effect, possibly with repeats.
+    /// The scopes of the slots and of the adjustments in effect, possibly with repeats.
     fn scopes_in_use<'a>(&'a self, table: &'a SlotTable) -> impl Iterator<Item = &'a Scope> {
-        let within = self.exempts.iter().filter_map(|e| match &e.lifetime {
-            Lifetime::Within(scope) => Some(scope),
-            Lifetime::Next | Lifetime::Until(_) => None,
-        });
+        let within = self
+            .adjustments
+            .iter()
+            .filter_map(|h| match &h.adjustment.lifetime {
+                Lifetime::Within(scope) => Some(scope),
+                Lifetime::Next | Lifetime::Until(_) => None,
+            });
         table.scopes().chain(within)
     }
 
     /// Acts on `scope` as `truth` says it started again (or closed): true puts its slots back to
-    /// their start values; unknown makes them unknown; either ends the exemptions that last
+    /// their start values; unknown makes them unknown; either ends the adjustments that last
     /// within it.
     fn settle(&mut self, table: &SlotTable, scope: &Scope, truth: Truth) {
         if truth == Truth::False {
@@ -680,19 +752,47 @@ impl State {
                 };
             }
         }
-        self.exempts
-            .retain(|e| !matches!(&e.lifetime, Lifetime::Within(within) if within == scope));
+        self.end_within(scope);
     }
 
-    /// Whether an exemption in effect covers the guard `guard` on `event`.
+    /// Ends the adjustments that last within `scope`.
+    fn end_within(&mut self, scope: &Scope) {
+        self.adjustments.retain(
+            |h| !matches!(&h.adjustment.lifetime, Lifetime::Within(within) if within == scope),
+        );
+    }
+
+    /// The state as the event after this one will find it, as to the adjustments: those that
+    /// last within a scope this event closed, which are still held until the next carry (so that
+    /// the closing event is judged with them), taken out. A claim that closes such a scope ends
+    /// them, and its transaction compares the state before it with this one, so the end is judged
+    /// as the claim's result. Borrowed as it is when no adjustment lasts within a scope this
+    /// event closed, as for most claims, so nothing is cloned for them.
+    pub(super) fn with_closed_scopes_ended(&self) -> Cow<'_, Self> {
+        let closed = |held: &HeldAdjustment| {
+            matches!(&held.adjustment.lifetime, Lifetime::Within(within)
+                if self.closing.iter().any(|(scope, truth)| *truth != Truth::False && scope == within))
+        };
+        if !self.adjustments.iter().any(closed) {
+            return Cow::Borrowed(self);
+        }
+        let mut ended = self.clone();
+        ended.adjustments.retain(|held| !closed(held));
+        Cow::Owned(ended)
+    }
+
+    /// Whether an exemption in effect covers the guard `guard` on `event`: the one place that
+    /// reads an exemption's cover on an event. A cover that reads as unknown does not cover it.
     pub(super) fn exempts(&self, guard: PolicyId, event: &Event) -> bool {
-        self.exempts.iter().any(|e| {
-            let in_time = e.lifetime.lasts_at(event.at);
-            let covers = e
-                .target
+        self.adjustments.iter().any(|h| {
+            let Temporary::Exempt { guard: of, cover } = &h.adjustment.change else {
+                return false;
+            };
+            let in_time = h.adjustment.lifetime.lasts_at(event.at);
+            let covers = cover
                 .as_ref()
-                .is_none_or(|target| event.body.holds(target) == Truth::True);
-            e.guard == guard && in_time && covers
+                .is_none_or(|cover| event.body.holds(cover) == Truth::True);
+            *of == guard && in_time && covers
         })
     }
 

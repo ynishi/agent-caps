@@ -1,10 +1,10 @@
-//! Scenario S3: an exemption covers its target for its lifetime, never a meta guard. It is a
+//! Scenario S3: an exemption covers what its cover covers for its lifetime, never a meta guard. It is a
 //! claim that loosens its guard, so it takes effect only from one who covers the guard's author:
 //! the root exempts any guard, the principal below it its own, and nobody one above its own.
 
+use agent_caps_core::domain::adjust::{Inadmissible, Lifetime};
 use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
-use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict, judge};
 use agent_caps_core::domain::policy::{DefLayer, Level};
 use agent_caps_core::domain::predicate::{Cond, Lit, Scope};
@@ -12,18 +12,13 @@ use agent_caps_core::domain::schema::{At, EventKind, Field};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, OTHER, agent, at, catalog, edit, id, src_edit_guard, test_guard, the_agent, the_helper,
-    the_user, unreadable, user, verdict,
+    GUARD, OTHER, agent, at, catalog, edit, exempt_n, id, src_edit_guard, test_guard, the_agent,
+    the_helper, the_user, unreadable, user, verdict,
 };
 
-/// An exemption of `guard` with no target, for the task.
-fn exempt_for_the_task(guard: &str) -> Body {
-    Body::Exempt(Exempt {
-        guard: id(guard),
-        target: None,
-        lifetime: Lifetime::Within(Scope::Task),
-        reason: "for the task".parse().unwrap(),
-    })
+/// An exemption of `guard` with no cover, for the task; its id is the `n`th.
+fn exempt_for_the_task(n: u8, guard: &str) -> Body {
+    exempt_n(n, guard, None, Lifetime::Within(Scope::Task))
 }
 
 /// FR34, UC6: an exemption from the root covers its target for its lifetime. UC25: one from the
@@ -32,12 +27,12 @@ fn exempt_for_the_task(guard: &str) -> Body {
 fn a_users_exemption_covers_its_target_for_its_lifetime() {
     let catalog = catalog(vec![src_edit_guard()], vec![]);
     let exempt = |lifetime| {
-        Body::Exempt(Exempt {
-            guard: id(GUARD),
-            target: Some(Cond::Eq(Field::Path, Lit::Text("src/a.rs".to_owned()))),
+        exempt_n(
+            1,
+            GUARD,
+            Some(Cond::Eq(Field::Path, Lit::Text("src/a.rs".to_owned()))),
             lifetime,
-            reason: "generated file".parse().unwrap(),
-        })
+        )
     };
     let start = agent(Body::TaskStart);
 
@@ -136,14 +131,7 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
 #[test]
 fn an_exemption_from_the_agent_covers_nothing_whatever_its_lifetime() {
     let catalog = catalog(vec![src_edit_guard()], vec![]);
-    let exempt = |target, lifetime| {
-        Body::Exempt(Exempt {
-            guard: id(GUARD),
-            target,
-            lifetime,
-            reason: "i said so".parse().unwrap(),
-        })
-    };
+    let exempt = |cover, lifetime| exempt_n(1, GUARD, cover, lifetime);
     let start = agent(Body::TaskStart);
     let lifetimes = [
         Lifetime::Next,
@@ -210,27 +198,27 @@ fn a_principal_exempts_the_guards_it_covers_and_no_other() {
 
     // Below the root, its own guard: exempted. The root's: not.
     assert_eq!(
-        judged(vec![agent(exempt_for_the_task(OTHER))]),
+        judged(vec![agent(exempt_for_the_task(2, OTHER))]),
         Verdict::Deny(vec![Cause::Violated(id(GUARD))])
     );
-    assert_eq!(judged(vec![agent(exempt_for_the_task(GUARD))]), both);
+    assert_eq!(judged(vec![agent(exempt_for_the_task(1, GUARD))]), both);
 
     // Below that, the guard of the one above it: not.
     let helper = |body| at(the_helper(), 0, body);
-    assert_eq!(judged(vec![helper(exempt_for_the_task(OTHER))]), both);
+    assert_eq!(judged(vec![helper(exempt_for_the_task(2, OTHER))]), both);
 
     // The root: both.
     assert_eq!(
         judged(vec![
-            user(exempt_for_the_task(GUARD)),
-            user(exempt_for_the_task(OTHER))
+            user(exempt_for_the_task(1, GUARD)),
+            user(exempt_for_the_task(2, OTHER))
         ]),
         Verdict::Allow
     );
 }
 
-/// FR34: an exemption whose `Until` has passed by the time it is claimed adds nothing: the
-/// transaction finds no difference, and nothing is exempted.
+/// FR34, FR43: an exemption whose `Until` has passed by the time it is claimed adds nothing: its
+/// transaction is aborted as expired, with no finding, and nothing is exempted.
 #[test]
 fn an_exemption_claimed_after_its_until_adds_nothing() {
     let catalog = catalog(vec![src_edit_guard()], vec![]);
@@ -238,15 +226,11 @@ fn an_exemption_claimed_after_its_until_adds_nothing() {
     let late = at(
         the_user(),
         200,
-        Body::Exempt(Exempt {
-            guard: id(GUARD),
-            target: None,
-            lifetime: Lifetime::Until(At::from_millis(100)),
-            reason: "too late".parse().unwrap(),
-        }),
+        exempt_n(1, GUARD, None, Lifetime::Until(At::from_millis(100))),
     );
     let report = catalog.admit(&catalog.fold([&start]), &late, &TxPolicy::standard());
-    assert_eq!(report.decision, TxDecision::Commit);
+    assert_eq!(report.decision, TxDecision::Abort);
+    assert_eq!(report.inadmissible, Some(Inadmissible::Expired));
     assert!(report.findings.is_empty(), "{:?}", report.findings);
     assert_eq!(catalog.fold([&start, &late]), catalog.fold([&start]));
 }
@@ -257,17 +241,13 @@ fn no_exemption_covers_a_meta_guard() {
     let mut guard = test_guard(Level::Force);
     guard.layer = DefLayer::Meta;
     let catalog = catalog(vec![guard], vec![]);
-    let exempt = user(Body::Exempt(Exempt {
-        guard: id(GUARD),
-        target: None,
-        lifetime: Lifetime::Within(Scope::Session),
-        reason: "please".parse().unwrap(),
-    }));
+    let exempt = user(exempt_n(1, GUARD, None, Lifetime::Within(Scope::Session)));
+    let start = agent(Body::TaskStart);
+    let report = catalog.admit(&catalog.fold([&start]), &exempt, &TxPolicy::standard());
+    assert_eq!(report.decision, TxDecision::Abort);
+    assert_eq!(report.inadmissible, Some(Inadmissible::Meta(id(GUARD))));
     assert!(matches!(
-        verdict(
-            &catalog,
-            &[agent(Body::TaskStart), exempt, agent(Body::Stop)]
-        ),
+        verdict(&catalog, &[start, exempt, agent(Body::Stop)]),
         Verdict::Deny(_)
     ));
 }

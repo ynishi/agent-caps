@@ -3,8 +3,8 @@
 //! the record may have been, and only what an event of those kinds may have changed becomes
 //! unknown.
 
+use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::event::Body;
-use agent_caps_core::domain::exempt::Lifetime;
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Level, Rule};
 use agent_caps_core::domain::predicate::Scope;
@@ -110,7 +110,7 @@ fn a_record_that_may_have_been_a_mode_switch_makes_the_mode_and_its_scope_unknow
     );
     // Without the mode switch among what it may have been, the test stays seen.
     let mut events = tested.to_vec();
-    events.extend([unreadable(&[EventKind::Exempt]), agent(Body::Stop)]);
+    events.extend([unreadable(&[EventKind::Adjust]), agent(Body::Stop)]);
     assert_eq!(verdict(&catalog, &events), Verdict::Allow);
 }
 

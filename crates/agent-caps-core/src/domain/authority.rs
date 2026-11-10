@@ -113,6 +113,33 @@ impl fmt::Display for NotCovered {
 
 impl std::error::Error for NotCovered {}
 
+/// Why a principal is not within the work of an owner ([`Authority::within`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotWithin {
+    /// The principal is not one of the hierarchy.
+    UnknownPrincipal(Principal),
+    /// The principal is of the hierarchy, but neither the owner nor below it.
+    NotBelow {
+        /// The principal.
+        principal: Principal,
+        /// The owner it is not below.
+        owner: Principal,
+    },
+}
+
+impl fmt::Display for NotWithin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownPrincipal(p) => write!(f, "{p} is not in the hierarchy"),
+            Self::NotBelow { principal, owner } => {
+                write!(f, "{principal} is neither {owner} nor below it")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NotWithin {}
+
 /// A hierarchy of principals: each has at most one parent, the principal above it, and a
 /// principal without one is a root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -197,6 +224,23 @@ impl Authority {
     /// first, as the catalog does when it accepts a policy graph.
     pub fn covers(&self, actor: &Principal, author: &Principal) -> bool {
         self.ancestors(author).any(|p| p == actor)
+    }
+
+    /// Whether `principal` is of the hierarchy and is `owner` or below it: what one may put in
+    /// effect on what `owner` wrote, permanently in a catalog or for a while by a claim, is only
+    /// what is the owner's own or below it, so the owner can always loosen it. The one answer to
+    /// that, asked of a binding of a catalog and of a temporary binding alike.
+    pub fn within(&self, principal: &Principal, owner: &Principal) -> Result<(), NotWithin> {
+        if !self.contains(principal) {
+            Err(NotWithin::UnknownPrincipal(principal.clone()))
+        } else if !self.covers(owner, principal) {
+            Err(NotWithin::NotBelow {
+                principal: principal.clone(),
+                owner: owner.clone(),
+            })
+        } else {
+            Ok(())
+        }
     }
 
     /// Whether `by` may loosen what `authors` wrote: `by` is a principal of the hierarchy, and it
