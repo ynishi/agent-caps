@@ -27,12 +27,17 @@
 //!   [`super::catalog`] and [`super::change`]).
 //! - A [`Policy`] is made only by [`super::catalog::Catalog::accept`], which checks the graph as a
 //!   whole (see there). The [`PolicyDef`] it is made from is plain data with no rule of its own.
+//! - A [`Policy`] keeps its [`PolicyDef`] as written, and the predicates the catalog uses. The
+//!   two differ only in a filter of judgments that narrows to no policy: the catalog's predicate
+//!   counts the judgments of the policies its author may count (see [`super::catalog`]). The
+//!   written def is what a graph and a difference between graphs are read from; the compiled
+//!   predicates are what is evaluated and what the slots are made of.
 
 use super::authority::{Authority, Principal};
 use super::event::Event;
 use super::name::{Mode, PolicyId, PolicyName};
-use super::predicate::{Pred, Truth};
-use super::schema::EventKind;
+use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Truth, reads_unnarrowed};
+use super::schema::{EventKind, Field};
 use super::state::{SlotTable, State};
 
 /// How much the one who acts is trusted with a rule, least first. The level says what a failure
@@ -248,96 +253,191 @@ pub enum Finding {
 
 /// A policy of an accepted catalog. Only [`super::catalog::Catalog::accept`] makes one.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Policy(PolicyDef);
+pub struct Policy {
+    /// As written.
+    def: PolicyDef,
+    /// What the catalog evaluates and makes its slots of.
+    compiled: Compiled,
+}
+
+/// The predicates of a policy as the catalog uses them: its `when` and its `rule`.
+#[derive(Debug, Clone, PartialEq)]
+struct Compiled {
+    when: Option<Pred>,
+    rule: Rule,
+}
 
 impl Policy {
+    /// The policy with its predicates as written. Made only where the catalog has decided that
+    /// nothing is narrowed: a meta policy, which reads no judgment unnarrowed, and a policy
+    /// whose author is not of the hierarchy, which is not accepted; and by a change, which reads
+    /// the levels only.
     pub(super) fn new(def: PolicyDef) -> Self {
-        Self(def)
+        let compiled = Compiled {
+            when: def.when.clone(),
+            rule: def.rule.clone(),
+        };
+        Self { def, compiled }
     }
 
+    /// The policy whose filters of judgments that narrow to no policy count only the judgments of
+    /// `visible`, the policies its author may count. A filter that narrows to policies is kept as
+    /// written, and so is everything else. With no such filter the compiled predicates are the
+    /// written ones.
+    pub(super) fn scoped(def: PolicyDef, visible: &[PolicyId]) -> Self {
+        let visible = Cond::In(
+            Field::Policy,
+            visible.iter().map(|id| Lit::Text(id.to_string())).collect(),
+        );
+        let Rule::Structural(rule) = &def.rule;
+        let compiled = Compiled {
+            when: def.when.as_ref().map(|when| scope_pred(when, &visible)),
+            rule: Rule::Structural(scope_pred(rule, &visible)),
+        };
+        Self { def, compiled }
+    }
+
+    /// As written.
     pub(super) fn def(&self) -> &PolicyDef {
-        &self.0
+        &self.def
     }
 
     /// Its id.
     pub fn id(&self) -> PolicyId {
-        self.0.id
+        self.def.id
     }
 
     /// Who wrote it.
     pub fn author(&self) -> &Principal {
-        &self.0.author
+        &self.def.author
     }
 
     /// Its name.
     pub fn name(&self) -> &PolicyName {
-        &self.0.name
+        &self.def.name
     }
 
     /// The layer it is defined in.
     pub fn layer(&self) -> DefLayer {
-        self.0.layer
+        self.def.layer
     }
 
     /// The kind of event it judges.
     pub fn subject(&self) -> EventKind {
-        self.0.subject
+        self.def.subject
     }
 
     /// Whether it forbids or recommends, and how strongly before any override.
     pub fn polarity(&self) -> &Polarity {
-        &self.0.polarity
+        &self.def.polarity
     }
 
     /// Whether it is on before any override.
     pub fn enabled(&self) -> bool {
-        self.0.enabled
+        self.def.enabled
     }
 
     /// Its examples.
     pub fn fixtures(&self) -> &[Fixture] {
-        &self.0.fixtures
+        &self.def.fixtures
     }
 
     /// Whether it is a guard.
     pub fn is_guard(&self) -> bool {
-        matches!(self.0.polarity, Polarity::Guard { .. })
+        matches!(self.def.polarity, Polarity::Guard { .. })
     }
 
     /// Its level before any override.
     pub fn base_level(&self) -> Level {
-        match self.0.polarity {
+        match self.def.polarity {
             Polarity::Guard { level } => level,
             Polarity::Reward { level, .. } => level.into(),
         }
     }
 
-    /// Every predicate it holds.
+    /// Every predicate it holds, as the catalog uses it.
     pub(super) fn preds(&self) -> impl Iterator<Item = &Pred> {
-        let Rule::Structural(rule) = &self.0.rule;
-        self.0.when.iter().chain(std::iter::once(rule))
+        let Rule::Structural(rule) = &self.compiled.rule;
+        self.compiled.when.iter().chain(std::iter::once(rule))
     }
 
     /// What the policy finds on `event`, with `state` already folded over it.
     pub(super) fn evaluate(&self, slots: &SlotTable, state: &State, event: &Event) -> Finding {
-        if event.body.kind() != self.0.subject {
+        if event.body.kind() != self.def.subject {
             return Finding::NotApplicable;
         }
-        if let Some(when) = &self.0.when {
+        if let Some(when) = &self.compiled.when {
             match state.holds(slots, when, event) {
                 Truth::False => return Finding::NotApplicable,
                 Truth::Unknown => return Finding::Unknown,
                 Truth::True => {}
             }
         }
-        if self.is_guard() && self.0.layer != DefLayer::Meta && state.exempts(self.0.id, event) {
+        if self.is_guard() && self.def.layer != DefLayer::Meta && state.exempts(self.def.id, event)
+        {
             return Finding::Exempted;
         }
-        let Rule::Structural(rule) = &self.0.rule;
+        let Rule::Structural(rule) = &self.compiled.rule;
         match state.holds(slots, rule, event) {
             Truth::True => Finding::Satisfied,
             Truth::False => Finding::Violated,
             Truth::Unknown => Finding::Unknown,
         }
+    }
+}
+
+/// `pred` with each filter of judgments that narrows to no policy limited to the policies in
+/// `visible`.
+fn scope_pred(pred: &Pred, visible: &Cond) -> Pred {
+    let scoped = |scope: &Scope| match scope {
+        Scope::Since(filter) => Scope::Since(scope_filter(filter, visible)),
+        other => other.clone(),
+    };
+    match pred {
+        Pred::Now(_) | Pred::ModeIs(_) => pred.clone(),
+        Pred::Once { event, scope } => Pred::Once {
+            event: scope_filter(event, visible),
+            scope: scoped(scope),
+        },
+        Pred::Count {
+            event,
+            scope,
+            cmp,
+            n,
+        } => Pred::Count {
+            event: scope_filter(event, visible),
+            scope: scoped(scope),
+            cmp: *cmp,
+            n: *n,
+        },
+        Pred::Last {
+            field,
+            scope,
+            value,
+        } => Pred::Last {
+            field: *field,
+            scope: scoped(scope),
+            value: value.clone(),
+        },
+        Pred::All(preds) => Pred::All(preds.iter().map(|p| scope_pred(p, visible)).collect()),
+        Pred::Any(preds) => Pred::Any(preds.iter().map(|p| scope_pred(p, visible)).collect()),
+        Pred::Not(inner) => Pred::Not(Box::new(scope_pred(inner, visible))),
+    }
+}
+
+/// `filter`, limited to the judgments of `visible` when it looks for judgments and narrows to no
+/// policy. What narrows a filter is the one answer of the predicate module
+/// ([`reads_unnarrowed`]).
+fn scope_filter(filter: &EventFilter, visible: &Cond) -> EventFilter {
+    if !reads_unnarrowed(filter) {
+        return filter.clone();
+    }
+    let cond = match &filter.cond {
+        None => visible.clone(),
+        Some(cond) => Cond::All(vec![visible.clone(), cond.clone()]),
+    };
+    EventFilter {
+        kind: filter.kind,
+        cond: Some(cond),
     }
 }

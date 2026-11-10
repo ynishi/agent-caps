@@ -319,7 +319,8 @@ impl Catalog {
         }
 
         // (b) Nothing of `by`'s puts a policy below what it is without all of `by`'s work.
-        // The narrowed graph is never made a catalog: only its effects are read.
+        // The narrowed graph is never made a catalog: only its effects are read, which depend on
+        // the levels and not on what a predicate sees, so the policies are kept as written.
         let narrowed = next.graph().not_covered_by(authority, by);
         let narrowed_policies: Vec<Policy> =
             narrowed.policies.into_iter().map(Policy::new).collect();
