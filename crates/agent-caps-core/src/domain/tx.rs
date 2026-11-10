@@ -8,7 +8,8 @@
 //!
 //! ```text
 //! Catalog::apply_with(state, event, &TxPolicy)
-//!   carried = state.carry(event.at)              what the past brings; always kept
+//!   carried = state.carry(event)                 what the past and the time bring; an act
+//!                                                  advances the clock, a claim does not; kept
 //!   act   → carried.step(event)                  not judged
 //!   claim → carried.admits(event)                  an adjustment or a cancel that cannot take
 //!                                                  effect: carried, Abort, TxReport::inadmissible
@@ -61,8 +62,11 @@
 //!   whichever [`StateChange`] moved it: a mode switch, an adjustment added, used up, cancelled,
 //!   or ended because the claim closes the scope it lasts within (compared with the state after
 //!   as the next event finds it). So a cancel is judged by its result alone. An adjustment that
-//!   runs out by time is not judged: its lifetime is its maker's choice, and the time of an
-//!   event the adapter's to give ([`super::state`]). A check never decides who may loosen.
+//!   runs out by time, and a window that starts again by time, are not judged: they happen in
+//!   the carry, by the clock, which only acts advance; the lifetime is its maker's choice, and
+//!   the time of an act the adapter's to give ([`super::state`]). A claim's time never ends what
+//!   loosens when it ends, so no claim brings about such an end without its transaction. A check
+//!   never decides who may loosen.
 //!   (The spawn check reads `Event::by` to make the place a spawn is compared with, which is a
 //!   fact of the claim and not a question of trust.)
 //! - One function decides every claim: [`Catalog::apply`], [`Catalog::apply_with`],
@@ -355,7 +359,7 @@ fn transact(
     policy: &TxPolicy,
 ) -> (State, TxReport) {
     let table = catalog.slots();
-    let carried = state.carry(table, event.at);
+    let carried = state.carry(table, event);
     if event.body.kind().nature() == Nature::Act {
         let report = TxReport {
             decision: TxDecision::Commit,

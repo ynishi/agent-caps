@@ -116,6 +116,30 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: time is a clock that only acts advance, and a period
+  can be a window of time (#42). The new `Scope::Every(Window)` is the window
+  of fixed length the clock is in, aligned to the Unix epoch in UTC, and starts
+  again when the clock crosses a boundary; `Window::from_millis` refuses zero
+  and negative lengths (`WindowError::NotPositive`). A `SessionStart` does not
+  start a window again, so a window spans sessions only as far as the caller
+  folds. The state's clock is the latest time an act has carried, and no time
+  before the first act; a claim's time never moves it, and an act dated
+  earlier never moves it back. Every end by time reads it: a raise or a
+  suspension with `Until` now ends at the first act at or after its instant,
+  not at a claim dated after it, and an adjustment is `Inadmissible::Expired`
+  only when the clock, not the claim's own time, is past its `Until`; before
+  the first act nothing has ended by time. The one read that may take a
+  claim's time is an exemption's cover, read at the later of the clock and the
+  judged event's time, so a guard that judges a claim dated past an
+  exemption's `Until`, or past the window of `Every` it lasts within, is not
+  exempted. To read old folds: an `Until` compared
+  with the time of a claim now waits for the next act, and an exemption or a
+  raise claimed with a time past its `Until`, while the last act's time is
+  still before it, is admitted, and ends at the next act at or after it. A
+  record that could not be read advances the clock only when it may have been
+  an act; one that may have been only claims carries a claim's time, and moves
+  nothing. The ledger's P16 is withdrawn for P19 and FR43 for FR46, which
+  reads a lifetime by the clock; FR45 is new, and UC6 and UC25 cite FR46.
 - Breaking, before 1.0: a rule says whose events it means, and who may start
   its scope again (#42, #25). `once`, `count` and `last` take `select:
   Selector { filter: EventFilter, by: By }` instead of `event: EventFilter`,

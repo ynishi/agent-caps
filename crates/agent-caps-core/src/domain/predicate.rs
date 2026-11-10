@@ -10,7 +10,7 @@
 //! filter   := kind [where Cond]
 //! by       := Anyone | Under(principal) | Only(principal)
 //! selector := filter by by
-//! scope    := Session | Mode | Task(by) | Turn(by) | Since(selector)
+//! scope    := Session | Mode | Task(by) | Turn(by) | Since(selector) | Every(window)
 //! ```
 //!
 //! `ModeIs` and `ActorUnder` read the state rather than the events of a scope: the mode in
@@ -40,9 +40,11 @@
 //! - A field is read only from its own kind of event, with an operand of its type. The catalog
 //!   checks this ([`Pred::check`]) before it accepts a policy.
 
+use std::fmt;
+
 use super::authority::Principal;
 use super::name::{CommandWords, GlobPattern, Mode, PolicyId};
-use super::schema::{EventKind, Field, FieldType};
+use super::schema::{At, EventKind, Field, FieldType};
 
 /// A truth value of Kleene's three-valued logic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -218,12 +220,16 @@ pub struct Selector {
 }
 
 /// The span a temporal operator counts within, and that an exemption may last for. Each starts
-/// again at its own boundary; a new session starts all of them again.
+/// again at its own boundary; a new session starts all of them again but [`Scope::Every`], the
+/// one scope a session does not start again.
 ///
-/// A scope has two boundaries, both read from the event being folded: the event before which it
-/// starts again, and the event on which it closes (the closing event belongs to the interval it
-/// closes, and the interval starts again before the next event). The state folds both in one
-/// place, so every scope is handled by one rule.
+/// A scope bounded by events has two boundaries, both read from the event being folded: the
+/// event before which it starts again, and the event on which it closes (the closing event
+/// belongs to the interval it closes, and the interval starts again before the next event). The
+/// state folds both in one place, so every such scope is handled by one rule. A scope bounded by
+/// time, [`Scope::Every`], starts again when the state's clock crosses a boundary of its window,
+/// in the carry to an event ([`super::state`]); the clock is advanced by acts alone, so a claim's
+/// time never starts one again.
 ///
 /// # Who may start a scope again
 ///
@@ -282,6 +288,25 @@ pub struct Selector {
 /// - `Lifetime::Within(Since(g))` (see [`super::adjust::Lifetime`]) ends a temporary adjustment
 ///   after the next `g`. Until the next event after `g`, the adjustment still shows as in effect,
 ///   so `g` itself is judged with it.
+///
+/// # `Every`
+///
+/// `Every(w)` is the window of the time `w` long that the clock is in, the windows aligned to the
+/// Unix epoch in UTC (a window of a day is a UTC day). It starts again when the clock's window
+/// changes: the clock's milliseconds divided by `w`'s, rounded down
+/// ([`i64::div_euclid`], so a time before the epoch is no exception). The clock is the state's,
+/// advanced only by acts, to the latest time an act has carried; a claim's time does not move
+/// it, and an act dated earlier does not move it back ([`super::state`]). Before the first act
+/// there is no time yet, and the window does not start again.
+///
+/// - `count(push, Every(1h)) <= 5` allows at most five pushes in each hour.
+/// - A window is the clock's and not the session's: a [`EventKind::SessionStart`] does not start
+///   it again. A window spans sessions only as far as the caller folds: to hold a limit of an
+///   hour across sessions, the caller folds the session before too.
+/// - A fixed window lets up to twice the limit through around a boundary (a known limit).
+/// - It reads no actor and needs no [`By`]: nobody starts it again but the time of the acts.
+/// - `Lifetime::Within(Every(w))` (see [`super::adjust::Lifetime`]) ends a temporary adjustment
+///   at the next boundary of the window, as the carry to the first act past it finds.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Scope {
     /// From [`EventKind::SessionStart`].
@@ -297,6 +322,9 @@ pub enum Scope {
     Turn(By),
     /// After the last event the selector chooses.
     Since(Selector),
+    /// The window of the clock the state is in, started again when the clock crosses a boundary.
+    /// A session does not start it again.
+    Every(Window),
 }
 
 impl Scope {
@@ -305,10 +333,52 @@ impl Scope {
         match self {
             Self::Task(by) | Self::Turn(by) => Some(by),
             Self::Since(selector) => Some(&selector.by),
-            Self::Session | Self::Mode => None,
+            Self::Session | Self::Mode | Self::Every(_) => None,
         }
     }
 }
+
+/// The length of a time window ([`Scope::Every`]), in milliseconds, more than zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Window(i64);
+
+impl Window {
+    /// The window `millis` milliseconds long; zero and negative lengths are refused.
+    pub const fn from_millis(millis: i64) -> Result<Self, WindowError> {
+        if millis > 0 {
+            Ok(Self(millis))
+        } else {
+            Err(WindowError::NotPositive(millis))
+        }
+    }
+
+    /// The length in milliseconds.
+    pub const fn millis(self) -> i64 {
+        self.0
+    }
+
+    /// The number of the window `at` is in, counted from the one that starts at the Unix epoch.
+    pub(super) const fn index(self, at: At) -> i64 {
+        at.millis().div_euclid(self.0)
+    }
+}
+
+/// Why a length is not a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowError {
+    /// The length, in milliseconds, is zero or negative.
+    NotPositive(i64),
+}
+
+impl fmt::Display for WindowError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPositive(millis) => write!(f, "a window of {millis} ms is not positive"),
+        }
+    }
+}
+
+impl std::error::Error for WindowError {}
 
 /// A predicate on the judged event and the events before it.
 #[derive(Debug, Clone, PartialEq)]
