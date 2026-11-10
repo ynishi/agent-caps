@@ -19,7 +19,7 @@ use super::authority::Principal;
 use super::exempt::Exempt;
 use super::name::{CommandWords, Mode, PolicyId};
 use super::predicate::{Cond, Lit, Truth};
-use super::schema::{At, EventKind, Field, Judgment, KindSet};
+use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
 
 /// One event: when, from whom, and what.
 #[derive(Debug, Clone, PartialEq)]
@@ -88,8 +88,15 @@ pub enum Body {
     Judged {
         /// The policy.
         policy: PolicyId,
-        /// What the judgment came to.
+        /// What the judgment came to, by the level it was enforced at.
         judgment: Judgment,
+        /// The level the policy was written at on the event ([`super::judge::GuardResult`]), so
+        /// that a warning the platform could not turn into a stop is told from one that was
+        /// written as a warning.
+        written: Level,
+        /// The level the platform enforced it at on the event: the written level held to the
+        /// platform's capabilities ([`super::catalog::Capabilities`]).
+        enforced: Level,
     },
     /// A record that could not be read.
     Unreadable {

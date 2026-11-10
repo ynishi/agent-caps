@@ -14,7 +14,7 @@
 //!
 //! ```
 //! use agent_caps::domain::authority::{Authority, Principal};
-//! use agent_caps::domain::catalog::Catalog;
+//! use agent_caps::domain::catalog::{Capabilities, Catalog};
 //! use agent_caps::domain::event::{Body, Event};
 //! use agent_caps::domain::judge::{judge, Verdict};
 //! use agent_caps::domain::name::CommandWords;
@@ -67,9 +67,29 @@
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];
 //! let state = catalog.fold(&history);
-//! let outcome = judge(&catalog, &state, &history[2]);
+//! // A platform that can enforce everything. One that cannot is described to `judge` the same way,
+//! // as data (see below).
+//! let outcome = judge(&catalog, &state, &history[2], &Capabilities::full());
 //! assert!(matches!(outcome.verdict, Verdict::Deny(_)));
 //! ```
+//!
+//! # What a platform can enforce
+//!
+//! A policy is written at a level, and a platform may not be able to enforce it: a hook that runs
+//! after a tool call cannot stop it. What a platform can enforce is data, in the words of an event
+//! filter ([`domain::catalog::Capabilities`]), and the adapter passes it to each
+//! [`domain::judge::judge`]. The catalog stays the same on every platform. The cap of an event is
+//! the lowest level among the worlds it may be in, so an event whose value is not known yet
+//! (the result of a tool call that has not returned) is held to the lower level.
+//!
+//! The written strength ([`domain::catalog::Effective`]) and the enforced strength
+//! ([`domain::catalog::Enforced`]) are different types. A guard stops by the level it is enforced
+//! at; each result of a judgment, and each record of it ([`domain::event::Body::Judged`]), has
+//! both the level it was written at and the level it was enforced at, and the lowering is
+//! reported in [`domain::judge::Outcome::lowered`]. How a catalog without an event is listed is
+//! stated at [`domain::catalog::Catalog::enforced`], and
+//! [`domain::catalog::Catalog::check_capabilities`] lists, mode by mode, what a platform cannot
+//! hold of a catalog, for an adapter that refuses such a catalog when it loads it.
 //!
 //! # Map
 //!
@@ -99,7 +119,10 @@
 //! effect only from one who covers the rule's author in the hierarchy the caller gives, and a
 //! record that cannot be read never loosens a rule. That an act (a tool use, the end of a turn)
 //! really happened on the platform is the adapter's guarantee, since nobody can forge it by
-//! writing text; the core takes an act as it is.
+//! writing text; the core takes an act as it is. The platform's capabilities are the same kind of
+//! fact, supplied by the adapter: they go through no transaction, and a value that lowers everything
+//! to Inform makes a Force guard stop nothing, which every judgment then reports as
+//! [`domain::catalog::Lowering::BeyondCapability`].
 //!
 //! # Compatibility
 //!
@@ -127,6 +150,9 @@
 //! - After a record that may have been a spawn is lost, every leaf placed later has an
 //!   unknown place for the rest of the fold, so a stopping rule that reads the actor stops
 //!   those leaves.
+//! - An event does not say whether it is judged before a tool call runs or read back after it,
+//!   so capabilities cannot differ between the two: a filter on `ok` reads unknown before the
+//!   call and lowers the call too.
 #![warn(missing_docs)]
 
 pub mod _requirements;

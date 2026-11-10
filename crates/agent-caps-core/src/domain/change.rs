@@ -62,7 +62,9 @@
 use std::fmt;
 
 use super::authority::{NotCovered, Principal};
-use super::catalog::{Catalog, Effect, Effective, Rejected, Target, effective_in, lowered};
+use super::catalog::{
+    Catalog, Effect, Effective, Rejected, Target, compared_modes, effective_in, lowered,
+};
 use super::name::{Mode, PolicyId};
 use super::policy::{DefLayer, Override, Polarity, Policy, PolicyDef, PolicyGraph};
 use super::state::Known;
@@ -260,7 +262,7 @@ impl Catalog {
             return Err(ChangeRejected::UnknownPrincipal);
         }
         let uncovered = |author: &Principal| authority.may_loosen(by, [author]).is_err();
-        let modes = compared_modes(self, &next);
+        let modes = compared_modes([self, &next]);
         let before_effects = effects(self, &modes);
         let after_effects = effects(&next, &modes);
         let mut loosenings = Vec::new();
@@ -363,19 +365,6 @@ fn meta_differences(before: &Catalog, after: &Catalog) -> Vec<PolicyId> {
         }
     }
     ids
-}
-
-/// The modes two catalogs are compared under: no mode, then each mode either names. An unknown
-/// mode is not compared: it is the strictest of these, so it follows from them.
-fn compared_modes(before: &Catalog, after: &Catalog) -> Vec<Option<Mode>> {
-    let mut modes = vec![None];
-    for mode in before.modes().into_iter().chain(after.modes()) {
-        let mode = Some(mode.clone());
-        if !modes.contains(&mode) {
-            modes.push(mode);
-        }
-    }
-    modes
 }
 
 /// What the catalog comes to under each mode, in the order of `modes`. A policy missing from

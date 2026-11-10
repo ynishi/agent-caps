@@ -4,7 +4,7 @@
 //! lives in that module.
 
 use agent_caps_core::domain::authority::{Authority, Principal};
-use agent_caps_core::domain::catalog::{AcceptError, Catalog, Effect, Rejected};
+use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Catalog, Effect, Rejected};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Outcome, Verdict, judge};
@@ -363,14 +363,19 @@ pub fn verdict(catalog: &Catalog, events: &[Event]) -> Verdict {
 /// The whole outcome on the last event, with the state folded over all of them.
 pub fn outcome(catalog: &Catalog, events: &[Event]) -> Outcome {
     let state = catalog.fold(events);
-    judge(catalog, &state, events.last().unwrap())
+    judge(
+        catalog,
+        &state,
+        events.last().unwrap(),
+        &Capabilities::full(),
+    )
 }
 
 /// Judges `event` after the `log`, then appends the event and the evidence of its judgment to the
 /// log, as a caller does between turns.
 pub fn step(catalog: &Catalog, log: &mut Vec<Event>, event: Event) -> Outcome {
     let state = catalog.fold(log.iter().chain([&event]));
-    let outcome = judge(catalog, &state, &event);
+    let outcome = judge(catalog, &state, &event, &Capabilities::full());
     log.push(event);
     log.extend(outcome.evidence(At::from_millis(0)));
     outcome

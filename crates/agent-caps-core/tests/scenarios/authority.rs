@@ -456,6 +456,8 @@ fn denial(policy: &str, by: Principal) -> Event {
         Body::Judged {
             policy: id(policy),
             judgment: Judgment::Denied,
+            written: Level::Force,
+            enforced: Level::Force,
         },
     )
 }

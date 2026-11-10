@@ -24,6 +24,7 @@ mod common;
 
 mod accept;
 mod authority;
+mod capability;
 mod claim;
 mod commit_after_test;
 mod compose;

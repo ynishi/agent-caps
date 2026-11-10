@@ -1,7 +1,8 @@
 //! `Catalog::effective`: what a catalog comes to under a mode, without judging any event. Each
-//! policy is `On` at a level or `Off`, and `judge` reads the same list.
+//! policy is `On` at a level or `Off`, and `judge` reads the same list as written (what a
+//! platform can hold of it is the topic of `capability`).
 
-use agent_caps_core::domain::catalog::{Catalog, Degraded, Effect};
+use agent_caps_core::domain::catalog::{Capabilities, Catalog, Degraded, Effect};
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::judge;
 use agent_caps_core::domain::policy::{Change, Level, OverrideLayer, RewardLevel};
@@ -67,7 +68,7 @@ fn the_effective_policies_are_listed_per_mode() {
     );
     // What explore degraded does not show where the strictest effect keeps the reward on.
     assert!(catalog.effective(&Known::Unknown).degraded.is_empty());
-    // The judgment of an event both policies apply to reads the same list.
+    // The judgment of an event both policies apply to reads the same list, as written.
     let events = [agent(Body::TaskStart), agent(Body::Stop)];
     let state = catalog.fold(&events);
     let effective = catalog.effective(state.mode());
@@ -79,12 +80,17 @@ fn the_effective_policies_are_listed_per_mode() {
         in_effect,
         vec![(id(GUARD), Level::Advise), (id(REWARD), Level::Advise)]
     );
-    let outcome = judge(&catalog, &state, events.last().unwrap());
+    let outcome = judge(
+        &catalog,
+        &state,
+        events.last().unwrap(),
+        &Capabilities::full(),
+    );
     let judged: Vec<_> = outcome
         .guards
         .iter()
-        .map(|g| (g.policy, g.level))
-        .chain(outcome.rewards.iter().map(|r| (r.policy, r.level)))
+        .map(|g| (g.policy, g.written))
+        .chain(outcome.rewards.iter().map(|r| (r.policy, r.written)))
         .collect();
     assert_eq!(judged, in_effect);
     assert_eq!(outcome.degraded, effective.degraded);

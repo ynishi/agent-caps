@@ -52,7 +52,7 @@ fn a_reward_is_kept_within_its_guard_and_is_never_a_failure() {
     assert_eq!(out.verdict, Verdict::Allow);
     assert_eq!(out.rewards.len(), 1);
     assert_eq!(out.rewards[0].recognition, Recognition::None);
-    assert_eq!(out.rewards[0].level, Level::Inform);
+    assert_eq!(out.rewards[0].written, Level::Inform);
     assert_eq!(
         out.degraded,
         vec![Degraded::RewardLowered {
@@ -76,7 +76,9 @@ fn a_reward_is_kept_within_its_guard_and_is_never_a_failure() {
         0,
         Body::Judged {
             policy: id(REWARD),
-            judgment: Judgment::Hit
+            judgment: Judgment::Hit,
+            written: Level::Inform,
+            enforced: Level::Inform,
         }
     )));
 }
@@ -93,7 +95,7 @@ fn a_mode_that_lowers_a_guard_lowers_its_reward() {
 
     let normal = outcome(&catalog, &stop);
     assert_eq!(normal.rewards.len(), 1);
-    assert_eq!(normal.rewards[0].level, Level::Advise);
+    assert_eq!(normal.rewards[0].written, Level::Advise);
     assert!(normal.degraded.is_empty());
 
     let explore = outcome(
@@ -101,7 +103,7 @@ fn a_mode_that_lowers_a_guard_lowers_its_reward() {
         &[mode_switch("explore"), stop[0].clone(), stop[1].clone()],
     );
     assert_eq!(explore.rewards.len(), 1);
-    assert_eq!(explore.rewards[0].level, Level::Inform);
+    assert_eq!(explore.rewards[0].written, Level::Inform);
     assert_eq!(
         explore.degraded,
         vec![Degraded::RewardLowered {

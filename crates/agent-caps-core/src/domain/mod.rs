@@ -8,10 +8,18 @@
 //! ```text
 //! PolicyGraph ─ Catalog::accept ─▶ Catalog    (structure, what each policy reads, fixtures)
 //! events ─ Catalog::fold / apply ─▶ State      (an act is folded; a claim is a transaction)
-//! Catalog::effective(mode) ─▶ Effective        (every policy On(level) or Off, Degraded)
-//! judge(&Catalog, &State, &Event) ─▶ Outcome   (Verdict, Recognitions, Degraded; reads Effective)
-//! Outcome::evidence ─▶ Judged events           (by each judged policy's author, folded as claims)
+//! Catalog::effective(mode) ─▶ Effective        (as written: every policy On(level) or Off, Degraded)
+//! Catalog::enforced(mode, &Capabilities) ─▶ Enforced
+//!                                              (as the platform holds it: levels capped, Lowering)
+//! judge(&Catalog, &State, &Event, &Capabilities) ─▶ Outcome
+//!                                              (Verdict, Recognitions, Degraded, Lowering)
+//! Outcome::evidence ─▶ Judged events           (by each judged policy's author, folded as claims;
+//!                                               with the written and the enforced level)
 //! ```
+//!
+//! `judge` and `Catalog::enforced` lower a written strength to the platform's capabilities, as
+//! stated at [`catalog::Catalog::enforced`]. A change of the rules and the transaction of a claim
+//! read the written strength only, which does not depend on the platform.
 //!
 //! Dependencies between the modules run one way: `name`, `schema` and `authority` ◀ `predicate`
 //! ◀ `exempt` ◀ `event` ◀ `state` ◀ `policy` ◀ `catalog` ◀ `judge`, `change` and `tx`. `event`
@@ -30,6 +38,9 @@
 //! - Policy: the one part of a catalog. A guard says what must hold, a reward what is
 //!   recommended within a guard, each at a [`policy::Level`].
 //! - Catalog: the accepted set of policies with their layers ([`catalog`]).
+//! - Capabilities: the highest level a platform can enforce, given as data in the words of an
+//!   event filter and supplied with each judgment ([`catalog::Capabilities`]). A policy written
+//!   above it is enforced at it, and each judgment records both levels ([`event::Body::Judged`]).
 //! - Principal and authority: who wrote a policy or made an event, and the hierarchy that says
 //!   whose work whom may loosen ([`authority`]); a change of a catalog is judged by it
 //!   ([`change`]), and so is a claim ([`tx`]).

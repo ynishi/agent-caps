@@ -40,25 +40,9 @@ use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Truth, reads_unnarro
 use super::schema::{EventKind, Field};
 use super::state::{SlotTable, State};
 
-/// How much the one who acts is trusted with a rule, least first. The level says what a failure
-/// costs the one who acts; it does not say when the check happens, which follows from the event the
-/// policy judges.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Level {
-    /// Only tells.
-    Inform,
-    /// A guard warns, a reward recommends; the one who acts may decide otherwise.
-    Advise,
-    /// A violation is stopped, and so is a finding that is unknown.
-    Force,
-}
-
-impl Level {
-    /// Whether a guard of this level stops the event it fails on: Force only.
-    pub fn stops(self) -> bool {
-        matches!(self, Self::Force)
-    }
-}
+// `Level` is defined in `schema` so that a record of a judgment (`event`), which carries the
+// levels it was written and enforced at, does not depend on this module; it is read from here.
+pub use super::schema::Level;
 
 /// The levels a reward can have. A recommendation never stops anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -40,6 +40,30 @@
 //! the mode never loosens a rule, and never gives a value no mode gives.
 //! [`Catalog::effective`] gives that result for every policy, off ones included.
 //!
+//! # Capabilities
+//!
+//! ```text
+//! overrides and mode   ─▶ Effective   the strength as written (`Effective::degraded`: the layers)
+//! + Capabilities       ─▶ Enforced    the strength the platform holds (`Enforced::lowered`)
+//!      each policy held to the cap of its own subject; each reward held to its guard
+//! ```
+//!
+//! What a platform can enforce is data, in the words of an event filter ([`Capabilities`]), and is
+//! supplied with each judgment; the catalog is the same on every platform. The written strength
+//! ([`Effective`]) and the enforced strength ([`Enforced`]) are separate types, so one is not
+//! taken for the other: [`Catalog::change`], the checks of a claim and the fixtures read only the
+//! written strength, which does not depend on the platform (a platform that squashes Force to
+//! Advise does not make a change that lowers the guard to Advise harmless), and a stop is decided
+//! by the enforced one. Lowering is a report of a fact of the platform, not a loosening that
+//! someone made: no transaction and no `may_loosen` is asked, and each lowering is reported
+//! ([`Lowering`]) apart from what the layers degraded ([`Degraded`]).
+//!
+//! The cap is the lowest level among the possible worlds ([`Capabilities::cap`]), as an unknown
+//! mode is the strictest of the modes it may be, turned round. How a judgment and a list lower,
+//! and how a reward follows its guard, is stated at [`Catalog::enforced`].
+//! [`Catalog::check_capabilities`] lists, mode by mode, what a platform cannot hold of this
+//! catalog, for a caller that refuses such a catalog when it loads it.
+//!
 //! # Invariants
 //!
 //! - Ids and names are unique.
@@ -110,17 +134,18 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 use super::authority::{Authority, Principal};
+use super::event::Event;
 use super::name::{Mode, PolicyId, PolicyName};
 use super::policy::{
     Change, DefLayer, Expect, Level, Override, OverrideLayer, Polarity, Policy, PolicyDef,
     PolicyGraph, Rule,
 };
 use super::predicate::{
-    JudgedRead, PredError, Reading, Scope, Site, StateAtom, Temporal, judged_read, note_reading,
-    state_readings,
+    EventFilter, JudgedRead, PredError, Reading, Scope, Site, StateAtom, Temporal, Truth,
+    judged_read, note_reading, state_readings,
 };
 use super::schema::EventKind;
-use super::state::{GuardIndex, Known, SlotId, SlotTable, State};
+use super::state::{GuardIndex, Known, SlotId, SlotTable, State, matched};
 
 /// One item of a policy graph: a policy, or the override of a layer on a policy.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -410,9 +435,11 @@ pub struct PolicyEffect<'a> {
     pub effect: Effect,
 }
 
-/// What the catalog comes to under one mode: every policy with its effect, and what the layers
-/// could not keep as written. This is what a platform adapter turns into hooks, instructions and
-/// text; [`super::judge::judge`] reads the same value, so the two never disagree.
+/// What the catalog comes to under one mode, as written: every policy with its effect, and what
+/// the layers could not keep as written. This is the written strength, which does not depend on
+/// the platform: [`Catalog::change`], the checks of a claim and the fixtures read it. What a
+/// platform can enforce of it is [`Enforced`], made by [`Catalog::enforced`] (which states how)
+/// and, event by event, by [`super::judge::judge`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Effective<'a> {
     /// Every policy of the catalog, in the catalog's order, with its effect.
@@ -464,6 +491,319 @@ pub fn lowered(before: &Effective<'_>, after: &Effective<'_>) -> Vec<Lowered> {
             })
         })
         .collect()
+}
+
+/// A level that is the same on every event of a kind, or that depends on the event.
+///
+/// It is the answer of [`Capabilities::cap_kind`] (the highest level the platform enforces on
+/// events of a kind), and the level a policy is enforced at in the list [`Catalog::enforced`]
+/// makes, where no event is judged. In [`Outcome::lowered`](super::judge::Outcome::lowered), where
+/// an event is judged, it is always [`Cap::Fixed`], the value for that event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Cap {
+    /// The same on every event of the kind.
+    Fixed(Level),
+    /// It depends on the event. It is never below `at_least` on any event, and never above
+    /// `at_most`; `at_least` is below `at_most`.
+    ByEvent {
+        /// The level that holds on every event of the kind.
+        at_least: Level,
+        /// The level on the best event of the kind. The conditions of the capabilities are not
+        /// solved, so no event may reach it.
+        at_most: Level,
+    },
+}
+
+impl Cap {
+    /// The two ends as a cap: [`Cap::Fixed`] when they are the same.
+    fn between(at_least: Level, at_most: Level) -> Self {
+        if at_least == at_most {
+            Self::Fixed(at_least)
+        } else {
+            Self::ByEvent { at_least, at_most }
+        }
+    }
+
+    /// The level that holds on every event: the value of a [`Cap::Fixed`].
+    pub fn at_least(self) -> Level {
+        match self {
+            Self::Fixed(level)
+            | Self::ByEvent {
+                at_least: level, ..
+            } => level,
+        }
+    }
+
+    /// This cap with no level above `level`.
+    fn under(self, level: Level) -> Self {
+        match self {
+            Self::Fixed(fixed) => Self::Fixed(fixed.min(level)),
+            Self::ByEvent { at_least, at_most } => {
+                Self::between(at_least.min(level), at_most.min(level))
+            }
+        }
+    }
+}
+
+/// The highest level the platform can enforce on an event, given as data in the words of an event
+/// filter: the facts of the platform, supplied with each judgment. The catalog is the same on
+/// every platform; what a platform cannot hold is lowered when the catalog is judged
+/// ([`super::judge::judge`]) or listed ([`Catalog::enforced`], which states how), and reported
+/// ([`Lowering`]).
+///
+/// The cap of an event is the lowest level among the possible worlds. A filter of the capabilities
+/// that matches the event gives its level; a filter that cannot tell (the event's value is not
+/// known yet, as `ok` of a tool call that has not returned) gives its level too, since the
+/// platform may or may not hold the event; and when no filter surely matches, the `otherwise`
+/// level counts as well. This is the direction of not knowing the mode ([`Catalog::effective`]),
+/// turned round: there the strictest of the candidates is taken, here the weakest.
+///
+/// Filters that overlap, and match one event, give the lowest of their levels. So to make only
+/// some events stoppable, list those with the higher level and set `otherwise` to the lower:
+/// `[(tool == Bash, Force)]` with `otherwise` Advise stops a Bash call and warns on any other
+/// tool.
+///
+/// These are a fact the adapter reads from the platform. They go through no transaction and no
+/// `may_loosen`: a value that lowers everything to Inform makes every Force guard stop nothing,
+/// and every judgment then reports it as [`Lowering::BeyondCapability`]. Whoever supplies them
+/// is trusted with what the platform holds, as the caller is trusted with the [`Authority`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Capabilities {
+    caps: Vec<(EventFilter, Level)>,
+    otherwise: Level,
+}
+
+impl Capabilities {
+    /// The capabilities of a platform that enforces everything: nothing is lowered.
+    pub fn full() -> Self {
+        Self {
+            caps: Vec::new(),
+            otherwise: Level::Force,
+        }
+    }
+
+    /// The capabilities that hold `level` on an event that meets the filter, and `otherwise` on
+    /// one that meets none. Each filter is type-checked ([`EventFilter::check`]), and every
+    /// error is returned.
+    pub fn new(caps: Vec<(EventFilter, Level)>, otherwise: Level) -> Result<Self, Vec<PredError>> {
+        let errors: Vec<PredError> = caps.iter().flat_map(|(filter, _)| filter.check()).collect();
+        if errors.is_empty() {
+            Ok(Self { caps, otherwise })
+        } else {
+            Err(errors)
+        }
+    }
+
+    /// The highest level the platform enforces on `event`: the lowest among the possible worlds.
+    /// Whether a filter matches is decided by the one matcher the state uses.
+    pub fn cap(&self, event: &Event) -> Level {
+        let kind = event.body.kind();
+        let mut lowest: Option<Level> = None;
+        let mut surely = false;
+        for (filter, level) in self.caps.iter().filter(|(f, _)| f.kind == kind) {
+            match matched(filter, &event.body) {
+                Truth::True => surely = true,
+                Truth::Unknown => {}
+                Truth::False => continue,
+            }
+            lowest = Some(lowest.map_or(*level, |lowest| lowest.min(*level)));
+        }
+        if surely {
+            lowest.unwrap_or(self.otherwise)
+        } else {
+            lowest.map_or(self.otherwise, |lowest| lowest.min(self.otherwise))
+        }
+    }
+
+    /// The highest level the platform enforces on events of `kind`, when no event is at hand:
+    /// [`Cap::Fixed`] when every event of the kind has the same, else [`Cap::ByEvent`], whose
+    /// `at_least` is never above [`Capabilities::cap`] of any event of the kind (see
+    /// [`Catalog::enforced`]).
+    pub fn cap_kind(&self, kind: EventKind) -> Cap {
+        let of_kind = || self.caps.iter().filter(|(f, _)| f.kind == kind);
+        // A filter with no condition matches every event of the kind: the otherwise never counts.
+        let always = of_kind()
+            .filter(|(f, _)| f.cond.is_none())
+            .map(|(_, level)| *level)
+            .min();
+        let conditional = of_kind()
+            .filter(|(f, _)| f.cond.is_some())
+            .map(|(_, level)| *level);
+        match always {
+            Some(always) => Cap::between(conditional.fold(always, Level::min), always),
+            None => {
+                let (least, most) = conditional
+                    .fold((self.otherwise, self.otherwise), |(l, m), x| {
+                        (l.min(x), m.max(x))
+                    });
+                Cap::between(least, most)
+            }
+        }
+    }
+}
+
+/// Why a policy is enforced less strongly than it is written, by what the platform can hold.
+/// This is the report of the stage of the platform's capabilities; the stage before it, the
+/// layers, reports as [`Degraded`], and the two are kept apart.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Lowering {
+    /// The platform cannot enforce the level the policy is written at on the events it judges.
+    /// This states a fact of the platform and is not a loosening of the rule: no one changed it.
+    BeyondCapability {
+        /// The policy.
+        policy: PolicyId,
+        /// The level it comes to as written.
+        written: Level,
+        /// The level it is enforced at. In a judgment ([`super::judge::Outcome::lowered`]) this
+        /// is [`Cap::Fixed`], the value for that event; in a list ([`Enforced::lowered`]) it is
+        /// the cap of the policy's kind, where [`Cap::ByEvent`] says it differs by event.
+        enforced: Cap,
+    },
+    /// The reward is bound by a guard that is enforced less strongly than the reward would be, so
+    /// the reward follows it (see [`Catalog::enforced`] for the level it is held to).
+    RewardFollowsGuard {
+        /// The reward.
+        reward: PolicyId,
+        /// Its guard.
+        guard: PolicyId,
+        /// The level it is lowered to.
+        to: Level,
+    },
+}
+
+impl Lowering {
+    /// The policy whose strength is lowered: the policy, or the reward that followed its guard.
+    pub fn policy(&self) -> PolicyId {
+        match self {
+            Self::BeyondCapability { policy, .. } => *policy,
+            Self::RewardFollowsGuard { reward, .. } => *reward,
+        }
+    }
+}
+
+/// How strongly a policy is enforced under a mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EnforcedEffect {
+    /// It does not take effect.
+    Off,
+    /// It takes effect at this level, on the events it judges.
+    On(Cap),
+}
+
+/// One policy with the strength it is written at and the strength it is enforced at.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnforcedPolicy<'a> {
+    /// The policy.
+    pub policy: &'a Policy,
+    /// Its effect as written ([`Effective`]).
+    pub written: Effect,
+    /// Its effect as the platform enforces it.
+    pub enforced: EnforcedEffect,
+}
+
+/// What the catalog is enforced at: [`Effective`] with the platform's capabilities applied. The
+/// written strength and the enforced strength are separate types, so the one cannot be taken for
+/// the other: a change of the rules is judged by the written ([`Effective`]), and a stop is made
+/// by the enforced.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Enforced<'a> {
+    /// Every policy of the catalog, in the catalog's order.
+    pub policies: Vec<EnforcedPolicy<'a>>,
+    /// What the capabilities lowered, and the rewards that followed. What the layers degraded
+    /// is in [`Effective::degraded`] and is not repeated here.
+    pub lowered: Vec<Lowering>,
+}
+
+impl<'a> Enforced<'a> {
+    /// The policies that take effect, each with the level it is written at and the strength it is
+    /// enforced at.
+    pub fn on(&self) -> impl Iterator<Item = (&'a Policy, Level, Cap)> + '_ {
+        self.policies
+            .iter()
+            .filter_map(|p| match (p.written, p.enforced) {
+                (Effect::On(written), EnforcedEffect::On(cap)) => Some((p.policy, written, cap)),
+                _ => None,
+            })
+    }
+}
+
+/// `effective` with the capabilities applied, read by [`super::judge::judge`] and by
+/// [`Catalog::enforced`], which differ only in how the cap of a policy is found (`own`; `None`
+/// leaves the policy as written). The rule is stated at [`Catalog::enforced`].
+///
+/// ```text
+/// Effective (as written)
+///   → each policy, held to the cap of its own subject          (`own`; BeyondCapability)
+///   → each reward, held to its guard as the guard is enforced   (RewardFollowsGuard)
+///   → Enforced
+/// ```
+pub(super) fn enforce_in<'a>(
+    effective: &Effective<'a>,
+    caps: &Capabilities,
+    own: impl Fn(&Policy) -> Option<Cap>,
+) -> Enforced<'a> {
+    let mut lowered = Vec::new();
+    let mut policies: Vec<EnforcedPolicy<'a>> = effective
+        .policies
+        .iter()
+        .map(|p| {
+            let enforced = match p.effect {
+                Effect::Off => EnforcedEffect::Off,
+                Effect::On(written) => {
+                    let cap = own(p.policy).map_or(Cap::Fixed(written), |cap| cap.under(written));
+                    if cap != Cap::Fixed(written) {
+                        lowered.push(Lowering::BeyondCapability {
+                            policy: p.policy.id(),
+                            written,
+                            enforced: cap,
+                        });
+                    }
+                    EnforcedEffect::On(cap)
+                }
+            };
+            EnforcedPolicy {
+                policy: p.policy,
+                written: p.effect,
+                enforced,
+            }
+        })
+        .collect();
+    // A guard that is off has turned its reward off already, so only guards that are on count.
+    let guards_on: HashMap<PolicyId, (&Policy, Level)> = effective
+        .policies
+        .iter()
+        .filter_map(|g| match g.effect {
+            Effect::On(level) => Some((g.policy.id(), (g.policy, level))),
+            Effect::Off => None,
+        })
+        .collect();
+    for entry in &mut policies {
+        let (Polarity::Reward { bound_by, .. }, EnforcedEffect::On(cap)) =
+            (entry.policy.polarity(), entry.enforced)
+        else {
+            continue;
+        };
+        let Some(&(guard, written)) = guards_on.get(bound_by) else {
+            continue;
+        };
+        // On a kind the reward shares with its guard, an event being judged has one cap for both.
+        let guard_cap = if guard.subject() == entry.policy.subject() {
+            own(guard).unwrap_or_else(|| caps.cap_kind(guard.subject()))
+        } else {
+            caps.cap_kind(guard.subject())
+        };
+        let to = written.min(guard_cap.at_least());
+        let bound = cap.under(to);
+        if bound != cap {
+            lowered.push(Lowering::RewardFollowsGuard {
+                reward: entry.policy.id(),
+                guard: *bound_by,
+                to,
+            });
+            entry.enforced = EnforcedEffect::On(bound);
+        }
+    }
+    Enforced { policies, lowered }
 }
 
 /// What one policy reads, from its predicates (`when` and `rule`) as the catalog uses them: the
@@ -657,10 +997,65 @@ impl Catalog {
         effective_in(&self.policies, &self.overrides, mode)
     }
 
+    /// What the catalog is enforced at under `mode` on a platform with `caps`: [`Catalog::effective`]
+    /// with the capabilities applied by kind of event, since no event is judged. This is what an
+    /// adapter turns into hooks and instructions, and what shows what was lowered.
+    ///
+    /// This is where the rule of lowering is stated. [`super::judge::judge`] and this list lower a
+    /// written strength through one function, which differs only in the cap it holds a policy to:
+    /// the cap of the event in a judgment, and here, where no event is judged, the cap of the
+    /// kind ([`Capabilities::cap_kind`]), never above the cap of an event of it. So the list never
+    /// says more than a judgment does.
+    ///
+    /// A reward is held to the level its guard is enforced at. When the reward and its guard judge
+    /// different kinds of event, that is the level the guard holds on every event of its kind
+    /// (`cap_kind(..).at_least()`), the same in a judgment and in the list. When they judge the
+    /// same kind and an event is being judged, it is the guard's level on that event, so a guard
+    /// that was not lowered on it does not lower its reward ([`Lowering::RewardFollowsGuard`]).
+    pub fn enforced(&self, mode: &Known<Option<Mode>>, caps: &Capabilities) -> Enforced<'_> {
+        enforce_in(&self.effective(mode), caps, |policy| {
+            Some(caps.cap_kind(policy.subject()))
+        })
+    }
+
+    /// What `caps` lower, mode by mode: [`Enforced::lowered`] under each compared mode (no mode,
+    /// and every mode an override names, counted as [`Catalog::change`] counts them), with the
+    /// mode. It compares nothing itself. When it is empty, this catalog is enforced as written on
+    /// a platform with these capabilities.
+    ///
+    /// Whether to refuse a catalog that is not is the caller's choice, made when it loads the
+    /// catalog: it may reject it (strict), or accept it and let every judgment report the
+    /// lowering. The core does the second at run time, always.
+    pub fn check_capabilities(&self, caps: &Capabilities) -> Vec<(Option<Mode>, Lowering)> {
+        compared_modes([self])
+            .into_iter()
+            .flat_map(|mode| {
+                let lowered = self.enforced(&Known::Known(mode.clone()), caps).lowered;
+                lowered.into_iter().map(move |l| (mode.clone(), l))
+            })
+            .collect()
+    }
+
     /// Every mode an override names.
     pub(super) fn modes(&self) -> Vec<&Mode> {
         modes_of(&self.overrides)
     }
+}
+
+/// The modes catalogs are compared under: no mode, then each mode any of them names. An unknown
+/// mode is not compared: it is the strictest of these, so it follows from them. The one count,
+/// read by [`Catalog::change`] (two catalogs) and by [`Catalog::check_capabilities`] (one).
+pub(super) fn compared_modes<'a>(
+    catalogs: impl IntoIterator<Item = &'a Catalog>,
+) -> Vec<Option<Mode>> {
+    let mut modes = vec![None];
+    for mode in catalogs.into_iter().flat_map(Catalog::modes) {
+        let mode = Some(mode.clone());
+        if !modes.contains(&mode) {
+            modes.push(mode);
+        }
+    }
+    modes
 }
 
 /// What `policies` come to under `mode` with `overrides` over them: the one implementation of

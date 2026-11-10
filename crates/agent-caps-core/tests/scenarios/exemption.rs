@@ -2,6 +2,7 @@
 //! claim that loosens its guard, so it takes effect only from one who covers the guard's author:
 //! the root exempts any guard, the principal below it its own, and nobody one above its own.
 
+use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Cause, Verdict, judge};
@@ -74,7 +75,7 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
 
     // `Next` is used up by the judgment it covered.
     let state = catalog.fold(&next);
-    let outcome = judge(&catalog, &state, &next[2]);
+    let outcome = judge(&catalog, &state, &next[2], &Capabilities::full());
     let mut events = next.to_vec();
     events.extend(outcome.evidence(At::from_millis(1)));
     events.push(edit("src/a.rs"));

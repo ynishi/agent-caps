@@ -15,7 +15,7 @@
 //! The levels are written as literals ("Force under bugfix"), read from `Catalog::effective` or
 //! from the outcome of `judge`; no test here computes how the layers stack.
 
-use agent_caps_core::domain::catalog::{AcceptError, Effect};
+use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Effect};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Outcome, Verdict, judge};
 use agent_caps_core::domain::name::PolicyId;
@@ -38,7 +38,7 @@ fn level_of(outcome: &Outcome, policy: &str) -> Level {
         .iter()
         .find(|g| g.policy == id(policy))
         .unwrap_or_else(|| panic!("{policy} did not judge the event"))
-        .level
+        .written
 }
 
 /// An advising guard of a tool call: a shell call must have succeeded.
@@ -92,7 +92,7 @@ fn a_mode_overrides_the_level_and_a_lowering_switch_needs_the_guards_author() {
     let state = catalog.fold(&[switch(the_user()), unreadable(&[EventKind::ModeSwitch])]);
     assert_eq!(state.mode(), &Known::Unknown);
     assert!(matches!(
-        judge(&catalog, &state, &stop).verdict,
+        judge(&catalog, &state, &stop, &Capabilities::full()).verdict,
         Verdict::Deny(_)
     ));
 }
