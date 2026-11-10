@@ -172,6 +172,7 @@ issue -> just worktree-new -> ledger rows (UC / FR) -> implement, tests cite the
       -> commit
       -> git fetch origin -> just pre-push
       -> write the PR body to a file -> hand over push/PR
+         (or land it, when the maintainer has let the agent)
 ```
 
 Review the change locally before it goes up, by a person or by an AI agent —
@@ -224,6 +225,12 @@ that includes the gate:
    gh pr create --base main --head <branch> \
      --title "<subject>" --body-file <path>
    ```
+
+The maintainer may let an agent land the change itself, for the task the
+maintainer gave it: after the gate passes, the agent pushes the branch, opens
+the pull request with that body file, waits for CI, merges, and removes its
+branch and worktree. It stops on a failing gate or CI and reports, and it does
+nothing remote beyond that pull request. Without that leave, step 3 stands.
 
 The PR body records what changed, what was verified — or a statement that
 it was not — and what it
