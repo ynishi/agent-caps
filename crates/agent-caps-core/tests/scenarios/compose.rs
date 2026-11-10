@@ -78,7 +78,7 @@ fn two_sets_joined_by_the_caller_are_one_catalog() {
     assert_eq!(out.verdict, violated());
     // ... with the project's override of the reward applied.
     assert_eq!(out.rewards.len(), 1);
-    assert_eq!(out.rewards[0].level, Level::Inform);
+    assert_eq!(out.rewards[0].written, Level::Inform);
 
     // And the project's guard judges a tool call.
     let call = outcome(

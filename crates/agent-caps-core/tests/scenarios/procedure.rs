@@ -47,6 +47,8 @@ fn hit(policy: &str) -> Event {
         Body::Judged {
             policy: id(policy),
             judgment: Judgment::Hit,
+            written: Level::Advise,
+            enforced: Level::Advise,
         },
     )
 }

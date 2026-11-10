@@ -447,8 +447,10 @@ impl Scope {
     }
 }
 
-/// Whether `body`, an event of the filter's kind, meets the filter's condition.
-fn matched(filter: &EventFilter, body: &Body) -> Truth {
+/// Whether `body`, an event of the filter's kind, meets the filter's condition: the one answer to
+/// "does this filter match this event", read by the slots, the scopes and
+/// [`super::catalog::Capabilities`].
+pub(super) fn matched(filter: &EventFilter, body: &Body) -> Truth {
     filter
         .cond
         .as_ref()
@@ -569,6 +571,7 @@ impl State {
             Body::Judged {
                 policy,
                 judgment: Judgment::Exempted,
+                ..
             } => {
                 let used = self
                     .exempts

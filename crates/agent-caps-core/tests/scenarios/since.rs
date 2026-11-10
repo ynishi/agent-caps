@@ -359,6 +359,8 @@ fn a_claim_from_below_does_not_close_a_since_scope_the_roots_guard_reads() {
             Body::Judged {
                 policy: id(GUARD),
                 judgment: Judgment::Allowed,
+                written: Level::Advise,
+                enforced: Level::Advise,
             },
         )
     };
@@ -410,6 +412,8 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
         Body::Judged {
             policy: id(OTHER),
             judgment: Judgment::Warned,
+            written: Level::Advise,
+            enforced: Level::Advise,
         },
     );
     let judged = |events: &[Event]| -> Vec<_> {

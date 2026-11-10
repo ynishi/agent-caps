@@ -91,7 +91,7 @@ fn an_edit_after_reading_the_design_is_a_hit() {
     assert_eq!(out.verdict, Verdict::Allow);
     assert_eq!(out.rewards.len(), 1);
     assert_eq!(out.rewards[0].policy, id(REWARD));
-    assert_eq!(out.rewards[0].level, Level::Advise);
+    assert_eq!(out.rewards[0].written, Level::Advise);
     assert_eq!(out.rewards[0].recognition, Recognition::Hit);
 }
 
@@ -164,7 +164,9 @@ fn the_carrier_guard_is_listed_on_every_tool_call_and_never_fails() {
         0,
         Body::Judged {
             policy: id(GUARD),
-            judgment: Judgment::Allowed
+            judgment: Judgment::Allowed,
+            written: Level::Advise,
+            enforced: Level::Advise,
         }
     )));
 }

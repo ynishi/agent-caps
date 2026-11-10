@@ -4,7 +4,7 @@
 //! authors the claim's author does not cover aborts the claim, whatever the combination says.
 
 use agent_caps_core::domain::authority::{NotCovered, Principal};
-use agent_caps_core::domain::catalog::Catalog;
+use agent_caps_core::domain::catalog::{Capabilities, Catalog};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::exempt::{Exempt, Lifetime};
 use agent_caps_core::domain::judge::{Verdict, judge};
@@ -86,7 +86,13 @@ impl AdjustmentCheck for SaysTightens {
 /// The verdict on the last event, with the state folded with `policy`.
 fn verdict_with(catalog: &Catalog, events: &[Event], policy: &TxPolicy) -> Verdict {
     let state = catalog.fold_with(events, policy);
-    judge(catalog, &state, events.last().unwrap()).verdict
+    judge(
+        catalog,
+        &state,
+        events.last().unwrap(),
+        &Capabilities::full(),
+    )
+    .verdict
 }
 
 /// UC25, FR34, FR11: a principal outside the hierarchy covers nobody's work, so its loosening

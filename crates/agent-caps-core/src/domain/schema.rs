@@ -1,6 +1,6 @@
 //! The vocabulary events are described in: their kinds and their [`Nature`], the fields a
 //! predicate can read, and the small values an event carries (when, what a judgment came to,
-//! which kinds a lost record may have been).
+//! which kinds a lost record may have been), and the [`Level`] a record of a judgment carries.
 //!
 //! A predicate reads an event through a [`Field`], never through the Rust field of a variant.
 //! Each field belongs to one [`EventKind`] and has one [`FieldType`]; that table is the schema the
@@ -36,6 +36,29 @@ pub enum Judgment {
     Exempted,
     /// A reward's recommendation was followed.
     Hit,
+}
+
+/// How much the one who acts is trusted with a rule, least first. The level says what a failure
+/// costs the one who acts; it does not say when the check happens, which follows from the event the
+/// policy judges. It is the strength a policy is written at, and the strength a platform enforces
+/// it at: a record of a judgment carries both.
+///
+/// It lives here so that an event can carry it; it is read as [`super::policy::Level`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Level {
+    /// Only tells.
+    Inform,
+    /// A guard warns, a reward recommends; the one who acts may decide otherwise.
+    Advise,
+    /// A violation is stopped, and so is a finding that is unknown.
+    Force,
+}
+
+impl Level {
+    /// Whether a guard of this level stops the event it fails on: Force only.
+    pub fn stops(self) -> bool {
+        matches!(self, Self::Force)
+    }
 }
 
 impl Judgment {

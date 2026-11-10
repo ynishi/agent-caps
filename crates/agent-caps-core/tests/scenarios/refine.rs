@@ -3,7 +3,7 @@
 //! bugfix mode; the explore mode turns it off. The reward bound to it follows: it goes off with
 //! the guard.
 //!
-//! The levels are read from `Outcome.guards[].level` and `rewards[].level`, and `degraded`, as
+//! The levels are read from `Outcome.guards[].written` and `rewards[].written`, and `degraded`, as
 //! literals; nothing here works out the stacking.
 //!
 //! The fixtures of a guard are checked at the levels the guard is defined with. A guard defined
@@ -51,8 +51,8 @@ fn the_base_alone_only_informs() {
     );
     let out = outcome(&catalog, &[agent(Body::TaskStart), agent(Body::Stop)]);
     assert_eq!(out.verdict, Verdict::Warn(vec![Cause::Violated(id(GUARD))]));
-    assert_eq!(out.guards[0].level, Level::Inform);
-    assert_eq!(out.rewards[0].level, Level::Inform);
+    assert_eq!(out.guards[0].written, Level::Inform);
+    assert_eq!(out.rewards[0].written, Level::Inform);
 }
 
 /// UC7, UC8, FR5: the project raises the guard from Inform to Advise, and the bugfix mode raises
@@ -67,8 +67,8 @@ fn the_project_raises_it_and_the_bugfix_mode_raises_it_again() {
         no_mode.verdict,
         Verdict::Warn(vec![Cause::Violated(id(GUARD))])
     );
-    assert_eq!(no_mode.guards[0].level, Level::Advise);
-    assert_eq!(no_mode.rewards[0].level, Level::Inform);
+    assert_eq!(no_mode.guards[0].written, Level::Advise);
+    assert_eq!(no_mode.rewards[0].written, Level::Inform);
     assert!(no_mode.degraded.is_empty());
 
     let bugfix = outcome(
@@ -76,8 +76,8 @@ fn the_project_raises_it_and_the_bugfix_mode_raises_it_again() {
         &[mode_switch("bugfix"), stop[0].clone(), stop[1].clone()],
     );
     assert_eq!(bugfix.verdict, violated());
-    assert_eq!(bugfix.guards[0].level, Level::Force);
-    assert_eq!(bugfix.rewards[0].level, Level::Inform);
+    assert_eq!(bugfix.guards[0].written, Level::Force);
+    assert_eq!(bugfix.rewards[0].written, Level::Inform);
     assert!(bugfix.degraded.is_empty());
 }
 

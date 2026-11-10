@@ -88,9 +88,45 @@ and this project adheres to
   `FindingDetail::Spawn` carry it. A spawned leaf is no author, so what it
   claims loosens nothing. The ledger has P15 and FR38 for it, and FR39 for the
   scope of one actor, which is undecided.
+- `Capabilities`: what a platform can enforce, as data in the words of an event
+  filter (a level per `EventFilter`, and an `otherwise`), type-checked by
+  `Capabilities::new` and supplied with each judgment. The catalog is the same
+  on every platform. The cap of an event (`Capabilities::cap`) is the lowest
+  level among the possible worlds, so a filter that cannot tell whether it
+  matches counts too; the cap of a kind (`Capabilities::cap_kind`) is a `Cap`,
+  `Fixed` or `ByEvent { at_least, at_most }`. Whether a filter matches is
+  decided by the matcher the state already uses.
+- The strength a policy is written at (`Effective`, unchanged) and the strength
+  a platform enforces it at (`Enforced`, with `EnforcedPolicy` and
+  `EnforcedEffect`) are separate types. `Catalog::enforced(mode, caps)` lists
+  the second, and `judge` and the list lower through one function, so the list
+  never says more than a judgment does. A reward follows the level its guard is
+  enforced at on every event of the guard's kind. What was lowered is
+  `Lowering` (`BeyondCapability`, `RewardFollowsGuard`), apart from what the
+  layers degraded (`Degraded`). `Catalog::change`, the checks of a claim and
+  the fixtures read only the written strength.
+- `Catalog::check_capabilities(caps)`: what a platform cannot hold of a
+  catalog, mode by mode (the modes `Catalog::change` compares), for an adapter
+  that refuses such a catalog when it loads it. The core always lowers and
+  reports at run time.
+- The ledger's FR28 is withdrawn for FR40, which widens it: per event filter
+  instead of per kind of event, the level a policy was written at and the level
+  it was enforced at recorded with each judgment, and a catalog checked against
+  the capabilities. FR31 and the use cases UC11, UC17 and UC24 cite FR40.
 
 ### Changed
 
+- Breaking, before 1.0: `judge(catalog, state, event, &Capabilities)` takes the
+  platform's capabilities (`Capabilities::full()` lowers nothing).
+  `GuardResult` and `RewardResult` have `written` and `enforced` in place of
+  `level`, and a guard stops by `enforced`. `Outcome` has `lowered` beside
+  `degraded`, of the policies that judged the event. `Body::Judged` has
+  `written` and `enforced`, and `Outcome::evidence` copies them from the
+  results, so a warning that was written as a stop is told from one that was
+  written as a warning. The transaction of a claim (`apply_with`, `fold_with`,
+  `admit`, `TxPolicy`) is unchanged and does not see the capabilities.
+  `Level` is defined in `domain::schema` (so that an event can carry it) and is
+  still read as `domain::policy::Level`.
 - Breaking, before 1.0: `Body::AgentStart`, `EventKind::AgentStart`,
   `Field::AgentType` and `Scope::Agent` are removed, replaced by `Body::Spawn`
   and `Pred::ActorUnder`. A role is read from where the actor sits, not from

@@ -29,7 +29,7 @@ fn a_force_guard_gives_the_same_deny_on_a_tool_use_and_on_a_stop() {
     assert_eq!(on_tool_use.verdict, denied);
     assert_eq!(on_stop.verdict, denied);
     assert_eq!(on_tool_use.guards.len(), 1);
-    assert_eq!(on_tool_use.guards[0].level, Level::Force);
+    assert_eq!(on_tool_use.guards[0].written, Level::Force);
     assert_eq!(on_tool_use.guards[0].finding, Finding::Violated);
     assert_eq!(on_tool_use, on_stop);
 }

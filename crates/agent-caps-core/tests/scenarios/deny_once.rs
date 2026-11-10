@@ -7,6 +7,7 @@
 //! count of a policy counts only from one who covers that policy's author, so a forged record is
 //! aborted and the genuine one counts.
 
+use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Verdict, judge};
 use agent_caps_core::domain::policy::{Level, PolicyDef};
@@ -87,7 +88,7 @@ fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     let mut events = vec![agent(Body::SessionStart), agent(Body::TaskStart)];
     let stop = agent(Body::Stop);
     let state = catalog.fold(events.iter().chain([&stop]));
-    let first = judge(&catalog, &state, &stop);
+    let first = judge(&catalog, &state, &stop, &Capabilities::full());
     assert!(matches!(first.verdict, Verdict::Deny(_)));
     let evidence = first.evidence(At::from_millis(1));
     assert!(evidence.iter().all(|e| e.by == the_user()));
@@ -112,6 +113,8 @@ fn a_judgment_record_the_agent_wrote_does_not_count() {
     events.push(agent(Body::Judged {
         policy: id(GUARD),
         judgment: Judgment::Denied,
+        written: Level::Force,
+        enforced: Level::Force,
     }));
     events.push(stop);
     assert!(matches!(verdict(&catalog, &events), Verdict::Deny(_)));
