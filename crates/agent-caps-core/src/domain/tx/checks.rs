@@ -382,7 +382,7 @@ impl<'a> Point<'a> {
     /// point, and read for the effect and for the authors of a lowering.
     fn bindings(&self) -> Vec<InEffect<'a>> {
         match *self {
-            Self::Catalog { catalog, .. } => catalog.bindings().iter().map(InEffect::of).collect(),
+            Self::Catalog { catalog, .. } => catalog.bindings().map(InEffect::of).collect(),
             Self::State { catalog, state } => catalog.bindings_in(state),
         }
     }
@@ -451,7 +451,7 @@ pub(in crate::domain) fn rule_moves(before: &Point<'_>, after: &Point<'_>) -> Ve
             .iter()
             .filter(|id| was.is_none_or(|was| !was.suspended.contains(id)))
         {
-            if let Some(b) = after.catalog().bindings().iter().find(|b| b.id == *id) {
+            if let Some(b) = after.catalog().graph().binding(*id) {
                 moves.push(RuleMove::Suspended {
                     policy: b.policy,
                     binding: b.id,
@@ -479,7 +479,7 @@ pub(in crate::domain) fn rule_moves(before: &Point<'_>, after: &Point<'_>) -> Ve
 /// author covers that one too.
 fn exemption_authors(catalog: &Catalog, guard: PolicyId) -> Vec<Principal> {
     let mut authors = authors_of(catalog, &[guard]);
-    for b in catalog.bindings().iter().filter(|b| b.policy == guard) {
+    for b in catalog.bindings().filter(|b| b.policy == guard) {
         add_author(&mut authors, &b.author);
     }
     authors

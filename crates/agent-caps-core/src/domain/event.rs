@@ -22,7 +22,7 @@ use super::predicate::{Amount, Cond, Lit, Truth};
 use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
 
 /// One event: when, from whom, and what.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     /// When it happened.
     pub at: At,
@@ -35,7 +35,13 @@ pub struct Event {
 
 /// What happened. New kinds are added as the model grows, so a match on it outside this crate
 /// needs a wildcard arm.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// Two bodies are equal when they are the same event, the score of a measurement compared as a
+/// number with every NaN equal to every NaN: a NaN score is the same as itself, where `f64`'s
+/// `==` takes it for a difference, and `0.0` and `-0.0` are the same score. So the equality is
+/// total ([`Eq`]): a slot of the state that holds an event is not taken for changed when it was
+/// not touched, and a fixture, and the policy that holds it, equals itself.
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum Body {
     /// A session started.
@@ -132,6 +138,65 @@ pub enum Body {
     },
 }
 
+// Written by hand, not derived, for the score of a measurement: `f64` has no total equality, so
+// the score is compared as a number with NaN equal to NaN (see the doc of `Body`), which is an
+// equivalence: reflexive with the NaN case, and symmetric and transitive as `==` and "both are
+// NaN" each are, never both at once. Every other field is compared with
+// its own `==`. The match is on `self` with no wildcard, so a new kind does not compile until its
+// equality is written.
+impl PartialEq for Body {
+    fn eq(&self, other: &Self) -> bool {
+        match self {
+            Self::SessionStart => matches!(other, Self::SessionStart),
+            Self::Spawn { child, under } => matches!(
+                other,
+                Self::Spawn { child: c, under: u } if child == c && under == u
+            ),
+            Self::TaskStart => matches!(other, Self::TaskStart),
+            Self::PromptSubmit => matches!(other, Self::PromptSubmit),
+            Self::ToolUse {
+                tool,
+                command,
+                path,
+                ok,
+            } => matches!(
+                other,
+                Self::ToolUse { tool: t, command: c, path: p, ok: o }
+                    if tool == t && command == c && path == p && ok == o
+            ),
+            Self::Stop => matches!(other, Self::Stop),
+            Self::Used { meter, amount } => matches!(
+                other,
+                Self::Used { meter: m, amount: a } if meter == m && amount == a
+            ),
+            Self::ModeSwitch { to } => matches!(other, Self::ModeSwitch { to: t } if to == t),
+            Self::Measured { oracle, score } => matches!(
+                other,
+                Self::Measured { oracle: o, score: s }
+                    if oracle == o && (score == s || (score.is_nan() && s.is_nan()))
+            ),
+            Self::Adjust(adjustment) => matches!(other, Self::Adjust(a) if adjustment == a),
+            Self::Cancel { id } => matches!(other, Self::Cancel { id: i } if id == i),
+            Self::Judged {
+                policy,
+                judgment,
+                written,
+                enforced,
+            } => matches!(
+                other,
+                Self::Judged { policy: p, judgment: j, written: w, enforced: e }
+                    if policy == p && judgment == j && written == w && enforced == e
+            ),
+            Self::Unreadable { may_have_been } => matches!(
+                other,
+                Self::Unreadable { may_have_been: m } if may_have_been == m
+            ),
+        }
+    }
+}
+
+impl Eq for Body {}
+
 /// The value of a field, read from an event.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Value {
@@ -191,25 +256,6 @@ impl Body {
         }
     }
 
-    /// Whether the two are the same event body, the score of a measurement compared by its bits:
-    /// a NaN is the same as itself, where `==` takes it for a difference. The state compares what
-    /// a slot holds this way, so a score that was not touched is not taken for a change.
-    pub(super) fn same_as(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::Measured {
-                    oracle: a,
-                    score: x,
-                },
-                Self::Measured {
-                    oracle: b,
-                    score: y,
-                },
-            ) => a == b && x.to_bits() == y.to_bits(),
-            _ => self == other,
-        }
-    }
-
     /// The value of `field` in this event.
     pub(super) fn read(&self, field: Field) -> Read {
         let absent = |value: Option<Value>| value.map_or(Read::Absent, Read::Found);
@@ -262,7 +308,7 @@ impl Body {
                 _ => Truth::Unknown,
             }),
             Cond::Num(field, cmp, n) => compare(*field, &|v| match v {
-                Value::Num(score) => cmp.holds(score, *n).map_or(Truth::Unknown, Truth::of),
+                Value::Num(score) => cmp.holds(score, n.get()).map_or(Truth::Unknown, Truth::of),
                 _ => Truth::Unknown,
             }),
             Cond::All(conds) => Truth::all(conds.iter().map(|c| self.holds(c))),
@@ -276,7 +322,7 @@ impl Body {
 mod tests {
     use super::*;
     use crate::domain::name::GlobPattern;
-    use crate::domain::predicate::Cmp;
+    use crate::domain::predicate::{Cmp, Number};
 
     fn bash(command: &str, ok: Option<bool>) -> Body {
         Body::ToolUse {
@@ -354,8 +400,24 @@ mod tests {
             score: f64::NAN,
         };
         assert_eq!(
-            measured.holds(&Cond::Num(Field::Score, Cmp::Ge, 0.5)),
+            measured.holds(&Cond::Num(Field::Score, Cmp::Ge, Number::new(0.5).unwrap())),
             Truth::Unknown
         );
+    }
+
+    #[test]
+    fn a_body_equals_itself_and_a_score_is_compared_as_a_number_with_nan_equal_to_nan() {
+        let measured = |score| Body::Measured {
+            oracle: "bench".to_owned(),
+            score,
+        };
+        assert_eq!(measured(f64::NAN), measured(f64::NAN));
+        assert_eq!(measured(f64::NAN), measured(-f64::NAN));
+        assert_eq!(measured(0.0), measured(-0.0));
+        assert_ne!(measured(f64::NAN), measured(0.0));
+        assert_ne!(measured(0.5), measured(0.25));
+        assert_ne!(measured(0.5), Body::Stop);
+        assert_eq!(bash("cargo test", None), bash("cargo test", None));
+        assert_ne!(bash("cargo test", None), bash("cargo test", Some(true)));
     }
 }

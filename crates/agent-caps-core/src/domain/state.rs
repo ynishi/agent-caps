@@ -466,15 +466,6 @@ impl Slot {
         }
     }
 
-    /// Whether two values of a slot are the same. The score of an event it holds is compared by
-    /// its bits ([`Body::same_as`]), so a NaN that was not touched is not taken for a change.
-    fn same(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Last(Known::Known(Some(a))), Self::Last(Known::Known(Some(b)))) => a.same_as(b),
-            _ => self == other,
-        }
-    }
-
     /// The slot after `event`, which is not an unreadable record, with the hierarchy of actors
     /// its selector reads the actor in.
     fn step(
@@ -952,10 +943,9 @@ impl State {
         let mut changes = Vec::new();
         for (at, temporal) in table.0.iter().enumerate() {
             let scope = temporal.scope();
-            let same = match (before.slots.get(at), after.slots.get(at)) {
-                (Some(b), Some(a)) => b.same(a),
-                (b, a) => b == a,
-            };
+            // The score of an event a slot holds is compared with NaN equal to NaN (see `Body`),
+            // so a NaN that was not touched is not taken for a change.
+            let same = before.slots.get(at) == after.slots.get(at);
             if !same || closing_of(before, scope) != closing_of(after, scope) {
                 changes.push(StateChange::Slot(SlotId(at)));
             }

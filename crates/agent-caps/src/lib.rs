@@ -77,7 +77,9 @@
 //!     mode: ModeScope::Any,
 //!     author: user.clone(),
 //! };
-//! let policies = PolicyGraph { policies: vec![guard], bindings: vec![binding] };
+//! // The graph holds each policy and binding by its id: a second one with an id, or a second
+//! // policy with a name, is refused here, with every clash at once.
+//! let policies = PolicyGraph::parse(vec![guard], vec![binding]).unwrap();
 //! let catalog = Catalog::accept(policies, authority).unwrap();
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];

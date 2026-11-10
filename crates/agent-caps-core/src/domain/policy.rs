@@ -36,6 +36,9 @@
 //!   who may change whose, follows the [`Authority`] the catalog keeps (see
 //!   [`super::catalog`] and [`super::change`]).
 //! - A [`ModeSet`] is not empty and holds no mode twice: [`ModeSet::new`] refuses otherwise.
+//! - A [`PolicyGraph`] holds its policies and bindings by id, no id twice and no policy name
+//!   twice: [`PolicyGraph::parse`] refuses otherwise ([`Clash`]), through one insert. Its order
+//!   is by id, the one order of everything a catalog lists.
 //! - A [`Policy`] is made only by [`super::catalog::Catalog::accept`], which checks the graph as a
 //!   whole (see there). The [`PolicyDef`] it is made from is plain data with no rule of its own.
 //! - A [`Policy`] keeps its [`PolicyDef`] as written, and the predicates the catalog uses. The
@@ -44,6 +47,7 @@
 //!   written def is what a graph and a difference between graphs are read from; the compiled
 //!   predicates are what is evaluated and what the slots are made of.
 
+use std::collections::btree_map::{self, BTreeMap, Entry};
 use std::fmt;
 
 use super::authority::{Authority, Principal};
@@ -166,7 +170,7 @@ pub struct Binding {
 }
 
 /// How a policy judges. New ways (a classifier's answer) are added as the model grows.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Rule {
     /// A predicate, judged the same way every time from the same events.
@@ -198,7 +202,7 @@ pub enum Expect {
 
 /// One example of a policy at work: events, and what the policy should find on the last one.
 /// Fixtures live in the policy, so a change of the policy and of its examples is one change.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fixture {
     /// What the example shows, for the people who read a failure.
     pub name: String,
@@ -211,8 +215,9 @@ pub struct Fixture {
     pub known_gap: bool,
 }
 
-/// A policy as written in a policy graph: plain data, checked when a catalog accepts it.
-#[derive(Debug, Clone, PartialEq)]
+/// A policy as written in a policy graph: plain data, checked when a catalog accepts it. Its
+/// equality is total: a policy equals itself, whatever its conditions and examples hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyDef {
     /// Its id.
     pub id: PolicyId,
@@ -236,13 +241,181 @@ pub struct PolicyDef {
     pub author: Principal,
 }
 
-/// What a catalog is accepted from: the policies, and the bindings that put them into effect.
-#[derive(Debug, Clone, PartialEq, Default)]
+/// What a catalog is accepted from: the policies, and the bindings that put them into effect,
+/// each keyed by its id. No two policies share an id or a name, and no two bindings share an id:
+/// [`PolicyGraph::parse`] is the only way to make one with items, so a graph that exists cannot
+/// hold a duplicate, and code that combines graphs does not check for one again.
+///
+/// The graph has one order, by id, whatever order the items were given in: its policies and its
+/// bindings are read in it, and so is every list a catalog makes of them (see
+/// [`super::catalog`]). Two graphs with the same items are equal, and a policy equals itself,
+/// since every value in it has an equality that is total ([`super::predicate::Number`]).
+///
+/// What the items say of each other (a binding names a policy that exists, a reward a guard) is
+/// checked when a catalog accepts the graph, with everything else that needs the hierarchy.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PolicyGraph {
-    /// The policies.
-    pub policies: Vec<PolicyDef>,
-    /// The bindings.
-    pub bindings: Vec<Binding>,
+    policies: BTreeMap<PolicyId, PolicyDef>,
+    bindings: BTreeMap<BindingId, Binding>,
+    /// Each policy's name, with its id: kept by the one insert beside `policies`, and the names
+    /// of exactly its policies in every graph `parse` returns.
+    names: BTreeMap<PolicyName, PolicyId>,
+}
+
+/// One item that may enter a graph, given to the one insert.
+enum Item {
+    // Boxed: a policy is several times the size of a binding.
+    Policy(Box<PolicyDef>),
+    Binding(Binding),
+}
+
+/// Why an item cannot enter a graph: the graph already has one with its id, or a policy with its
+/// name. A second item with an id already there is a clash even when the two are equal, since in
+/// one graph it is a slip of the one who wrote it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Clash {
+    /// A second policy has the id.
+    Policy(PolicyId),
+    /// A second binding has the id.
+    Binding(BindingId),
+    /// A second policy has the name.
+    Name(PolicyName),
+}
+
+impl fmt::Display for Clash {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Policy(id) => write!(f, "two policies have the id {id}"),
+            Self::Binding(id) => write!(f, "two bindings have the id {id}"),
+            Self::Name(name) => write!(f, "two policies have the name {name}"),
+        }
+    }
+}
+
+/// One reason a graph could not be made of the items given ([`PolicyGraph::parse`]): the
+/// [`Clash`]. It is a type of its own, not the clash alone, so that it can say later where the
+/// item came from without a change to what it says now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphError {
+    clash: Clash,
+}
+
+impl GraphError {
+    /// The clash.
+    pub fn clash(&self) -> &Clash {
+        &self.clash
+    }
+}
+
+impl fmt::Display for GraphError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.clash.fmt(f)
+    }
+}
+
+impl std::error::Error for GraphError {}
+
+impl PolicyGraph {
+    /// The graph of `policies` and `bindings`, when no two policies share an id or a name and no
+    /// two bindings share an id. Otherwise every clash found, each once, in the order of
+    /// [`Clash`]: the policies' ids, then the bindings' ids, each by id, then the names.
+    ///
+    /// An id given twice is a clash of the id, and a name given with two different ids a clash
+    /// of the name, so what is found does not depend on the order the items were given in. The
+    /// name of a policy is checked whether or not its id clashed; an equal policy given twice has
+    /// its name under one id, and clashes by its id alone.
+    pub fn parse(
+        policies: Vec<PolicyDef>,
+        bindings: Vec<Binding>,
+    ) -> Result<Self, Vec<GraphError>> {
+        let mut graph = Self::default();
+        let items = policies
+            .into_iter()
+            .map(|def| Item::Policy(Box::new(def)))
+            .chain(bindings.into_iter().map(Item::Binding));
+        let mut clashes: Vec<Clash> = items
+            .flat_map(|item| graph.insert(item).err().unwrap_or_default())
+            .collect();
+        if clashes.is_empty() {
+            return Ok(graph);
+        }
+        clashes.sort();
+        clashes.dedup();
+        Err(clashes
+            .into_iter()
+            .map(|clash| GraphError { clash })
+            .collect())
+    }
+
+    /// Puts `item` in the graph, unless an item with its id is there already, or, for a policy,
+    /// a policy of another id has its name: the one place that decides whether an item may enter
+    /// a graph. The id and the name of a policy are checked apart, and every clash is returned.
+    ///
+    /// A key that is free is taken even when the item clashes on the other, so a later item is
+    /// compared with every id and name given before it. A graph with a clash is never returned
+    /// ([`PolicyGraph::parse`]), so this leaves no graph that holds one.
+    fn insert(&mut self, item: Item) -> Result<(), Vec<Clash>> {
+        let mut clashes = Vec::new();
+        match item {
+            Item::Policy(def) => {
+                match self.names.entry(def.name.clone()) {
+                    Entry::Occupied(owner) if *owner.get() != def.id => {
+                        clashes.push(Clash::Name(def.name.clone()));
+                    }
+                    Entry::Occupied(_) => {}
+                    Entry::Vacant(slot) => {
+                        slot.insert(def.id);
+                    }
+                }
+                match self.policies.entry(def.id) {
+                    Entry::Occupied(_) => clashes.push(Clash::Policy(def.id)),
+                    Entry::Vacant(slot) => {
+                        slot.insert(*def);
+                    }
+                }
+            }
+            Item::Binding(binding) => match self.bindings.entry(binding.id) {
+                Entry::Occupied(_) => clashes.push(Clash::Binding(binding.id)),
+                Entry::Vacant(slot) => {
+                    slot.insert(binding);
+                }
+            },
+        }
+        if clashes.is_empty() {
+            Ok(())
+        } else {
+            Err(clashes)
+        }
+    }
+
+    /// The policies, by id.
+    pub fn policies(&self) -> btree_map::Values<'_, PolicyId, PolicyDef> {
+        self.policies.values()
+    }
+
+    /// The bindings, by id.
+    pub fn bindings(&self) -> btree_map::Values<'_, BindingId, Binding> {
+        self.bindings.values()
+    }
+
+    /// The policy with the id.
+    pub fn policy(&self, id: PolicyId) -> Option<&PolicyDef> {
+        self.policies.get(&id)
+    }
+
+    /// The binding with the id.
+    pub fn binding(&self, id: BindingId) -> Option<&Binding> {
+        self.bindings.get(&id)
+    }
+
+    /// The policies and the bindings, each by id: what [`PolicyGraph::parse`] takes, for a caller
+    /// that makes another graph from this one.
+    pub fn into_parts(self) -> (Vec<PolicyDef>, Vec<Binding>) {
+        (
+            self.policies.into_values().collect(),
+            self.bindings.into_values().collect(),
+        )
+    }
 }
 
 /// What a policy found on one event.

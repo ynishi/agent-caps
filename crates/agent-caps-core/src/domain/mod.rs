@@ -6,6 +6,8 @@
 //! a [`authority::Principal`].
 //!
 //! ```text
+//! policies, bindings ─ PolicyGraph::parse ─▶ PolicyGraph
+//!                                              (keyed by id: no id or name twice; one order, by id)
 //! PolicyGraph ─ Catalog::accept ─▶ Catalog    (structure, what each policy reads, fixtures)
 //! events ─ Catalog::fold / apply ─▶ State      (an act is folded; a claim is a transaction)
 //! Catalog::effective(mode) ─▶ Effective        (as written: every policy On(the strongest level of

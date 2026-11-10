@@ -7,7 +7,7 @@
 //!       | Spent(meter, by, scope) order amount
 //!       | All[Pred…] | Any[Pred…] | Not Pred
 //! Cond := field == lit | field in {lit…} | glob(field, pattern) | words(field, words)
-//!       | num(field) cmp n | All[Cond…] | Any[Cond…] | Not Cond
+//!       | num(field) cmp number | All[Cond…] | Any[Cond…] | Not Cond
 //! filter   := kind [where Cond]
 //! by       := Anyone | Under(principal) | Only(principal)
 //! selector := filter by by
@@ -19,7 +19,9 @@
 //! and compare what they gathered with a bound, `Count` the number of events as a `u32`, `Spent`
 //! the sum of the amounts of the [`EventKind::Used`] events of one meter as an [`Amount`]. The
 //! type of the bound is the operator's, so neither a count in fractions nor a NaN bound can be
-//! written.
+//! written. The number a condition compares a field with (`num(field) cmp number`) is a
+//! [`Number`], finite and of either sign, so no condition holds a NaN either, and every
+//! predicate equals itself.
 //!
 //! # Known limits of a sum
 //!
@@ -154,7 +156,7 @@ impl Cmp {
 }
 
 /// A condition on one event, with no reference to the past.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cond {
     /// The field equals the literal.
     Eq(Field, Lit),
@@ -164,8 +166,8 @@ pub enum Cond {
     Glob(Field, GlobPattern),
     /// The words field starts with the words: `cargo test -p a` starts with `cargo test`.
     Words(Field, CommandWords),
-    /// The number field compares to the number.
-    Num(Field, Cmp, f64),
+    /// The number field compares to the number, which is finite ([`Number`]).
+    Num(Field, Cmp, Number),
     /// All of them hold (true when there are none).
     All(Vec<Cond>),
     /// One of them holds (false when there are none).
@@ -178,7 +180,7 @@ pub enum Cond {
 /// what an event is, with nothing of who acted. A temporal operator and a `Since` scope add who
 /// acted with a [`Selector`]; the capabilities of a platform and the cover of an exemption read
 /// the filter alone.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventFilter {
     /// The kind of event.
     pub kind: EventKind,
@@ -259,7 +261,7 @@ impl Whose {
 /// The events a temporal operator looks at, or that close a [`Scope::Since`]: those that meet
 /// the filter and whose actor `by` chooses. Whether an event is chosen is answered in one place,
 /// for every reader.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Selector {
     /// What the event is.
     pub filter: EventFilter,
@@ -355,7 +357,7 @@ pub struct Selector {
 /// - It reads no actor and needs no [`By`]: nobody starts it again but the time of the acts.
 /// - `Lifetime::Within(Every(w))` (see [`super::adjust::Lifetime`]) ends a temporary adjustment
 ///   at the next boundary of the window, as the carry to the first act past it finds.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     /// From [`EventKind::SessionStart`].
     Session,
@@ -434,6 +436,13 @@ impl std::error::Error for WindowError {}
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Amount(f64);
 
+/// `value` when it is finite, a negative zero made zero; `None` for NaN and the infinities. The
+/// one check an [`Amount`] and a [`Number`] are made through.
+fn finite(value: f64) -> Option<f64> {
+    // `-0.0 + 0.0` is `0.0`: one zero.
+    value.is_finite().then_some(value + 0.0)
+}
+
 impl Amount {
     /// No amount: where a sum starts.
     pub const ZERO: Self = Self(0.0);
@@ -441,13 +450,10 @@ impl Amount {
     /// The amount `value`; NaN, the infinities and negative numbers are refused. A negative zero
     /// is zero.
     pub fn new(value: f64) -> Result<Self, AmountError> {
-        if !value.is_finite() {
-            Err(AmountError::NotFinite(value))
-        } else if value < 0.0 {
-            Err(AmountError::Negative(value))
-        } else {
-            // `-0.0 + 0.0` is `0.0`: one zero.
-            Ok(Self(value + 0.0))
+        match finite(value) {
+            None => Err(AmountError::NotFinite(value)),
+            Some(value) if value < 0.0 => Err(AmountError::Negative(value)),
+            Some(value) => Ok(Self(value)),
         }
     }
 
@@ -484,6 +490,47 @@ impl fmt::Display for AmountError {
 
 impl std::error::Error for AmountError {}
 
+// A finite `f64`, which an amount always is, is equal to itself, so `==` is an equivalence.
+impl Eq for Amount {}
+
+/// The number a condition compares a number field with ([`Cond::Num`]): a finite number, of
+/// either sign. The constructor refuses NaN and the infinities, so a condition always equals
+/// itself and a comparison with it is known whenever the field's value is a number.
+#[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+pub struct Number(f64);
+
+// A finite `f64`, which a number always is, is equal to itself, so `==` is an equivalence.
+impl Eq for Number {}
+
+impl Number {
+    /// The number `value`; NaN and the infinities are refused. A negative zero is zero.
+    pub fn new(value: f64) -> Result<Self, NumberError> {
+        finite(value).map(Self).ok_or(NumberError::NotFinite(value))
+    }
+
+    /// The number.
+    pub const fn get(self) -> f64 {
+        self.0
+    }
+}
+
+/// Why a value is not a number a condition can compare with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum NumberError {
+    /// NaN or an infinity.
+    NotFinite(f64),
+}
+
+impl fmt::Display for NumberError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFinite(value) => write!(f, "{value} is not a finite number"),
+        }
+    }
+}
+
+impl std::error::Error for NumberError {}
+
 /// How a sum of amounts compares with its bound. There is no equality: a sum of amounts measured
 /// in fractions rarely meets a bound exactly, so a rule says on which side of it the sum is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -513,7 +560,7 @@ impl Order {
 }
 
 /// A predicate on the judged event and the events before it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pred {
     /// The condition holds of the judged event.
     Now(Cond),
@@ -1256,7 +1303,7 @@ mod tests {
         );
         assert_eq!(mixed.check(EventKind::ToolUse).len(), 1);
         assert!(
-            Cond::Num(Field::Score, Cmp::Ge, 0.5)
+            Cond::Num(Field::Score, Cmp::Ge, Number::new(0.5).unwrap())
                 .check(EventKind::Measured)
                 .is_empty()
         );
@@ -1407,6 +1454,19 @@ mod tests {
         assert_eq!(one.saturating_add(one), two);
         assert!(Order::Lt.holds(one, two) && Order::Le.holds(two, two));
         assert!(!Order::Gt.holds(two, two) && Order::Ge.holds(two, one));
+    }
+
+    #[test]
+    fn a_number_is_finite_of_either_sign_with_one_zero() {
+        assert_eq!(
+            Number::new(f64::NAN).map_err(|e| e.to_string()),
+            Err("NaN is not a finite number".to_owned())
+        );
+        for bad in [f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(Number::new(bad), Err(NumberError::NotFinite(bad)));
+        }
+        assert_eq!(Number::new(-1.5).map(Number::get), Ok(-1.5));
+        assert!(Number::new(-0.0).unwrap().get().is_sign_positive());
     }
 
     #[test]

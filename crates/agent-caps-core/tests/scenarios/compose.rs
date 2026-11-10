@@ -7,15 +7,19 @@
 //!
 //! What these tests state is what holds today: the caller composes the policies and the bindings
 //! into one `PolicyGraph`, `Catalog::accept` takes it as any other, and two sets that share an id
-//! or a name are rejected with `DuplicateId` or `DuplicateName`. A project changes the level of a
-//! shared policy by giving a binding with the id of the shared one, which the caller's composition
-//! puts in its place: the core sees only the composed graph, and keeps the ids unique.
+//! or a name cannot be made one graph (`PolicyGraph::parse` refuses them with a `Clash`). A
+//! project changes the level of a shared policy by giving a binding with the id of the shared
+//! one, which the caller's composition puts in its place: the core sees only the composed graph,
+//! and keeps the ids unique.
+//!
+//! `concat` is kept as the caller's composition of today, with its replacement of a binding by
+//! id, only until composing sets is the core's (the issue that follows the normalized graph),
+//! which replaces it and these tests.
 
-use agent_caps_core::domain::catalog::AcceptError;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{
-    DefLayer, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
+    Clash, DefLayer, GraphError, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
 };
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
 use agent_caps_core::domain::schema::{EventKind, Field};
@@ -55,23 +59,24 @@ fn project_graph(project_id: &str, project_name: &str) -> PolicyGraph {
 
 /// What the caller does today to put two sets side by side: the policies of both, and the
 /// bindings of both, a binding of the second taking the place of the first's with its id.
-fn concat(first: PolicyGraph, second: PolicyGraph) -> PolicyGraph {
-    let mut policies = first.policies;
-    policies.extend(second.policies);
-    let mut bindings: Vec<_> = first
-        .bindings
+fn concat(first: PolicyGraph, second: PolicyGraph) -> Result<PolicyGraph, Vec<GraphError>> {
+    let (mut policies, first_bindings) = first.into_parts();
+    let (second_policies, second_bindings) = second.into_parts();
+    policies.extend(second_policies);
+    let mut bindings: Vec<_> = first_bindings
         .into_iter()
-        .filter(|b| !second.bindings.iter().any(|s| s.id == b.id))
+        .filter(|b| !second_bindings.iter().any(|s| s.id == b.id))
         .collect();
-    bindings.extend(second.bindings);
-    PolicyGraph { policies, bindings }
+    bindings.extend(second_bindings);
+    PolicyGraph::parse(policies, bindings)
 }
 
 /// UC7, FR4, FR42: two sets joined by the caller are accepted as one catalog, and the project's
 /// binding of a shared policy applies.
 #[test]
 fn two_sets_joined_by_the_caller_are_one_catalog() {
-    let catalog = accept(concat(shared(), project_graph(OTHER, "project-bash-ok"))).unwrap();
+    let catalog =
+        accept(concat(shared(), project_graph(OTHER, "project-bash-ok")).unwrap()).unwrap();
     assert_eq!(catalog.policies().len(), 3);
 
     // The shared guard and reward work as they did alone ...
@@ -96,22 +101,24 @@ fn two_sets_joined_by_the_caller_are_one_catalog() {
 /// UC7, FR4: two sets that share an id are rejected.
 #[test]
 fn two_sets_with_the_same_id_are_rejected() {
-    let errors = rejected_graph(concat(shared(), project_graph(GUARD, "project-bash-ok")));
-    assert_eq!(errors, vec![AcceptError::DuplicateId(id(GUARD))]);
+    let clashes = clashes(concat(shared(), project_graph(GUARD, "project-bash-ok")));
+    assert_eq!(clashes, vec![Clash::Policy(id(GUARD))]);
 }
 
 /// UC7, FR4: two sets that share a name are rejected.
 #[test]
 fn two_sets_with_the_same_name_are_rejected() {
-    let errors = rejected_graph(concat(shared(), project_graph(OTHER, "test-before-stop")));
+    let clashes = clashes(concat(shared(), project_graph(OTHER, "test-before-stop")));
     assert_eq!(
-        errors,
-        vec![AcceptError::DuplicateName(
-            "test-before-stop".parse().unwrap()
-        )]
+        clashes,
+        vec![Clash::Name("test-before-stop".parse().unwrap())]
     );
 }
 
-fn rejected_graph(graph: PolicyGraph) -> Vec<AcceptError> {
-    accept(graph).unwrap_err().0
+fn clashes(graph: Result<PolicyGraph, Vec<GraphError>>) -> Vec<Clash> {
+    graph
+        .unwrap_err()
+        .iter()
+        .map(|error| error.clash().clone())
+        .collect()
 }

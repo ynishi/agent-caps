@@ -439,13 +439,27 @@ pub fn clippy_reward(level: Level) -> Written {
     )
 }
 
-/// The graph of the written policies, each with its base binding, and the bindings given.
+/// The graph of the written policies, each with its base binding, and the bindings given. A
+/// scenario that gives a duplicate calls `PolicyGraph::parse` itself (see `graph.rs`).
 pub fn graph_of(policies: Vec<Written>, bindings: Vec<Binding>) -> PolicyGraph {
     let base: Vec<Binding> = policies.iter().filter_map(base_of).collect();
-    PolicyGraph {
-        policies: policies.into_iter().map(|w| w.def).collect(),
-        bindings: base.into_iter().chain(bindings).collect(),
-    }
+    PolicyGraph::parse(
+        policies.into_iter().map(|w| w.def).collect(),
+        base.into_iter().chain(bindings).collect(),
+    )
+    .unwrap()
+}
+
+/// The graph of `graph`'s policies and of its bindings that `keep` keeps, each changed by `edit`.
+pub fn rebuilt(
+    graph: &PolicyGraph,
+    keep: impl Fn(&Binding) -> bool,
+    edit: impl Fn(&mut Binding),
+) -> PolicyGraph {
+    let (policies, mut bindings) = graph.clone().into_parts();
+    bindings.retain(|b| keep(b));
+    bindings.iter_mut().for_each(edit);
+    PolicyGraph::parse(policies, bindings).unwrap()
 }
 
 /// `Catalog::accept` of the graph with the hierarchy of the scenarios.
@@ -461,7 +475,7 @@ pub fn rejected(policies: Vec<Written>, bindings: Vec<Binding>) -> Vec<AcceptErr
     accept(graph_of(policies, bindings)).unwrap_err().0
 }
 
-/// Every policy of the catalog with what it comes to under the mode, in the catalog's order.
+/// Every policy of the catalog with what it comes to under the mode, by id.
 pub fn listed(catalog: &Catalog, under: Known<Option<Mode>>) -> Vec<(PolicyId, Effect)> {
     catalog
         .effective(&under)

@@ -257,15 +257,15 @@ impl Catalog {
         // One that goes with its policy is the removal of the policy, reported as that.
         let same_item =
             |a: &Binding, b: &Binding| a.id == b.id && a.policy == b.policy && a.author == b.author;
-        let unkept = self.bindings().iter().filter(|old| {
+        let unkept = self.bindings().filter(|old| {
             uncovered(&old.author)
                 && next.policy(old.policy).is_some()
-                && !next.bindings().iter().any(|new| {
+                && !next.bindings().any(|new| {
                     same_item(old, new) && new.mode == old.mode && new.level >= old.level
                 })
         });
-        let new_in_another_name = next.bindings().iter().filter(|new| {
-            uncovered(&new.author) && !self.bindings().iter().any(|old| same_item(old, new))
+        let new_in_another_name = next.bindings().filter(|new| {
+            uncovered(&new.author) && !self.bindings().any(|old| same_item(old, new))
         });
         for binding in unkept.chain(new_in_another_name) {
             let target = Target::Binding(binding.id);
@@ -311,7 +311,6 @@ fn meta_differences(before: &Catalog, after: &Catalog) -> Vec<PolicyId> {
     let bindings_of = |catalog: &Catalog, id: PolicyId| -> Vec<Binding> {
         catalog
             .bindings()
-            .iter()
             .filter(|b| b.policy == id)
             .cloned()
             .collect()
