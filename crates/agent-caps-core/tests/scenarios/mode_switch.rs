@@ -12,7 +12,7 @@ use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::Mode;
 use agent_caps_core::domain::policy::{Binding, Level, Rule};
-use agent_caps_core::domain::predicate::{Cond, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, Pred, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::state::Known;
 
@@ -72,7 +72,7 @@ fn strict_guard() -> Written {
 /// lowers it does not, and the mode stays where it was.
 #[test]
 fn a_switch_from_below_takes_effect_when_it_tightens_and_not_when_it_lowers() {
-    let catalog = levelled(tested_in(Scope::Task));
+    let catalog = levelled(tested_in(Scope::Task(By::Anyone)));
     let start = agent(Body::TaskStart);
     assert_eq!(
         mode_after(&catalog, &[start.clone(), switch_below("fix")]),
@@ -154,7 +154,7 @@ fn the_roots_switch_to_the_same_mode_starts_the_mode_again() {
 fn a_switch_from_below_does_not_leave_a_mode_the_roots_guard_reads() {
     let mut guard = test_guard(Level::Advise);
     guard.level = None;
-    guard.rule = Rule::Structural(tested_in(Scope::Task));
+    guard.rule = Rule::Structural(tested_in(Scope::Task(By::Anyone)));
     let catalog = catalog(vec![guard, strict_guard()], levels());
     let start = agent(Body::TaskStart);
     for to in ["explore", "fix"] {
@@ -313,7 +313,7 @@ fn a_switch_from_below_does_not_take_effect_when_a_root_rule_reads_the_judgments
 #[test]
 fn a_switch_from_below_into_a_mode_takes_effect_when_no_rule_reads_the_judgments_of_the_guard() {
     let mut unrelated = push_after_allowed(GUARD);
-    unrelated.rule = Rule::Structural(tested_in(Scope::Task));
+    unrelated.rule = Rule::Structural(tested_in(Scope::Task(By::Anyone)));
     let catalog = catalog(vec![strict_stop_guard(), unrelated], vec![]);
     assert_eq!(
         mode_after(&catalog, &[switch_below("strict")]),

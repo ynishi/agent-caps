@@ -18,14 +18,17 @@
 //!                                           inside"; else neutral
 //! SlotCheck    Slot(s)                      loosens: a slot's direction cannot      each policy reading s
 //!                                           be read
-//! SpawnCheck   ActorAdded { child,          loosens when a policy that reads the    each such policy
-//!              under }                      actor sees the child leave a
-//!                                           principal, or move where its
-//!                                           direction cannot be told; tightens
-//!                                           when every move is into a principal
-//!                                           read as "applies inside"; else neutral
+//! SpawnCheck   ActorAdded { child,          loosens when a reader of the actor      each such policy's
+//!              under }                      (a policy, or an adjustment in effect   author, each such
+//!                                           whose lifetime chooses by actor) sees   adjustment's maker
+//!                                           the child leave a principal, or move
+//!                                           where its direction cannot be told;
+//!                                           tightens when every move is into a
+//!                                           principal read as "applies inside";
+//!                                           else neutral
 //! RuleCheck, ModeCheck and SpawnCheck also loosen every other policy that reads the judgments of
-//! a policy they move, either way, by that reader's author (`verdict_of`).
+//! a policy they move, either way, by that reader's author (`verdict_of`). An adjustment writes
+//! no judgment, so one that moves spreads to no one.
 //! ```
 //!
 //! The move of a state atom is looked at by one check: [`ModeCheck`] the mode as rules read it
@@ -108,8 +111,14 @@
 //!
 //! A spawn is judged against a place directly under its spawner (see [`super`]). The place it is
 //! judged against and the place it is put are each the ancestors of the child, from the state's
-//! one place that walks them; the child itself is in both, so it is in neither difference. A
-//! principal that a policy reads `ActorUnder` of is
+//! one place that walks them; the child itself is in both, so it is in neither difference.
+//!
+//! The readers of the actor are collected in one place (`actor_readings`), each a [`Reader`]: a
+//! policy reads the principals of its `ActorUnder` and of every `By::Under` of its selectors and
+//! scopes, by its author; a temporary adjustment in effect reads the `By::Under` of the scope its
+//! lifetime lasts within, by the one who made it ([`HeldAdjustment::by`]). A `By::Under` is
+//! always read in a direction that cannot be told: a child placed under its principal has its
+//! later acts counted, or closing or starting the scope again. A principal that a reader reads is
 //!
 //! - entered, when the new place has it and the spawner's does not,
 //! - left, when the spawner's place has it and the new one does not.
@@ -117,8 +126,8 @@
 //! When the spawner is not whole in the hierarchy (an actor it does not know, a leaf of unknown
 //! place), the principals the walk passed are all that is known of its place: those the new place
 //! has beyond them are entered, and every principal the new place lacks may have been left. When
-//! the new place is not known, nothing of the difference is, and every policy that reads the
-//! actor is loosened, except where both walks stop at the same leaf (a leaf of unknown place that
+//! the new place is not known, nothing of the difference is, and every reader of the actor is
+//! loosened, except where both walks stop at the same leaf (a leaf of unknown place that
 //! places a child under itself): what is above that leaf is the same in both, so the principals
 //! passed below it tell the difference.
 //!
@@ -144,14 +153,14 @@
 //! anyone, and one that loosens is the floor's. An upper rule that reads a slot of the mode's
 //! scope, which moves when the mode switches, is [`SlotCheck`]'s to loosen.
 
-use super::{AdjustmentCheck, CheckFinding, CheckName, Combine, Confidence, FindingDetail};
+use super::{AdjustmentCheck, CheckFinding, CheckName, Combine, Confidence, FindingDetail, Reader};
 use super::{TxDecision, TxInput, Verdict};
 use crate::domain::authority::Principal;
 use crate::domain::catalog::{Catalog, Effect, Effective, InEffect, lowered};
 use crate::domain::name::{AdjustmentId, BindingId, Mode, PolicyId};
 use crate::domain::policy::ModeScope;
 use crate::domain::predicate::{Reading, Truth};
-use crate::domain::state::{Ancestry, HeldAdjustment, Known, State, StateChange};
+use crate::domain::state::{Ancestry, HeldAdjustment, HeldEffect, Known, State, StateChange};
 
 /// The domain's checks, in the order their findings are reported.
 pub(super) fn domain() -> [&'static dyn AdjustmentCheck; 4] {
@@ -223,48 +232,52 @@ fn direction(moves: &[(Move, Reading)]) -> Option<Direction> {
     }
 }
 
-/// One policy that a claim or a change moves, the way it moves, and the authors a loosening asks.
+/// One reader that a claim or a change moves, the way it moves, and the authors a loosening
+/// asks. Only the spawn check moves a reader that is not a policy.
 #[derive(Debug, Clone)]
 struct Moved {
-    policy: PolicyId,
+    reader: Reader,
     direction: Direction,
     /// Read only when it loosens.
     authors: Vec<Principal>,
 }
 
-/// The verdict from the policies that move: it loosens when any loosens, by their authors; else
+/// The verdict from the readers that move: it loosens when any loosens, by their authors; else
 /// tightens when any tightens; else it is neutral. `detail` says what it loosens, given every
-/// loosened policy.
+/// loosened reader.
 ///
 /// A policy that moves, either way, writes other judgments than it did; every other policy of
 /// `readers` that reads its judgments (the catalog's `Reads`, which is the one owner of who reads
 /// whose judgments) has its slots moved by that, in a direction that cannot be read, so it is
-/// loosened too, and its author is among the authors. A claim gives one catalog; a change gives
-/// the catalogs before and after.
+/// loosened too, and its author is among the authors. A temporary adjustment writes no
+/// judgment, so one that moves spreads to no one. A claim gives one catalog; a change gives the
+/// catalogs before and after.
 fn verdict_of(
     readers: &[&Catalog],
     moved: &[Moved],
-    detail: impl FnOnce(Vec<PolicyId>) -> FindingDetail,
+    detail: impl FnOnce(Vec<Reader>) -> FindingDetail,
 ) -> Verdict {
-    let mut loosened: Vec<PolicyId> = Vec::new();
+    let mut loosened: Vec<Reader> = Vec::new();
     let mut authors: Vec<Principal> = Vec::new();
     for m in moved.iter().filter(|m| m.direction == Direction::Loosens) {
-        if !loosened.contains(&m.policy) {
-            loosened.push(m.policy);
+        if !loosened.contains(&m.reader) {
+            loosened.push(m.reader);
         }
         for author in &m.authors {
             add_author(&mut authors, author);
         }
     }
+    let judging: Vec<PolicyId> = moved.iter().filter_map(|m| m.reader.policy()).collect();
     for catalog in readers {
         for (reader, reads) in catalog.reads() {
             let id = reader.id();
-            if moved
+            if judging
                 .iter()
-                .any(|m| m.policy != id && reads.reads_judgments_of(m.policy))
+                .any(|policy| *policy != id && reads.reads_judgments_of(*policy))
             {
-                if !loosened.contains(&id) {
-                    loosened.push(id);
+                let reader_id = Reader::Policy(id);
+                if !loosened.contains(&reader_id) {
+                    loosened.push(reader_id);
                 }
                 add_author(&mut authors, reader.author());
             }
@@ -382,13 +395,13 @@ impl<'a> Point<'a> {
         }
     }
 
-    /// Whether an adjustment in effect has the id ([`State`]'s one answer); none for a catalog
-    /// alone.
-    fn holds(&self, id: AdjustmentId) -> bool {
-        match *self {
-            Self::Catalog { .. } => false,
-            Self::State { state, .. } => state.holds_adjustment(id),
-        }
+    /// What the adjustment in effect with the id does, as it is read
+    /// ([`HeldAdjustment::effect`]); none when no adjustment has the id, and for a catalog alone.
+    fn effect_of(&self, id: AdjustmentId) -> Option<HeldEffect<'a>> {
+        self.held()
+            .iter()
+            .find(|held| held.adjustment.id == id)
+            .map(HeldAdjustment::effect)
     }
 }
 
@@ -418,19 +431,26 @@ pub(in crate::domain) fn rule_moves(before: &Point<'_>, after: &Point<'_>) -> Ve
     for up in lowered(&to, &from) {
         moves.push(RuleMove::Raised { policy: up.policy });
     }
-    // The adjustments are told apart by their ids, which are unique among those in effect.
-    for started in after
-        .held()
-        .iter()
-        .filter(|held| !before.holds(held.adjustment.id))
-    {
-        if let Some(guard) = started.adjustment.exempted() {
+    // The adjustments are told apart by their ids, which are unique among those in effect, and
+    // each is read as `HeldAdjustment::effect` says: one that may have ended exempts and
+    // suspends nothing. So an exemption or a suspension starts where it is in effect after and
+    // was not before, and an exemption ends where it was in effect before and is not after.
+    for started in after.held() {
+        let effect = started.effect();
+        let was = before.effect_of(started.adjustment.id);
+        if let Some((guard, _)) = effect.exemption
+            && was.and_then(|was| was.exemption).is_none()
+        {
             moves.push(RuleMove::Exempted {
                 policy: guard,
                 authors: exemption_authors(after.catalog(), guard),
             });
         }
-        for id in started.adjustment.suspended() {
+        for id in effect
+            .suspended
+            .iter()
+            .filter(|id| was.is_none_or(|was| !was.suspended.contains(id)))
+        {
             if let Some(b) = after.catalog().bindings().iter().find(|b| b.id == *id) {
                 moves.push(RuleMove::Suspended {
                     policy: b.policy,
@@ -440,12 +460,13 @@ pub(in crate::domain) fn rule_moves(before: &Point<'_>, after: &Point<'_>) -> Ve
             }
         }
     }
-    for ended in before
-        .held()
-        .iter()
-        .filter(|held| !after.holds(held.adjustment.id))
-    {
-        if let Some(guard) = ended.adjustment.exempted() {
+    for ended in before.held() {
+        if let Some((guard, _)) = ended.effect().exemption
+            && after
+                .effect_of(ended.adjustment.id)
+                .and_then(|now| now.exemption)
+                .is_none()
+        {
             moves.push(RuleMove::Unexempted { policy: guard });
         }
     }
@@ -475,12 +496,12 @@ pub(in crate::domain) fn rules_verdict(readers: &[&Catalog], moves: Vec<RuleMove
             | RuleMove::Suspended {
                 policy, authors, ..
             } => Moved {
-                policy: *policy,
+                reader: Reader::Policy(*policy),
                 direction: Direction::Loosens,
                 authors: authors.clone(),
             },
             RuleMove::Raised { policy } | RuleMove::Unexempted { policy } => Moved {
-                policy: *policy,
+                reader: Reader::Policy(*policy),
                 direction: Direction::Tightens,
                 authors: Vec::new(),
             },
@@ -489,11 +510,12 @@ pub(in crate::domain) fn rules_verdict(readers: &[&Catalog], moves: Vec<RuleMove
     verdict_of(readers, &moved, |loosened| {
         let reading = loosened
             .into_iter()
-            .filter(|p| {
+            .filter(|r| {
                 !moved
                     .iter()
-                    .any(|m| m.policy == *p && m.direction == Direction::Loosens)
+                    .any(|m| m.reader == *r && m.direction == Direction::Loosens)
             })
+            .filter_map(Reader::policy)
             .collect();
         FindingDetail::Rules { moves, reading }
     })
@@ -514,11 +536,15 @@ impl AdjustmentCheck for RuleCheck {
         let (was, is) = (input.before, &*ended);
         // One catalog: the rules move only with the mode or the temporary adjustments. Most
         // claims, a record of a judgment among them, move neither, and need no catalog computed.
+        // An adjustment that comes to be possibly ended moves the rules as one that ends would.
         let same_adjustments = was
             .adjustments()
             .iter()
-            .map(|h| h.adjustment.id)
-            .eq(is.adjustments().iter().map(|h| h.adjustment.id));
+            .map(|h| (h.adjustment.id, h.holding))
+            .eq(is
+                .adjustments()
+                .iter()
+                .map(|h| (h.adjustment.id, h.holding)));
         if was.mode() == is.mode()
             && was.adjustments_lost() == is.adjustments_lost()
             && same_adjustments
@@ -587,14 +613,14 @@ fn mode_verdict(
                 .map(|(mode, how)| (mode_move(mode, before, after), *how))
                 .collect();
             direction(&moves).map(|direction| Moved {
-                policy: policy.id(),
+                reader: Reader::Policy(policy.id()),
                 direction,
                 authors: vec![policy.author().clone()],
             })
         })
         .collect();
-    verdict_of(&[catalog], &moved, |reading| FindingDetail::Mode {
-        reading,
+    verdict_of(&[catalog], &moved, |loosened| FindingDetail::Mode {
+        reading: loosened.into_iter().filter_map(Reader::policy).collect(),
     })
 }
 
@@ -695,6 +721,36 @@ fn movement(spawner: &Ancestry, placed: &Ancestry, principal: &Principal) -> Mov
     }
 }
 
+/// One reader of the hierarchy of actors: who it is, the principals it reads with the direction
+/// it reads each in, and the one a loosening of it asks.
+struct ActorReading<'a> {
+    reader: Reader,
+    actors: Vec<(&'a Principal, Reading)>,
+    author: &'a Principal,
+}
+
+/// Every reader of the hierarchy of actors in `state` of `catalog`: the one place that collects
+/// what a spawn can move. Each policy reads what its `Reads` says (`ActorUnder` and every
+/// `By::Under` of its selectors and scopes), by its author; each temporary adjustment in effect
+/// reads what its lifetime reads ([`crate::domain::adjust::Lifetime`]), by the one who made it
+/// ([`HeldAdjustment::by`]). A reader that reads no principal is left out.
+fn actor_readings<'a>(catalog: &'a Catalog, state: &'a State) -> Vec<ActorReading<'a>> {
+    let policies = catalog.reads().map(|(policy, reads)| ActorReading {
+        reader: Reader::Policy(policy.id()),
+        actors: reads.actors().iter().map(|(p, r)| (p, *r)).collect(),
+        author: policy.author(),
+    });
+    let held = state.adjustments().iter().map(|held| ActorReading {
+        reader: Reader::Adjustment(held.adjustment.id),
+        actors: held.adjustment.lifetime.reading().into_iter().collect(),
+        author: &held.by,
+    });
+    policies
+        .chain(held)
+        .filter(|reading| !reading.actors.is_empty())
+        .collect()
+}
+
 fn spawn_verdict(input: &TxInput<'_>, child: &Principal, under: &Principal) -> Verdict {
     let catalog = input.catalog;
     let authority = catalog.authority();
@@ -703,18 +759,18 @@ fn spawn_verdict(input: &TxInput<'_>, child: &Principal, under: &Principal) -> V
     let actors = input.before.actors();
     let spawner = actors.ancestry(&input.event.by, authority);
     let placed = actors.ancestry(under, authority);
-    let moved: Vec<Moved> = catalog
-        .reads()
-        .filter_map(|(policy, reads)| {
-            let moves: Vec<(Move, Reading)> = reads
-                .actors()
+    let moved: Vec<Moved> = actor_readings(catalog, input.before)
+        .into_iter()
+        .filter_map(|reading| {
+            let moves: Vec<(Move, Reading)> = reading
+                .actors
                 .iter()
-                .map(|(principal, reading)| (movement(&spawner, &placed, principal), *reading))
+                .map(|(principal, how)| (movement(&spawner, &placed, principal), *how))
                 .collect();
             direction(&moves).map(|direction| Moved {
-                policy: policy.id(),
+                reader: reading.reader,
                 direction,
-                authors: vec![policy.author().clone()],
+                authors: vec![reading.author.clone()],
             })
         })
         .collect();

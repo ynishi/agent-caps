@@ -116,6 +116,43 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a rule says whose events it means, and who may start
+  its scope again (#42, #25). `once`, `count` and `last` take `select:
+  Selector { filter: EventFilter, by: By }` instead of `event: EventFilter`,
+  and `Scope::Since` takes a `Selector`. `By` is `Anyone`, `Under(Principal)`
+  or `Only(Principal)` and has no default: `Under(p)` takes only the events
+  whose actor is `p` or below it in the hierarchy of actors, read as
+  `Pred::ActorUnder` reads it, and an actor whose place is not known makes the
+  choice unknown; `Only(p)` takes the events of `p` itself, reads no hierarchy
+  and is never unknown. `Scope::Task` is
+  now `Scope::Task(By)`, started again by a `TaskStart` whose actor the `By`
+  chooses, and the new `Scope::Turn(By)` starts again at a `PromptSubmit`.
+  `EventFilter` is unchanged and stays event-only: `Capabilities` and the cover
+  of an exemption cannot hold a `By`. To translate, `event: f` becomes
+  `select: Selector { filter: f, by: By::Anyone }`, `Scope::Since(f)` becomes
+  `Scope::Since(Selector { filter: f, by: By::Anyone })`, and `Scope::Task`
+  becomes `Scope::Task(By::Anyone)`. `Anyone` keeps today's meaning, where the
+  acts of the one a limit is about can start its count over. That one sits
+  below whoever set the limit, so `Under` of the limit's author takes its acts
+  too: a limit only one principal may start again, such as at most three pushes
+  since the last review by the user, is written with `Only`, which no spawn can
+  move. A principal a `By::Under` or `By::Only` names must be in the hierarchy
+  (`AcceptError::UnknownActor`, as for `ActorUnder`), and a temporary
+  adjustment whose lifetime chooses by one that is not is refused with the new
+  `Inadmissible::UnknownActor`. A spawn that places a child under the principal
+  of an `Under` is judged
+  as a loosening of the rule's author, and one that changes who ends a
+  temporary adjustment lasting within such a scope as a loosening of the one
+  who made it: `FindingDetail::Spawn::loosened` is now `Vec<Reader>`, with
+  `Reader::Policy(PolicyId)` or `Reader::Adjustment(AdjustmentId)`. When a
+  start or close of a scope is unknown (an actor of unknown place, a condition
+  not known yet), an adjustment that lasts within it no longer ends: it is kept
+  with `HeldAdjustment::holding` set to the new `Holding::MaybeEnded`, and read
+  in the direction that tightens (its exemption covers nothing, the bindings it
+  adds still hold, its suspensions no longer hold) until a known start or close
+  ends it; before, an unknown close ended a raise with no transaction.
+  `HeldAdjustment` has the new public field `holding`. The ledger's FR39 is
+  withdrawn for FR44, and UC26 is new.
 - Breaking, before 1.0: an exemption is one kind of temporary adjustment, and
   a temporary adjustment can also add and suspend bindings for a while (#39).
   The module `domain::exempt` is now `domain::adjust`. `Body::Exempt(Exempt)`

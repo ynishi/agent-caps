@@ -23,8 +23,10 @@
 //! of the catalog keeps ([`super::adjust`]). A temporary adjustment that is held keeps who made it
 //! ([`HeldAdjustment::by`]), since a binding it adds is that one's, and the transaction asks that
 //! one when the binding is lost; keeping it is a record, not a decision. (Evaluating `ActorUnder`
-//! reads the `by` of the event being judged, which is a fact the rule asks for, not a decision
-//! about trust.) Whether the step of a claim is kept is decided by its transaction
+//! reads the `by` of the event being judged, and a selector or a scope that chooses by actor
+//! ([`super::predicate::By`]) reads the `by` of each event it looks at, through
+//! `Selector::selects`: facts the rule asks for, not decisions about trust.) Whether the step of a
+//! claim is kept is decided by its transaction
 //! ([`super::tx`]), which compares the state before and after the step as a list of
 //! [`StateChange`]s.
 //!
@@ -32,17 +34,23 @@
 //! carry(at)      what the past brings, whatever the event is
 //!   1. the scopes the previous event closed (kept in the state as `closing`): on true, start
 //!      again (slots to their start values, the adjustments that last within the scope end); on
-//!      unknown, make the slots of the scope unknown (a `once` that was true too) and end the
-//!      adjustments that last within it
+//!      unknown, make the slots of the scope unknown (a `once` that was true too) and mark the
+//!      adjustments that last within it as possibly ended (`Holding::MaybeEnded`)
 //!   2. the adjustments whose lifetime ran out by `at` end
 //! step(event)    what the event itself does
-//!   3. `starts_at(event)`, for every scope: true starts it again, unknown is handled as in 1
-//!   4. the event steps every slot, and updates the mode and the adjustments; what a record that
-//!      could not be read may have changed is settled here (see the invariants); an adjustment
-//!      whose lifetime has run out by the time of the event is dropped
-//!   5. `ends_at(event)`, for the scopes of the slots and of the adjustments in effect: a scope
-//!      that is not false is kept in `closing` with its truth
+//!   3. `starts_at(event, actors)`, for the scopes of the slots and of the adjustments in effect:
+//!      true starts it again, unknown is handled as in 1
+//!   4. the event steps every slot (`Selector::selects`), and updates the mode and the
+//!      adjustments; what a record that could not be read may have changed is settled here (see
+//!      the invariants); an adjustment whose lifetime has run out by the time of the event is
+//!      dropped
+//!   5. `ends_at(event, actors)`, for the scopes of the slots and of the adjustments in effect: a
+//!      scope that is not false is kept in `closing` with its truth
 //! ```
+//!
+//! Steps 3 to 5 read the event and the hierarchy of actors, and nothing of time: whether an
+//! event is chosen, starts a scope or closes one is `Selector::selects`, which reads the actor
+//! with `Actors::is_under`.
 //!
 //! An adjustment ([`Body::Adjust`]) is held when the catalog's index admits it
 //! ([`super::adjust`]), with the principal of its event; a cancel ([`Body::Cancel`]) ends the
@@ -70,9 +78,15 @@
 //! - One slot per temporal operator of the catalog's predicates. Each is updated
 //!   from its last value and the new event alone, and goes back to its start value when its
 //!   scope starts again.
-//! - The temporary adjustments in effect, each with who made it ([`State::adjustments`]). Each
-//!   lasts only for its lifetime or until it is cancelled, and only one the catalog's index
-//!   admits is kept.
+//! - The temporary adjustments in effect, each with who made it and whether it is known to be
+//!   held ([`State::adjustments`], [`Holding`]). Each lasts only for its lifetime or until it is
+//!   cancelled, and only one the catalog's index admits is kept. When it cannot be told whether
+//!   the scope an adjustment lasts within started again or closed, the adjustment is kept as
+//!   possibly ended, and what it may have ended is read in the direction that tightens, part by
+//!   part (`HeldAdjustment::effect`, the one place that reads it): an exemption covers nothing,
+//!   a binding it adds still holds, a binding it suspends is not suspended. So not knowing never
+//!   loosens a rule, and never ends a raise without a transaction. A later known start or close
+//!   of the scope ends it, as a cancel does.
 //! - Whether a record that may have been an adjustment or a cancel was lost. It is kept for the
 //!   whole fold, as the mark of a lost spawn is, and how the rules take effect under it is
 //!   [`super::catalog::Catalog::effective_in`]'s.
@@ -115,16 +129,20 @@
 //!   the next judgment, which it may have used up; an adjustment or a cancel sets the mark that
 //!   the temporary adjustments are not known, and a cancel also ends every exemption held, which
 //!   it may have cancelled. Losing a record never loosens a rule.
-//! - The start of a session or a task is assumed not to be lost (a known gap, see [`Scope`]).
+//! - The start of a session, a task or a turn is assumed not to be lost (a known gap, see
+//!   [`Scope`]).
+//! - An actor whose place in the hierarchy is not known makes a selector or a scope that chooses
+//!   by actor unknown on its event, never "not chosen": a slot becomes unknown, and a scope that
+//!   may have started again or closed is handled as one that may have.
 
 use std::borrow::Cow;
 
-use super::adjust::{AdjustIndex, Adjustment, Inadmissible, Lifetime, Temporary};
+use super::adjust::{AdjustIndex, Adjustment, Inadmissible, Lifetime, Temporary, TemporaryBinding};
 use super::authority::{Authority, Principal};
 use super::event::{Body, Event};
-use super::name::{AdjustmentId, Mode, PolicyId};
+use super::name::{AdjustmentId, BindingId, Mode, PolicyId};
 use super::policy::ModeScope;
-use super::predicate::{EventFilter, Pred, Scope, Temporal, Truth};
+use super::predicate::{By, Cond, EventFilter, Pred, Scope, Selector, Temporal, Truth};
 use super::schema::{At, EventKind, Judgment};
 
 /// A value that was seen, or could not be.
@@ -180,6 +198,57 @@ pub struct HeldAdjustment {
     pub by: Principal,
     /// The adjustment.
     pub adjustment: Adjustment,
+    /// Whether it is known to be held, or may have ended.
+    pub holding: Holding,
+}
+
+/// Whether a held adjustment is known to be in effect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Holding {
+    /// It is in effect.
+    Held,
+    /// The scope it lasts within may or may not have started again or closed: an actor of
+    /// unknown place, or a condition not known yet. It is kept, and each part of it is read in
+    /// the direction that tightens (`HeldAdjustment::effect`), until a known start or close of
+    /// the scope ends it, or a cancel does.
+    MaybeEnded,
+}
+
+/// What a held adjustment does, part by part, as it is read: the one reading of [`Holding`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct HeldEffect<'a> {
+    /// The guard it exempts from, with the cover, when it exempts.
+    pub(super) exemption: Option<(PolicyId, Option<&'a Cond>)>,
+    /// The bindings it adds.
+    pub(super) added: &'a [TemporaryBinding],
+    /// The bindings of the catalog it suspends.
+    pub(super) suspended: &'a [BindingId],
+}
+
+impl HeldAdjustment {
+    /// What the adjustment does: all of it while it is held. One that may have ended is read in
+    /// the direction that tightens, part by part, since what cannot be told never loosens: an
+    /// exemption covers nothing (read as ended), a binding it adds still holds (read as held),
+    /// and a binding it suspends is not suspended (read as ended). The one place that reads
+    /// [`Holding`]; the effect of the rules, the cover of an exemption and the transaction's
+    /// comparison all read it here.
+    pub(super) fn effect(&self) -> HeldEffect<'_> {
+        let held = self.holding == Holding::Held;
+        let exemption = match &self.adjustment.change {
+            Temporary::Exempt { guard, cover } if held => Some((*guard, cover.as_ref())),
+            Temporary::Exempt { .. } | Temporary::Rebind { .. } => None,
+        };
+        let suspended = if held {
+            self.adjustment.suspended()
+        } else {
+            &[]
+        };
+        HeldEffect {
+            exemption,
+            added: self.adjustment.added(),
+            suspended,
+        }
+    }
 }
 
 /// One difference between a state and the state after one step: what the transaction of a claim
@@ -364,39 +433,32 @@ impl Slot {
         }
     }
 
-    /// The slot after `body`, which is not an unreadable record.
-    fn step(self, temporal: &Temporal, body: &Body) -> Self {
+    /// The slot after `event`, which is not an unreadable record, with the hierarchy of actors
+    /// its selector reads the actor in.
+    fn step(
+        self,
+        temporal: &Temporal,
+        event: &Event,
+        actors: &Actors,
+        authority: &Authority,
+    ) -> Self {
+        let chosen = temporal.selector().selects(event, actors, authority);
         match (self, temporal) {
-            (Self::Once(seen), Temporal::Once(filter, _)) => {
-                if body.kind() != filter.kind {
-                    return Self::Once(seen);
-                }
-                Self::Once(match (seen, matched(filter, body)) {
-                    (_, Truth::True) | (Known::Known(true), _) => Known::Known(true),
-                    (_, Truth::Unknown) | (Known::Unknown, Truth::False) => Known::Unknown,
-                    (Known::Known(false), Truth::False) => Known::Known(false),
-                })
-            }
-            (Self::Count(count), Temporal::Count(filter, _)) => {
-                if body.kind() != filter.kind {
-                    return Self::Count(count);
-                }
-                Self::Count(match (count, matched(filter, body)) {
-                    (Known::Known(n), Truth::True) => Known::Known(n.saturating_add(1)),
-                    (Known::Known(n), Truth::False) => Known::Known(n),
-                    (_, _) => Known::Unknown,
-                })
-            }
-            (Self::Last(last), Temporal::Last(filter, _)) => {
-                if body.kind() != filter.kind {
-                    return Self::Last(last);
-                }
-                match matched(filter, body) {
-                    Truth::True => Self::Last(Known::Known(Some(body.clone()))),
-                    Truth::False => Self::Last(last),
-                    Truth::Unknown => Self::Last(Known::Unknown),
-                }
-            }
+            (Self::Once(seen), Temporal::Once(..)) => Self::Once(match (seen, chosen) {
+                (_, Truth::True) | (Known::Known(true), _) => Known::Known(true),
+                (_, Truth::Unknown) | (Known::Unknown, Truth::False) => Known::Unknown,
+                (Known::Known(false), Truth::False) => Known::Known(false),
+            }),
+            (Self::Count(count), Temporal::Count(..)) => Self::Count(match (count, chosen) {
+                (Known::Known(n), Truth::True) => Known::Known(n.saturating_add(1)),
+                (Known::Known(n), Truth::False) => Known::Known(n),
+                (_, _) => Known::Unknown,
+            }),
+            (Self::Last(last), Temporal::Last(..)) => match chosen {
+                Truth::True => Self::Last(Known::Known(Some(event.body.clone()))),
+                Truth::False => Self::Last(last),
+                Truth::Unknown => Self::Last(Known::Unknown),
+            },
             // A slot always has the shape of its operator: both come from the same table.
             (slot, _) => slot,
         }
@@ -405,11 +467,7 @@ impl Slot {
 
 /// Whether the temporal operator reads events of `kind`: the kind it looks for.
 fn reads(temporal: &Temporal, kind: EventKind) -> bool {
-    match temporal {
-        Temporal::Once(filter, _) | Temporal::Count(filter, _) | Temporal::Last(filter, _) => {
-            filter.kind == kind
-        }
-    }
+    temporal.selector().filter.kind == kind
 }
 
 /// The state a judgment reads. Made by folding events from [`super::catalog::Catalog::start`]
@@ -430,15 +488,38 @@ pub struct State {
     actors: Actors,
 }
 
+/// The start event of a task scope, of any actor: what `Task(by)` chooses with its `by`.
+const TASK_START: EventFilter = EventFilter {
+    kind: EventKind::TaskStart,
+    cond: None,
+};
+
+/// The start event of a turn scope, of any actor: what `Turn(by)` chooses with its `by`.
+const PROMPT_SUBMIT: EventFilter = EventFilter {
+    kind: EventKind::PromptSubmit,
+    cond: None,
+};
+
 impl Scope {
-    /// Whether the scope starts again before an event of `body`. Any mode switch starts the
-    /// mode's scope again, and a record that may have been one leaves it unknown.
-    pub(super) fn starts_at(&self, body: &Body) -> Truth {
-        let at_session = matches!(body, Body::SessionStart);
+    /// Whether the scope starts again before `event`, with the hierarchy of actors a `By` reads
+    /// the actor in. Every scope starts again at a session's start. `Task` and `Turn` start again
+    /// at their start event when their `By` chooses its actor (`chosen`, unknown when its place
+    /// is). Any mode switch starts the mode's scope again, and a record that may have been one
+    /// leaves it unknown. It reads the event, and nothing of time.
+    pub(super) fn starts_at(&self, event: &Event, actors: &Actors, authority: &Authority) -> Truth {
+        let at_session = matches!(event.body, Body::SessionStart);
+        let started_by = |start: &EventFilter, by: &By| {
+            if at_session {
+                Truth::True
+            } else {
+                chosen(start, by, event, actors, authority)
+            }
+        };
         match self {
             Self::Session | Self::Since(_) => Truth::of(at_session),
-            Self::Task => Truth::of(at_session || matches!(body, Body::TaskStart)),
-            Self::Mode => match body {
+            Self::Task(by) => started_by(&TASK_START, by),
+            Self::Turn(by) => started_by(&PROMPT_SUBMIT, by),
+            Self::Mode => match &event.body {
                 Body::SessionStart | Body::ModeSwitch { .. } => Truth::True,
                 Body::Unreadable { may_have_been }
                     if may_have_been.contains(EventKind::ModeSwitch) =>
@@ -450,16 +531,19 @@ impl Scope {
         }
     }
 
-    /// Whether the scope closes on an event of `body`, which then belongs to the interval it
-    /// closes. Only `Since` closes on an event. A record that could not be read may have been the
-    /// event it looks for only when the filter's kind is one it may have been.
-    pub(super) fn ends_at(&self, body: &Body) -> Truth {
-        let Self::Since(filter) = self else {
+    /// Whether the scope closes on `event`, which then belongs to the interval it closes. Only
+    /// `Since` closes on an event: one its selector chooses ([`Selector::selects`]). A record
+    /// that could not be read may have been the event it looks for only when the filter's kind
+    /// is one it may have been.
+    pub(super) fn ends_at(&self, event: &Event, actors: &Actors, authority: &Authority) -> Truth {
+        let Self::Since(selector) = self else {
             return Truth::False;
         };
-        match body {
-            body if body.kind() == filter.kind => matched(filter, body),
-            Body::Unreadable { may_have_been } if may_have_been.contains(filter.kind) => {
+        match &event.body {
+            body if body.kind() == selector.filter.kind => {
+                selector.selects(event, actors, authority)
+            }
+            Body::Unreadable { may_have_been } if may_have_been.contains(selector.filter.kind) => {
                 Truth::Unknown
             }
             _ => Truth::False,
@@ -468,8 +552,8 @@ impl Scope {
 }
 
 /// Whether `body`, an event of the filter's kind, meets the filter's condition: the one answer to
-/// "does this filter match this event", read by the slots, the scopes and
-/// [`super::catalog::Capabilities`].
+/// "does this filter match this event", read by the selectors, the scopes and
+/// [`super::catalog::Capabilities`]. It reads nothing of who acted.
 pub(super) fn matched(filter: &EventFilter, body: &Body) -> Truth {
     filter
         .cond
@@ -477,9 +561,59 @@ pub(super) fn matched(filter: &EventFilter, body: &Body) -> Truth {
         .map_or(Truth::True, |cond| body.holds(cond))
 }
 
-/// The scopes with a fixed start event, which an adjustment may last within whether or not a slot
-/// counts in them.
-static FIXED_SCOPES: [Scope; 3] = [Scope::Session, Scope::Mode, Scope::Task];
+/// Ends the adjustments that last within a scope `of` takes, as `truth` says it started again or
+/// closed: true ends them, unknown marks them [`Holding::MaybeEnded`] (what may have ended is
+/// read in the direction that tightens), false does nothing. The one rule for ending an
+/// adjustment by its scope, read by the fold and by the state as the next event finds it.
+fn end_within(adjustments: &mut Vec<HeldAdjustment>, of: impl Fn(&Scope) -> bool, truth: Truth) {
+    let within = |held: &HeldAdjustment| matches!(&held.adjustment.lifetime, Lifetime::Within(scope) if of(scope));
+    match truth {
+        Truth::False => {}
+        Truth::True => adjustments.retain(|held| !within(held)),
+        Truth::Unknown => {
+            for held in adjustments.iter_mut().filter(|held| within(held)) {
+                held.holding = Holding::MaybeEnded;
+            }
+        }
+    }
+}
+
+impl Selector {
+    /// Whether the selector chooses `event`, which is not an unreadable record: the event is of
+    /// the filter's kind and meets it ([`matched`]), and its actor is one `by` chooses
+    /// ([`Actors::is_under`] for `Under`, the event's `by` itself for `Only`). The one answer to
+    /// "is this event chosen", read by the slots, by a `Since` that closes and by a task or a
+    /// turn that starts again. Under `Under`, an actor whose place is not known gives unknown,
+    /// unless the filter alone says no; `Only` reads no hierarchy and is never unknown.
+    pub(super) fn selects(&self, event: &Event, actors: &Actors, authority: &Authority) -> Truth {
+        chosen(&self.filter, &self.by, event, actors, authority)
+    }
+}
+
+/// [`Selector::selects`], of a filter and a `By` held apart: the start event of a task or a turn
+/// scope is a filter with no condition, and its `By` is the scope's.
+fn chosen(
+    filter: &EventFilter,
+    by: &By,
+    event: &Event,
+    actors: &Actors,
+    authority: &Authority,
+) -> Truth {
+    if event.body.kind() != filter.kind {
+        return Truth::False;
+    }
+    // The filter alone may say no; then the hierarchy is not walked.
+    let what = matched(filter, &event.body);
+    if what == Truth::False {
+        return Truth::False;
+    }
+    let actor = match by {
+        By::Anyone => Truth::True,
+        By::Under(principal) => actors.is_under(&event.by, principal, authority),
+        By::Only(principal) => Truth::of(event.by == *principal),
+    };
+    Truth::all([what, actor])
+}
 
 impl State {
     /// The state before any event: no mode, every slot at its start value, no adjustment.
@@ -569,15 +703,17 @@ impl State {
         authority: &Authority,
     ) -> Self {
         let body = &event.body;
-        // 3. The scopes that start again before this event. Settling is idempotent, so a scope
-        // listed twice does no harm; only the few that start are cloned.
-        let starting: Vec<(Scope, Truth)> = FIXED_SCOPES
-            .iter()
-            .chain(self.scopes_in_use(table))
-            .filter_map(|scope| match scope.starts_at(body) {
-                Truth::False => None,
-                truth => Some((scope.clone(), truth)),
-            })
+        // 3. The scopes that start again before this event: those of the slots and of the
+        // adjustments in effect, the only ones whose start changes anything. Settling is
+        // idempotent, so a scope listed twice does no harm; only the few that start are cloned.
+        let starting: Vec<(Scope, Truth)> = self
+            .scopes_in_use(table)
+            .filter_map(
+                |scope| match scope.starts_at(event, &self.actors, authority) {
+                    Truth::False => None,
+                    truth => Some((scope.clone(), truth)),
+                },
+            )
             .collect();
         for (scope, truth) in starting {
             self.settle(table, &scope, truth);
@@ -624,11 +760,11 @@ impl State {
                 }
             }
             _ => {
-                self.slots = self
-                    .slots
+                let actors = &self.actors;
+                self.slots = std::mem::take(&mut self.slots)
                     .into_iter()
                     .zip(&table.0)
-                    .map(|(slot, temporal)| slot.step(temporal, body))
+                    .map(|(slot, temporal)| slot.step(temporal, event, actors, authority))
                     .collect();
             }
         }
@@ -639,6 +775,7 @@ impl State {
                 self.adjustments.push(HeldAdjustment {
                     by: event.by.clone(),
                     adjustment: adjustment.clone(),
+                    holding: Holding::Held,
                 });
             }
             Body::Cancel { id } => self.adjustments.retain(|held| held.adjustment.id != *id),
@@ -664,7 +801,7 @@ impl State {
         // 5. The scopes this event closes, each once.
         let mut closing: Vec<(Scope, Truth)> = Vec::new();
         for scope in self.scopes_in_use(table) {
-            let truth = scope.ends_at(body);
+            let truth = scope.ends_at(event, &self.actors, authority);
             if truth != Truth::False && !closing.iter().any(|(seen, _)| seen == scope) {
                 closing.push((scope.clone(), truth));
             }
@@ -725,7 +862,9 @@ impl State {
         changes
     }
 
-    /// The scopes of the slots and of the adjustments in effect, possibly with repeats.
+    /// The scopes of the slots and of the adjustments in effect, possibly with repeats: every
+    /// scope whose start or close changes the state, a scope an adjustment lasts within and no
+    /// slot counts in included.
     fn scopes_in_use<'a>(&'a self, table: &'a SlotTable) -> impl Iterator<Item = &'a Scope> {
         let within = self
             .adjustments
@@ -738,8 +877,8 @@ impl State {
     }
 
     /// Acts on `scope` as `truth` says it started again (or closed): true puts its slots back to
-    /// their start values; unknown makes them unknown; either ends the adjustments that last
-    /// within it.
+    /// their start values and ends the adjustments that last within it; unknown makes the slots
+    /// unknown and marks those adjustments as possibly ended (`end_within`).
     fn settle(&mut self, table: &SlotTable, scope: &Scope, truth: Truth) {
         if truth == Truth::False {
             return;
@@ -752,14 +891,7 @@ impl State {
                 };
             }
         }
-        self.end_within(scope);
-    }
-
-    /// Ends the adjustments that last within `scope`.
-    fn end_within(&mut self, scope: &Scope) {
-        self.adjustments.retain(
-            |h| !matches!(&h.adjustment.lifetime, Lifetime::Within(within) if within == scope),
-        );
+        end_within(&mut self.adjustments, |within| within == scope, truth);
     }
 
     /// The state as the event after this one will find it, as to the adjustments: those that
@@ -777,7 +909,9 @@ impl State {
             return Cow::Borrowed(self);
         }
         let mut ended = self.clone();
-        ended.adjustments.retain(|held| !closed(held));
+        for (scope, truth) in &self.closing {
+            end_within(&mut ended.adjustments, |within| within == scope, *truth);
+        }
         Cow::Owned(ended)
     }
 
@@ -785,14 +919,13 @@ impl State {
     /// reads an exemption's cover on an event. A cover that reads as unknown does not cover it.
     pub(super) fn exempts(&self, guard: PolicyId, event: &Event) -> bool {
         self.adjustments.iter().any(|h| {
-            let Temporary::Exempt { guard: of, cover } = &h.adjustment.change else {
+            // One that may have ended covers nothing (`HeldAdjustment::effect`).
+            let Some((of, cover)) = h.effect().exemption else {
                 return false;
             };
             let in_time = h.adjustment.lifetime.lasts_at(event.at);
-            let covers = cover
-                .as_ref()
-                .is_none_or(|cover| event.body.holds(cover) == Truth::True);
-            *of == guard && in_time && covers
+            let covers = cover.is_none_or(|cover| event.body.holds(cover) == Truth::True);
+            of == guard && in_time && covers
         })
     }
 
@@ -811,29 +944,28 @@ impl State {
             Pred::Now(cond) => event.body.holds(cond),
             Pred::ModeIs(mode) => ModeScope::In(mode.clone()).holds(&self.mode),
             Pred::ActorUnder(principal) => self.actors.is_under(&event.by, principal, authority),
-            Pred::Once {
-                event: filter,
-                scope,
-            } => match slot(Temporal::Once(filter.clone(), scope.clone())) {
-                Some(Slot::Once(Known::Known(seen))) => Truth::of(*seen),
-                _ => Truth::Unknown,
-            },
+            Pred::Once { select, scope } => {
+                match slot(Temporal::Once(select.clone(), scope.clone())) {
+                    Some(Slot::Once(Known::Known(seen))) => Truth::of(*seen),
+                    _ => Truth::Unknown,
+                }
+            }
             Pred::Count {
-                event: filter,
+                select,
                 scope,
                 cmp,
                 n,
-            } => match slot(Temporal::Count(filter.clone(), scope.clone())) {
+            } => match slot(Temporal::Count(select.clone(), scope.clone())) {
                 Some(Slot::Count(Known::Known(count))) => {
                     cmp.holds(*count, *n).map_or(Truth::Unknown, Truth::of)
                 }
                 _ => Truth::Unknown,
             },
             Pred::Last {
-                event: filter,
+                select,
                 scope,
                 test,
-            } => match slot(Temporal::Last(filter.clone(), scope.clone())) {
+            } => match slot(Temporal::Last(select.clone(), scope.clone())) {
                 Some(Slot::Last(Known::Known(Some(last)))) => last.holds(test),
                 Some(Slot::Last(Known::Known(None))) => Truth::False,
                 _ => Truth::Unknown,

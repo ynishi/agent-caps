@@ -27,12 +27,12 @@ use agent_caps_core::domain::judge::{Cause, Recognition, Verdict};
 use agent_caps_core::domain::policy::{
     DefLayer, Expect, Finding, Level, Polarity, PolicyDef, Rule,
 };
-use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field, Judgment};
 
 use super::common::{
-    GUARD, OTHER, REWARD, Written, agent, at, bash, catalog, fixture, id, outcome, step, the_user,
-    unreadable, verdict, words, written,
+    GUARD, OTHER, REWARD, Written, agent, anyone, at, bash, catalog, fixture, id, outcome, step,
+    the_user, unreadable, verdict, words, written,
 };
 
 const COMMIT: &str = GUARD;
@@ -60,14 +60,14 @@ fn commit() -> Event {
 /// The stage `policy` was a hit within the task.
 fn stage_reached(policy: &str) -> Pred {
     Pred::Once {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::Judged,
             cond: Some(Cond::All(vec![
                 Cond::Eq(Field::Policy, Lit::Text(policy.to_owned())),
                 Cond::Eq(Field::Judgment, Lit::Text("hit".to_owned())),
             ])),
-        },
-        scope: Scope::Task,
+        }),
+        scope: Scope::Task(By::Anyone),
     }
 }
 

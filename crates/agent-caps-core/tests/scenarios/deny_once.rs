@@ -15,25 +15,26 @@ use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scop
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
-    GUARD, Written, agent, bash, catalog, id, test_guard, the_user, verdict, violated,
+    GUARD, Written, agent, anyone, bash, catalog, id, test_guard, the_user, verdict, violated,
 };
 
 /// The test guard, applying only while it has not yet denied within the session: the count of
 /// its own `denied` judgments is below one.
 ///
 /// This was once counted within the agent, so that each sub agent was stopped once. There is no
-/// scope of one agent now (FR39 is not decided): the count is the session's, and a sub agent
-/// that starts later is let through where its parent was stopped.
+/// scope of one agent now: events are chosen by the principal an actor sits under (FR44), and a
+/// sub agent has no name a rule can use. The count is the session's, and a sub agent that starts
+/// later is let through where its parent was stopped.
 fn deny_once_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.when = Some(Pred::Count {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::Judged,
             cond: Some(Cond::All(vec![
                 Cond::Eq(Field::Policy, Lit::Text(GUARD.to_owned())),
                 Cond::Eq(Field::Judgment, Lit::Text("denied".to_owned())),
             ])),
-        },
+        }),
         scope: Scope::Session,
         cmp: Cmp::Lt,
         n: 1,
@@ -82,7 +83,8 @@ fn a_stopping_guard_denies_until_its_condition_is_seen() {
 
 /// FR1, UC2, FR41: the guard stops the first end of a turn and lets the second one through. The
 /// record of the denial is written in the name of the guard's author, so it counts. The count is
-/// the session's: "once for each agent" can no longer be written (FR39).
+/// the session's: "once for each agent" can no longer be written, since a rule chooses events by
+/// the principal an actor sits under, not by one actor (FR44).
 #[test]
 fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     // The judgment is not part of the state; the evidence of it is, and a count reads it.

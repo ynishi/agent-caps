@@ -31,8 +31,11 @@
 //!
 //! A spawn ([`Body::Spawn`](super::event::Body::Spawn)) is a claim: the platform observed that an
 //! agent started, but where its child sits in the hierarchy of actors is its spawner's choice,
-//! and the rules that read the actor (`ActorUnder`) take effect by it. The fold keeps only its
-//! shape ([`super::state`]); [`checks::SpawnCheck`] judges the placement.
+//! and the rules that read the actor (`ActorUnder`, and a selector or a scope that chooses
+//! events by actor, [`By::Under`](super::predicate::By::Under)) take effect by it, as does a
+//! temporary adjustment whose lifetime lasts within a scope that chooses by actor: placing a
+//! child under the principal it names lets the child's acts end it. The fold keeps only its
+//! shape ([`super::state`]); [`checks::SpawnCheck`] judges the placement, for every [`Reader`].
 //!
 //! The difference of a spawn is not "before the child existed and after": the child, before, is an
 //! unknown actor, and every rule that reads the actor would be loosened by anything. The place it
@@ -80,7 +83,7 @@ use super::adjust::Inadmissible;
 use super::authority::{Authority, NotCovered, Principal};
 use super::catalog::{AcceptError, Catalog, Rejected};
 use super::event::Event;
-use super::name::PolicyId;
+use super::name::{AdjustmentId, PolicyId};
 use super::policy::{Expect, Finding, PolicyGraph};
 use super::schema::Nature;
 use super::state::{SlotId, State, StateChange};
@@ -193,19 +196,42 @@ pub enum FindingDetail {
         /// The policies that read it.
         reading: Vec<PolicyId>,
     },
-    /// A spawn places a child where these policies, which read the actor, take effect less
-    /// strongly or in a direction that cannot be read, against a place directly under the
-    /// spawner, or which read the judgments of a policy that the placement moves.
+    /// A spawn places a child where these readers of the actor take effect less strongly or in a
+    /// direction that cannot be read, against a place directly under the spawner: policies, and
+    /// temporary adjustments whose lifetime ends at the acts of the actors under a principal.
+    /// Policies that read the judgments of a policy that the placement moves are among them.
     Spawn {
         /// The new actor.
         child: Principal,
         /// The actor it is placed under.
         under: Principal,
-        /// The policies it loosens.
-        loosened: Vec<PolicyId>,
+        /// The readers it loosens.
+        loosened: Vec<Reader>,
     },
     /// What a check from outside the domain says, in its own words.
     Described(String),
+}
+
+/// What reads where an actor sits in the hierarchy of actors, so that a spawn can move it: a
+/// policy (`ActorUnder`, or a selector or a scope that chooses by actor), or a temporary
+/// adjustment in effect whose lifetime lasts within a scope that chooses by actor. A loosening of
+/// a policy asks its author, and one of an adjustment asks the one who made it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reader {
+    /// The policy.
+    Policy(PolicyId),
+    /// The temporary adjustment in effect.
+    Adjustment(AdjustmentId),
+}
+
+impl Reader {
+    /// The policy, when the reader is one.
+    fn policy(self) -> Option<PolicyId> {
+        match self {
+            Self::Policy(id) => Some(id),
+            Self::Adjustment(_) => None,
+        }
+    }
 }
 
 /// Whether a claim takes effect.

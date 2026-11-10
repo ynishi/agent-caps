@@ -22,7 +22,7 @@ use agent_caps_core::domain::policy::{
     Binding, DefLayer, Expect, Fixture, Level, ModeScope, ModeSet, Polarity, PolicyDef,
     PolicyGraph, Rule,
 };
-use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector};
 use agent_caps_core::domain::schema::{At, EventKind, Field, KindSet};
 use agent_caps_core::domain::state::Known;
 
@@ -219,23 +219,32 @@ pub fn outside(names: &[&str]) -> ModeScope {
     ModeScope::Outside(ModeSet::new(names.iter().map(|n| mode(n)).collect()).unwrap())
 }
 
+/// The events the filter takes, whoever acted: what a rule over events read before it said whose
+/// events it means.
+pub fn anyone(filter: EventFilter) -> Selector {
+    Selector {
+        filter,
+        by: By::Anyone,
+    }
+}
+
 /// `cargo test` passed within the scope.
 pub fn tested_in(scope: Scope) -> Pred {
     Pred::Once {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::ToolUse,
             cond: Some(Cond::All(vec![
                 Cond::Words(Field::Command, words("cargo test")),
                 Cond::Eq(Field::Ok, Lit::Bool(true)),
             ])),
-        },
+        }),
         scope,
     }
 }
 
-/// `cargo test` passed within the task.
+/// `cargo test` passed within the task, which any actor's `TaskStart` starts again.
 pub fn tested() -> Pred {
-    tested_in(Scope::Task)
+    tested_in(Scope::Task(By::Anyone))
 }
 
 /// A commit; with `ok_only`, one that succeeded.
@@ -393,10 +402,10 @@ pub fn push_after_allowed(read: &str) -> Written {
     guard.subject = EventKind::ToolUse;
     guard.when = Some(Pred::Now(Cond::Words(Field::Command, words("git push"))));
     guard.rule = Rule::Structural(Pred::Last {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::Judged,
             cond: Some(Cond::Eq(Field::Policy, Lit::Text(read.to_owned()))),
-        },
+        }),
         scope: Scope::Session,
         test: Cond::Eq(Field::Judgment, Lit::Text("allowed".to_owned())),
     });
@@ -414,11 +423,11 @@ pub fn clippy_reward(level: Level) -> Written {
             subject: EventKind::Stop,
             when: None,
             rule: Rule::Structural(Pred::Once {
-                event: EventFilter {
+                select: anyone(EventFilter {
                     kind: EventKind::ToolUse,
                     cond: Some(Cond::Words(Field::Command, words("cargo clippy"))),
-                },
-                scope: Scope::Task,
+                }),
+                scope: Scope::Task(By::Anyone),
             }),
             polarity: Polarity::Reward {
                 bound_by: id(GUARD),

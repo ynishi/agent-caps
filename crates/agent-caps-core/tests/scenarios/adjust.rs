@@ -13,14 +13,14 @@ use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::BindingId;
 use agent_caps_core::domain::policy::{DefLayer, Level};
-use agent_caps_core::domain::predicate::{EventFilter, Scope};
+use agent_caps_core::domain::predicate::{By, EventFilter, Scope};
 use agent_caps_core::domain::schema::{At, EventKind};
 use agent_caps_core::domain::state::{Known, State};
 use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy, TxReport};
 
 use super::common::{
-    GUARD, OTHER, REWARD, adjustment, adjustment_id, agent, at, bind, binding_id, catalog,
+    GUARD, OTHER, REWARD, adjustment, adjustment_id, agent, anyone, at, bind, binding_id, catalog,
     clippy_reward, exempt_n, id, inside, mode_switch, push_after_allowed, test_guard, the_agent,
     the_helper, the_user, unreadable, user, verdict, violated,
 };
@@ -44,7 +44,7 @@ fn rebind(add: &[(&str, Level)], suspend: &[BindingId]) -> Temporary {
 
 /// The `n`th adjustment, a rebinding for the task.
 fn for_the_task(n: u8, change: Temporary) -> Body {
-    adjustment(n, change, Lifetime::Within(Scope::Task))
+    adjustment(n, change, Lifetime::Within(Scope::Task(By::Anyone)))
 }
 
 /// The binding the guard's author puts it into effect with.
@@ -312,11 +312,11 @@ fn an_adjustment_that_cannot_take_effect_takes_none() {
             Inadmissible::Meta(id(META)),
         ),
         (
-            exempt_n(1, META, None, Lifetime::Within(Scope::Task)),
+            exempt_n(1, META, None, Lifetime::Within(Scope::Task(By::Anyone))),
             Inadmissible::Meta(id(META)),
         ),
         (
-            exempt_n(1, REWARD, None, Lifetime::Within(Scope::Task)),
+            exempt_n(1, REWARD, None, Lifetime::Within(Scope::Task(By::Anyone))),
             Inadmissible::NotAGuard(id(REWARD)),
         ),
         (
@@ -394,7 +394,12 @@ fn a_temporary_binding_is_by_the_policys_author_or_one_below_it() {
         admit(&catalog, &raised[..1], &raised[1]).decision,
         TxDecision::Commit
     );
-    let exempt = agent(exempt_n(2, GUARD, None, Lifetime::Within(Scope::Task)));
+    let exempt = agent(exempt_n(
+        2,
+        GUARD,
+        None,
+        Lifetime::Within(Scope::Task(By::Anyone)),
+    ));
     let report = admit(&catalog, &raised, &exempt);
     assert_eq!(report.decision, TxDecision::Commit, "{report:?}");
 }
@@ -405,10 +410,10 @@ fn a_temporary_binding_is_by_the_policys_author_or_one_below_it() {
 #[test]
 fn a_claim_that_closes_the_scope_of_anothers_raise_needs_the_raisers_cover() {
     let catalog = catalog(vec![test_guard(Level::Advise)], vec![]);
-    let until_scored = Lifetime::Within(Scope::Since(EventFilter {
+    let until_scored = Lifetime::Within(Scope::Since(anyone(EventFilter {
         kind: EventKind::Measured,
         cond: None,
-    }));
+    })));
     let raised = [
         agent(Body::TaskStart),
         user(adjustment(

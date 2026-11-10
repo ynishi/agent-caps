@@ -7,7 +7,7 @@ use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Level, Rule};
-use agent_caps_core::domain::predicate::Scope;
+use agent_caps_core::domain::predicate::{By, Scope};
 use agent_caps_core::domain::schema::{EventKind, KindSet};
 use agent_caps_core::domain::state::Known;
 
@@ -139,7 +139,7 @@ fn a_record_that_may_have_been_a_judgment_ends_an_exemption_for_the_next_judgmen
             &catalog,
             &[
                 start,
-                exemption(None, Lifetime::Within(Scope::Task)),
+                exemption(None, Lifetime::Within(Scope::Task(By::Anyone))),
                 lost,
                 edit("src/a.rs")
             ]

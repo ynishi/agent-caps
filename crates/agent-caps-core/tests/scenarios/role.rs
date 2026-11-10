@@ -13,8 +13,10 @@
 //! An actor the hierarchy does not know, or one placed after a record that may have been a spawn
 //! was lost, is unknown to the hierarchy, and a stopping rule stops it.
 //!
-//! What cannot be written now (FR39): a rule that counts the events of one actor since it was
-//! spawned. The scope of an agent was removed with the event that started it.
+//! What cannot be written: a rule that counts the events of one actor since it was spawned. The
+//! scope of an agent was removed with the event that started it, and a spawned actor has no name
+//! a rule can use; a rule chooses events by the principal an actor sits under instead (FR44, see
+//! the `limits` module).
 
 use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::authority::{NotCovered, Principal};
@@ -26,7 +28,7 @@ use agent_caps_core::domain::policy::{DefLayer, Expect, Level, Polarity, PolicyD
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
 use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::tx::{
-    FindingDetail, TxDecision, TxPolicy, TxReport, Verdict as TxVerdict,
+    FindingDetail, Reader, TxDecision, TxPolicy, TxReport, Verdict as TxVerdict,
 };
 
 use super::common::{
@@ -282,7 +284,7 @@ fn placing_a_child_under_a_role_loosens_a_rule_that_applies_outside_it() {
             detail: FindingDetail::Spawn {
                 child: r3.clone(),
                 under: the_reviewer(),
-                loosened: vec![id(OTHER)],
+                loosened: vec![Reader::Policy(id(OTHER))],
             },
         }
     );
@@ -341,7 +343,7 @@ fn placing_a_child_where_a_guard_applies_loosens_a_rule_that_reads_that_guards_j
             detail: FindingDetail::Spawn {
                 child: r5.clone(),
                 under: the_reviewer(),
-                loosened: vec![id(OTHER)],
+                loosened: vec![Reader::Policy(id(OTHER))],
             },
         }
     );
@@ -580,7 +582,7 @@ fn placing_a_child_loosens_a_reward_that_reads_the_actor() {
             detail: FindingDetail::Spawn {
                 child: r4.clone(),
                 under: the_reviewer(),
-                loosened: vec![id(REWARD)],
+                loosened: vec![Reader::Policy(id(REWARD))],
             },
         }
     );

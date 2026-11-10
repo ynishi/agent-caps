@@ -7,7 +7,7 @@ use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict, judge};
 use agent_caps_core::domain::policy::{DefLayer, Level};
-use agent_caps_core::domain::predicate::{Cond, Lit, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, Lit, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
@@ -18,7 +18,7 @@ use super::common::{
 
 /// An exemption of `guard` with no cover, for the task; its id is the `n`th.
 fn exempt_for_the_task(n: u8, guard: &str) -> Body {
-    exempt_n(n, guard, None, Lifetime::Within(Scope::Task))
+    exempt_n(n, guard, None, Lifetime::Within(Scope::Task(By::Anyone)))
 }
 
 /// FR34, UC6: an exemption from the root covers its target for its lifetime. UC25: one from the
@@ -77,7 +77,7 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
     assert!(matches!(verdict(&catalog, &events), Verdict::Deny(_)));
 
     // `Within(Task)` lasts until the task starts again.
-    let within = user(exempt(Lifetime::Within(Scope::Task)));
+    let within = user(exempt(Lifetime::Within(Scope::Task(By::Anyone))));
     assert_eq!(
         verdict(
             &catalog,
@@ -135,7 +135,7 @@ fn an_exemption_from_the_agent_covers_nothing_whatever_its_lifetime() {
     let start = agent(Body::TaskStart);
     let lifetimes = [
         Lifetime::Next,
-        Lifetime::Within(Scope::Task),
+        Lifetime::Within(Scope::Task(By::Anyone)),
         Lifetime::Within(Scope::Session),
         Lifetime::Until(At::from_millis(1_000)),
     ];
@@ -167,8 +167,8 @@ fn an_exemption_from_the_agent_covers_nothing_whatever_its_lifetime() {
             &catalog,
             &[
                 start,
-                agent(exempt(None, Lifetime::Within(Scope::Task))),
-                user(exempt(None, Lifetime::Within(Scope::Task))),
+                agent(exempt(None, Lifetime::Within(Scope::Task(By::Anyone)))),
+                user(exempt(None, Lifetime::Within(Scope::Task(By::Anyone)))),
                 edit("src/a.rs")
             ]
         ),

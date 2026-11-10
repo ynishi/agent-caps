@@ -79,10 +79,11 @@
 //!   ([`AcceptError::UnknownAuthor`]), so [`Authority::covers`] is total on the authors.
 //! - The author of a meta policy is a root of the hierarchy ([`AcceptError::MetaAuthorNotRoot`]):
 //!   only the top places what nothing changes.
-//! - A principal that `ActorUnder` names is a principal of the hierarchy
-//!   ([`AcceptError::UnknownActor`]): the leaves that spawns add are new at every start, so a rule
-//!   cannot name one. How a policy reads each such principal, in a direction a spawn's
-//!   transaction can use, is part of what it reads ([`super::tx`]).
+//! - A principal that `ActorUnder` names, or that a selector or a scope chooses events by
+//!   (`By::Under`, `By::Only`), is a principal of the hierarchy ([`AcceptError::UnknownActor`]):
+//!   the leaves that spawns add are new at every start, so a rule cannot name one. How a policy
+//!   reads each `ActorUnder` and `By::Under` principal, in a direction a spawn's transaction can
+//!   use, is part of what it reads ([`super::tx`]); a spawn cannot move a `By::Only`.
 //! - An item refers only to items whose author is its own or above it
 //!   ([`AcceptError::ReferencesBelow`]): a reward's `bound_by`, the policy a binding puts into
 //!   effect, and every policy whose judgments a predicate of the policy reads. What is above
@@ -211,8 +212,10 @@ pub enum AcceptError {
         referenced: PolicyId,
     },
     /// A predicate of the policy reads `ActorUnder` of a principal that is not in the
-    /// hierarchy. The leaves that spawns add have names that are new at every start, so a rule
-    /// can name only a principal of the hierarchy.
+    /// hierarchy, or chooses events by one (`By::Under` or `By::Only` of a selector or a
+    /// scope). The leaves
+    /// that spawns add have names that are new at every start, so a rule can name only a
+    /// principal of the hierarchy.
     UnknownActor {
         /// The policy.
         policy: PolicyId,
@@ -816,7 +819,8 @@ pub(super) struct Reads {
     /// The modes it reads with `ModeIs`, each with the direction it reads it in. A mode read in
     /// two directions is `Unreadable`. The mode's scope is read through `slots`.
     modes: Vec<(Mode, Reading)>,
-    /// The principals it reads with `ActorUnder`, each with the direction it reads it in. A
+    /// The principals it reads with `ActorUnder`, and those its selectors and scopes choose
+    /// events by (`By::Under`, always `Unreadable`), each with the direction it reads it in. A
     /// principal read in two directions is `Unreadable`.
     actors: Vec<(Principal, Reading)>,
 }
@@ -858,7 +862,8 @@ impl Reads {
         reads
     }
 
-    /// The principals the policy reads with `ActorUnder`, each with the direction it reads it in.
+    /// The principals the policy reads in the hierarchy of actors, with `ActorUnder` or a
+    /// `By::Under`, each with the direction it reads it in.
     pub(super) fn actors(&self) -> &[(Principal, Reading)] {
         &self.actors
     }
@@ -946,7 +951,7 @@ impl Catalog {
         let slots = SlotTable::of(policies.iter().flat_map(Policy::preds));
         let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
         check_reads(&policies, &reads, &authority, &mut errors);
-        check_actors(&policies, &reads, &authority, &mut errors);
+        check_actors(&policies, &authority, &mut errors);
         let index = AdjustIndex::new(
             policies.iter().map(|p| {
                 let reach = match p.polarity() {
@@ -1028,18 +1033,20 @@ impl Catalog {
     /// no suspension is taken to hold, since one may have been cancelled. The one list both the
     /// effect ([`Catalog::effective_in`]) and the authors of a lowering read.
     pub(super) fn bindings_in<'a>(&'a self, state: &'a State) -> Vec<InEffect<'a>> {
+        // Each held adjustment is read as `HeldAdjustment::effect` says: one that may have ended
+        // still adds its bindings and suspends none.
         let suspended: Vec<BindingId> = if state.adjustments_lost() {
             Vec::new()
         } else {
             state
                 .adjustments()
                 .iter()
-                .flat_map(|held| held.adjustment.suspended())
+                .flat_map(|held| held.effect().suspended)
                 .copied()
                 .collect()
         };
         let temporary = state.adjustments().iter().flat_map(|held| {
-            held.adjustment.added().iter().map(|t| InEffect {
+            held.effect().added.iter().map(|t| InEffect {
                 policy: t.policy,
                 level: t.level,
                 mode: &ANY_MODE,
@@ -1446,22 +1453,22 @@ fn check_reads(
     }
 }
 
-/// Every principal a policy reads with `ActorUnder` is a principal of the hierarchy: what a
-/// policy reads is [`Reads`], the value the transaction of a spawn reads too.
-fn check_actors(
-    policies: &[Policy],
-    reads: &[Reads],
-    authority: &Authority,
-    errors: &mut Vec<AcceptError>,
-) {
-    for (policy, reads) in policies.iter().zip(reads) {
-        for (principal, _) in reads.actors() {
-            if !authority.contains(principal) {
-                errors.push(AcceptError::UnknownActor {
-                    policy: policy.id(),
-                    principal: principal.clone(),
-                });
-            }
+/// Every principal a policy reads with `ActorUnder` or chooses events by (`By::Under` or
+/// `By::Only`) is a principal of the hierarchy, each reported once per policy. The principals
+/// are those its predicates name (`Pred::named_actors_into`), a superset of what [`Reads`] keeps
+/// for the transaction of a spawn: an `Only` is no reading a spawn can move, and is checked here
+/// all the same.
+fn check_actors(policies: &[Policy], authority: &Authority, errors: &mut Vec<AcceptError>) {
+    for policy in policies {
+        let mut named: Vec<&Principal> = Vec::new();
+        for pred in policy.preds() {
+            pred.named_actors_into(&mut named);
+        }
+        for principal in named.into_iter().filter(|p| !authority.contains(p)) {
+            errors.push(AcceptError::UnknownActor {
+                policy: policy.id(),
+                principal: principal.clone(),
+            });
         }
     }
 }

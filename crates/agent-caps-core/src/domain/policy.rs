@@ -49,7 +49,7 @@ use std::fmt;
 use super::authority::{Authority, Principal};
 use super::event::Event;
 use super::name::{BindingId, Mode, PolicyId, PolicyName};
-use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Truth, reads_unnarrowed};
+use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Selector, Truth, reads_unnarrowed};
 use super::schema::{EventKind, Field};
 use super::state::{Known, SlotTable, State};
 
@@ -401,29 +401,37 @@ impl Policy {
 /// `pred` with each filter of judgments that narrows to no policy limited to the policies in
 /// `visible`.
 fn scope_pred(pred: &Pred, visible: &Cond) -> Pred {
+    let selector = |selector: &Selector| Selector {
+        filter: scope_filter(&selector.filter, visible),
+        by: selector.by.clone(),
+    };
     let scoped = |scope: &Scope| match scope {
-        Scope::Since(filter) => Scope::Since(scope_filter(filter, visible)),
+        Scope::Since(since) => Scope::Since(selector(since)),
         other => other.clone(),
     };
     match pred {
         Pred::Now(_) | Pred::ModeIs(_) | Pred::ActorUnder(_) => pred.clone(),
-        Pred::Once { event, scope } => Pred::Once {
-            event: scope_filter(event, visible),
+        Pred::Once { select, scope } => Pred::Once {
+            select: selector(select),
             scope: scoped(scope),
         },
         Pred::Count {
-            event,
+            select,
             scope,
             cmp,
             n,
         } => Pred::Count {
-            event: scope_filter(event, visible),
+            select: selector(select),
             scope: scoped(scope),
             cmp: *cmp,
             n: *n,
         },
-        Pred::Last { event, scope, test } => Pred::Last {
-            event: scope_filter(event, visible),
+        Pred::Last {
+            select,
+            scope,
+            test,
+        } => Pred::Last {
+            select: selector(select),
             scope: scoped(scope),
             test: test.clone(),
         },
