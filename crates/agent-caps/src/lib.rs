@@ -21,7 +21,7 @@
 //! use agent_caps::domain::policy::{
 //!     Binding, DefLayer, Expect, Fixture, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
 //! };
-//! use agent_caps::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
+//! use agent_caps::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector};
 //! use agent_caps::domain::schema::{At, EventKind, Field};
 //!
 //! // Who is who is the caller's arrangement: here, the agent's work is below the user's.
@@ -36,15 +36,20 @@
 //!     ok: Some(ok),
 //! });
 //!
+//! // Whose events count is always stated: here a test run by anyone, within a task that any
+//! // actor's `TaskStart` starts again.
 //! let tested = Pred::Once {
-//!     event: EventFilter {
-//!         kind: EventKind::ToolUse,
-//!         cond: Some(Cond::All(vec![
-//!             Cond::Words(Field::Command, words("cargo test")),
-//!             Cond::Eq(Field::Ok, Lit::Bool(true)),
-//!         ])),
+//!     select: Selector {
+//!         filter: EventFilter {
+//!             kind: EventKind::ToolUse,
+//!             cond: Some(Cond::All(vec![
+//!                 Cond::Words(Field::Command, words("cargo test")),
+//!                 Cond::Eq(Field::Ok, Lit::Bool(true)),
+//!             ])),
+//!         },
+//!         by: By::Anyone,
 //!     },
-//!     scope: Scope::Task,
+//!     scope: Scope::Task(By::Anyone),
 //! };
 //! let fixture = |name: &str, events, expect| Fixture {
 //!     name: name.to_owned(), events, expect, known_gap: false,

@@ -11,11 +11,11 @@ use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
-use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
-    ACTS, GUARD, OTHER, Written, agent, at, bash, catalog, commit_filter, edit, exempt_n,
+    ACTS, GUARD, OTHER, Written, agent, anyone, at, bash, catalog, commit_filter, edit, exempt_n,
     exemption, fixture, id, outcome, test_guard, tested_in, the_agent, the_user, unreadable,
     verdict, violated, words,
 };
@@ -44,7 +44,7 @@ fn commit_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.subject = EventKind::ToolUse;
     guard.when = Some(Pred::Now(Cond::Words(Field::Command, words("git commit"))));
-    guard.rule = Rule::Structural(tested_in(Scope::Since(commit_filter(false))));
+    guard.rule = Rule::Structural(tested_in(Scope::Since(anyone(commit_filter(false)))));
     guard.fixtures = vec![
         fixture(
             "first commit after a test",
@@ -151,9 +151,9 @@ fn the_closing_event_is_judged_with_the_interval_before_it() {
         guard.fixtures = vec![];
         catalog(vec![guard], vec![])
     };
-    let since = || Scope::Since(commit_filter(false));
+    let since = || Scope::Since(anyone(commit_filter(false)));
     let once = advise(Pred::Once {
-        event: commit_filter(false),
+        select: anyone(commit_filter(false)),
         scope: since(),
     });
     let start = agent(Body::TaskStart);
@@ -173,7 +173,7 @@ fn the_closing_event_is_judged_with_the_interval_before_it() {
         Verdict::Allow
     );
     let twice = advise(Pred::Not(Box::new(Pred::Count {
-        event: commit_filter(false),
+        select: anyone(commit_filter(false)),
         scope: since(),
         cmp: Cmp::Ge,
         n: 2,
@@ -187,8 +187,8 @@ fn the_closing_event_is_judged_with_the_interval_before_it() {
     );
     // Closing loosens a count: without the scope, the third commit is the third.
     let task = advise(Pred::Not(Box::new(Pred::Count {
-        event: commit_filter(false),
-        scope: Scope::Task,
+        select: anyone(commit_filter(false)),
+        scope: Scope::Task(By::Anyone),
         cmp: Cmp::Ge,
         n: 2,
     })));
@@ -202,7 +202,7 @@ fn the_closing_event_is_judged_with_the_interval_before_it() {
 #[test]
 fn a_since_scope_starts_again_at_a_session_and_not_at_a_task() {
     let catalog = catalog(
-        vec![stop_guard_in(Scope::Since(commit_filter(false)))],
+        vec![stop_guard_in(Scope::Since(anyone(commit_filter(false))))],
         vec![],
     );
     let stop = agent(Body::Stop);
@@ -238,12 +238,12 @@ fn two_since_scopes_close_on_one_event() {
     let mut guard = test_guard(Level::Force);
     guard.rule = Rule::Structural(Pred::All(vec![
         Pred::Not(Box::new(Pred::Once {
-            event: edited(),
-            scope: Scope::Since(commit_filter(false)),
+            select: anyone(edited()),
+            scope: Scope::Since(anyone(commit_filter(false))),
         })),
         Pred::Not(Box::new(Pred::Once {
-            event: edited(),
-            scope: Scope::Since(bash_call),
+            select: anyone(edited()),
+            scope: Scope::Since(anyone(bash_call)),
         })),
     ]));
     guard.fixtures = vec![
@@ -290,7 +290,7 @@ fn two_since_scopes_close_on_one_event() {
 fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind() {
     let stop = agent(Body::Stop);
     let tested_after_commit = catalog(
-        vec![stop_guard_in(Scope::Since(commit_filter(false)))],
+        vec![stop_guard_in(Scope::Since(anyone(commit_filter(false))))],
         vec![],
     );
     let events = |lost: &[EventKind]| {
@@ -321,7 +321,7 @@ fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind
         kind: EventKind::Judged,
         cond: None,
     };
-    let tested_after_judgment = catalog(vec![stop_guard_in(Scope::Since(judged))], vec![]);
+    let tested_after_judgment = catalog(vec![stop_guard_in(Scope::Since(anyone(judged)))], vec![]);
     assert_eq!(verdict(&tested_after_judgment, &events(&claims)), unknown());
     assert_eq!(
         verdict(&tested_after_judgment, &events(&ACTS)),
@@ -333,7 +333,7 @@ fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind
         kind: EventKind::ModeSwitch,
         cond: None,
     };
-    let tested_after_switch = catalog(vec![stop_guard_in(Scope::Since(switched))], vec![]);
+    let tested_after_switch = catalog(vec![stop_guard_in(Scope::Since(anyone(switched)))], vec![]);
     assert_eq!(
         verdict(&tested_after_switch, &events(&[EventKind::ModeSwitch])),
         unknown()
@@ -353,7 +353,7 @@ fn a_claim_from_below_does_not_close_a_since_scope_the_roots_guard_reads() {
         kind: EventKind::Judged,
         cond: Some(Cond::Eq(Field::Policy, Lit::Text(GUARD.to_owned()))),
     };
-    let catalog = catalog(vec![stop_guard_in(Scope::Since(judged))], vec![]);
+    let catalog = catalog(vec![stop_guard_in(Scope::Since(anyone(judged)))], vec![]);
     let record = |by| {
         at(
             by,
@@ -391,21 +391,24 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
     once.name = "warn-once".parse().unwrap();
     once.author = the_agent();
     once.fixtures = vec![];
-    once.rule = Rule::Structural(Pred::Not(Box::new(tested_in(Scope::Task))));
+    once.rule = Rule::Structural(Pred::Not(Box::new(tested_in(Scope::Task(By::Anyone)))));
     once.when = Some(Pred::Count {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::Judged,
             cond: Some(Cond::All(vec![
                 Cond::Eq(Field::Policy, Lit::Text(OTHER.to_owned())),
                 Cond::Eq(Field::Judgment, Lit::Text("warned".to_owned())),
             ])),
-        },
+        }),
         scope: Scope::Session,
         cmp: Cmp::Lt,
         n: 1,
     });
     let catalog = catalog(
-        vec![stop_guard_in(Scope::Since(commit_filter(false))), once],
+        vec![
+            stop_guard_in(Scope::Since(anyone(commit_filter(false)))),
+            once,
+        ],
         vec![],
     );
     let warned = at(
@@ -453,7 +456,7 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
 #[test]
 fn a_filter_whose_condition_is_unknown_leaves_the_close_unknown() {
     let catalog = catalog(
-        vec![stop_guard_in(Scope::Since(commit_filter(true)))],
+        vec![stop_guard_in(Scope::Since(anyone(commit_filter(true))))],
         vec![],
     );
     let start = agent(Body::TaskStart);
@@ -472,7 +475,12 @@ fn a_filter_whose_condition_is_unknown_leaves_the_close_unknown() {
 fn a_within_since_exemption_ends_after_the_event() {
     let catalog = catalog(vec![no_commit_guard()], vec![]);
     let start = agent(Body::TaskStart);
-    let until_commit = || exemption(None, Lifetime::Within(Scope::Since(commit_filter(true))));
+    let until_commit = || {
+        exemption(
+            None,
+            Lifetime::Within(Scope::Since(anyone(commit_filter(true)))),
+        )
+    };
     let after = |first: Event| {
         verdict(
             &catalog,

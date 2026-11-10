@@ -19,11 +19,12 @@ use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Recognition, Verdict};
 use agent_caps_core::domain::name::GlobPattern;
 use agent_caps_core::domain::policy::{DefLayer, Level, Polarity, PolicyDef, Rule};
-use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
-    GUARD, REWARD, Written, agent, at, bash, catalog, edit, id, outcome, read, the_user, written,
+    GUARD, REWARD, Written, agent, anyone, at, bash, catalog, edit, id, outcome, read, the_user,
+    written,
 };
 
 const DESIGN: &str = "docs/design.md";
@@ -56,14 +57,14 @@ fn design_reward() -> Written {
             Cond::Glob(Field::Path, GlobPattern::new("crates/*/src/domain/*.rs")),
         ]))),
         rule: Rule::Structural(Pred::Once {
-            event: EventFilter {
+            select: anyone(EventFilter {
                 kind: EventKind::ToolUse,
                 cond: Some(Cond::All(vec![
                     Cond::Eq(Field::Tool, Lit::Text("Read".to_owned())),
                     Cond::Eq(Field::Path, Lit::Text(DESIGN.to_owned())),
                 ])),
-            },
-            scope: Scope::Task,
+            }),
+            scope: Scope::Task(By::Anyone),
         }),
         polarity: Polarity::Reward {
             bound_by: id(GUARD),

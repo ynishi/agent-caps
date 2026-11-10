@@ -13,12 +13,12 @@ use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{
     DefLayer, Expect, Finding, Level, Polarity, PolicyDef, Rule,
 };
-use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, PredError, Scope};
+use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, PredError, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field, FieldType};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, Written, agent, at, bash, catalog, fixture, id, lost_line, outcome, rejected,
+    GUARD, Written, agent, anyone, at, bash, catalog, fixture, id, lost_line, outcome, rejected,
     test_guard, the_agent, the_user, verdict, violated, written,
 };
 
@@ -60,7 +60,7 @@ fn bench_scores() -> EventFilter {
 /// The last score of the bench within the session is at least 0.8.
 fn latest_bench_score() -> Pred {
     Pred::Last {
-        event: bench_scores(),
+        select: anyone(bench_scores()),
         scope: Scope::Session,
         test: Cond::Num(Field::Score, Cmp::Ge, 0.8),
     }
@@ -200,7 +200,7 @@ fn a_last_whose_test_does_not_fit_its_events_is_rejected() {
         let mut guard = test_guard(Level::Advise);
         guard.fixtures = vec![];
         guard.rule = Rule::Structural(Pred::Last {
-            event,
+            select: anyone(event),
             scope: Scope::Session,
             test,
         });
@@ -251,11 +251,11 @@ fn a_last_whose_test_does_not_fit_its_events_is_rejected() {
 fn a_last_value_is_false_when_unseen_and_unknown_when_lost() {
     let mut guard = test_guard(Level::Advise);
     guard.rule = Rule::Structural(Pred::Last {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::ToolUse,
             cond: None,
-        },
-        scope: Scope::Task,
+        }),
+        scope: Scope::Task(By::Anyone),
         test: Cond::Eq(Field::Ok, Lit::Bool(true)),
     });
     guard.fixtures = vec![];

@@ -2,18 +2,27 @@
 //!
 //! ```text
 //! Pred := Now(Cond) | ModeIs(mode) | ActorUnder(principal)
-//!       | Once(filter, scope) | Count(filter, scope) cmp n | Last(filter, scope) test Cond
+//!       | Once(selector, scope) | Count(selector, scope) cmp n
+//!       | Last(selector, scope) test Cond
 //!       | All[Pred…] | Any[Pred…] | Not Pred
 //! Cond := field == lit | field in {lit…} | glob(field, pattern) | words(field, words)
 //!       | num(field) cmp n | All[Cond…] | Any[Cond…] | Not Cond
-//! filter := kind [where Cond]
-//! scope  := Session | Mode | Task | Since(filter)
+//! filter   := kind [where Cond]
+//! by       := Anyone | Under(principal) | Only(principal)
+//! selector := filter by by
+//! scope    := Session | Mode | Task(by) | Turn(by) | Since(selector)
 //! ```
 //!
 //! `ModeIs` and `ActorUnder` read the state rather than the events of a scope: the mode in
-//! effect, and where the judged event's actor sits in the hierarchy of actors. How a policy
-//! reads such an atom, in a direction a transaction can use, is answered in one place,
-//! `state_readings`, for every atom that reads the state.
+//! effect, and where the judged event's actor sits in the hierarchy of actors. A [`By::Under`]
+//! reads the hierarchy too, of the actor of each event a selector looks at and of each event
+//! that may start a task or a turn again. How a policy reads such an atom, in a direction a
+//! transaction can use, is answered in one place, `state_readings`, for every atom that reads
+//! the state.
+//!
+//! A [`Selector`] chooses events by what they are ([`EventFilter`]) and by who acted ([`By`]).
+//! The filter alone is what is read where no actor can be: the capabilities of a platform and
+//! the cover of an exemption take an [`EventFilter`], which cannot hold a `By`.
 //!
 //! # Invariants
 //!
@@ -147,8 +156,10 @@ pub enum Cond {
     Not(Box<Cond>),
 }
 
-/// An event a temporal operator looks for: a kind, and a condition on the event when only some
-/// events of that kind count.
+/// Events of one kind, and a condition on the event when only some events of that kind count:
+/// what an event is, with nothing of who acted. A temporal operator and a `Since` scope add who
+/// acted with a [`Selector`]; the capabilities of a platform and the cover of an exemption read
+/// the filter alone.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EventFilter {
     /// The kind of event.
@@ -157,29 +168,101 @@ pub struct EventFilter {
     pub cond: Option<Cond>,
 }
 
+/// Whose events a selector chooses, and whose start event starts a task or a turn scope again.
+/// It has no default: a rule always says whose events it means.
+///
+/// - `Anyone` takes the events of every actor, which is what a rule over events read before. It
+///   lets the one a limit is about start its own count over (see [`Scope`]).
+/// - `Under(p)` takes the events of `p` and of every actor below it, the leaves spawns place
+///   there included: the form for counting what a part of the hierarchy does, such as the pushes
+///   of the agent and its sub agents. Since the one a limit is about sits below whoever set the
+///   limit, `Under` of the limit's author takes that one's acts too.
+/// - `Only(p)` takes the events of `p` alone: the form for a limit that only `p` may start again,
+///   such as a count of pushes since the last review by the user. No spawn can move it, since a
+///   spawned leaf is never `p` (its name is new at every start).
+///
+/// The principal of `Under` and `Only` must be one of the authority's, in a rule and in the
+/// lifetime of a temporary adjustment alike.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum By {
+    /// The events of every actor.
+    Anyone,
+    /// The events whose actor (their `by`) is the principal or sits below it in the hierarchy of
+    /// actors, as [`Pred::ActorUnder`] reads it. An actor whose place is not known gives
+    /// unknown, not "not under".
+    Under(Principal),
+    /// The events whose actor is the principal itself, not one below it. It reads no hierarchy,
+    /// so it is never unknown.
+    Only(Principal),
+}
+
+impl By {
+    /// The principal it names, when it names one.
+    pub(super) fn principal(&self) -> Option<&Principal> {
+        match self {
+            Self::Anyone => None,
+            Self::Under(principal) | Self::Only(principal) => Some(principal),
+        }
+    }
+}
+
+/// The events a temporal operator looks at, or that close a [`Scope::Since`]: those that meet
+/// the filter and whose actor `by` chooses. Whether an event is chosen is answered in one place,
+/// for every reader.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Selector {
+    /// What the event is.
+    pub filter: EventFilter,
+    /// Who acted.
+    pub by: By,
+}
+
 /// The span a temporal operator counts within, and that an exemption may last for. Each starts
 /// again at its own boundary; a new session starts all of them again.
 ///
 /// A scope has two boundaries, both read from the event being folded: the event before which it
 /// starts again, and the event on which it closes (the closing event belongs to the interval it
 /// closes, and the interval starts again before the next event). The state folds both in one
-/// place, so every scope, the four fixed ones and [`Scope::Since`], is handled by one rule.
+/// place, so every scope is handled by one rule.
 ///
-/// `Session` and `Task` assume their start events are not lost to an unreadable record
+/// # Who may start a scope again
+///
+/// A scope starts again at an act, and an act takes effect whoever it comes from. So the one a
+/// limit is about can start its count over by its own acts, unless the scope says who may. `Task`
+/// and `Turn` say whose start event starts them again, and `Since` whose events close it, each
+/// with a [`By`] that cannot be left out: `By::Anyone` keeps every actor's events,
+/// `By::Under(p)` only those of `p` and the actors below it, and `By::Only(p)` only those of `p`
+/// itself. The one a limit is about sits below the one who set it, so a limit that only its
+/// author may start again is written with `Only`. `Session` starts again at
+/// [`EventKind::SessionStart`], an act of the platform, and has no `By`. A claim, such as a
+/// mode switch or a record that closes a `Since`, is judged as a transaction ([`super::tx`]).
+///
+/// An actor whose place in the hierarchy is not known (one placed after a lost spawn) leaves it
+/// unknown whether it starts or closes a scope that chooses by `Under`, and that is handled as
+/// any unknown start or close is: the slots of the scope become unknown, and an adjustment that
+/// lasts within it is kept as possibly ended, read in the direction that tightens (an exemption
+/// covers nothing, a binding it adds still holds, a suspension no longer holds; see
+/// [`super::state`]). Placing a child under the principal of an `Under` changes whose acts
+/// start or close the scope, so a spawn that does is asked of the rule's author ([`super::tx`]).
+/// An `Only` reads no hierarchy: no actor's place leaves it unknown, and no spawn moves it.
+///
+/// `Session`, `Task` and `Turn` assume their start events are not lost to an unreadable record
 /// (a known gap: a lost start leaves the scope looking as if it had not started again).
 /// [`Scope::Mode`] and [`Scope::Since`] do not: when a lost record may have been a mode switch,
 /// or the event a `Since` looks for, the scope's slots become unknown.
 ///
 /// # `Since`
 ///
-/// `Since(filter)` is the span after the last event that matches the filter. The matching event
-/// belongs to the interval it closes, so an event is judged with the interval before it, and the
+/// `Since(selector)` is the span after the last event the selector chooses. That event belongs
+/// to the interval it closes, so an event is judged with the interval before it, and the
 /// interval starts again before the next event. It starts again too at
 /// [`EventKind::SessionStart`], and not at [`EventKind::TaskStart`]. A filter whose condition is
-/// unknown on an event (`ok` of a tool call whose result is not back) leaves it unknown whether
-/// the interval closed: the slots of the scope become unknown before the next event, and an
-/// exemption that lasts within the scope ends. A record that could not be read closes the scope
-/// as unknown only when the filter's kind is one the record may have been.
+/// unknown on an event (`ok` of a tool call whose result is not back), or an actor whose place is
+/// unknown, leaves it unknown whether the interval closed: the slots of the scope become unknown
+/// before the next event, and an adjustment that lasts within the scope is kept as possibly
+/// ended: an exemption covers nothing, and a raise still holds. A record that could
+/// not be read closes the scope as unknown only when the filter's kind is one the record may have
+/// been.
 ///
 /// - `once(test passed, Since(commit))` asks whether a test passed since the last commit. It is
 ///   judged on the commit itself with the interval before it, so a second commit with no new
@@ -187,12 +270,12 @@ pub struct EventFilter {
 /// - `once(commit, Since(commit))` is true only on a commit, and `count(commit, Since(commit))`
 ///   is at most 1.
 /// - Closing an interval tightens a rule on `once` (what was seen before is forgotten) and
-///   loosens a limit on `count` (the count starts over). An act takes effect whoever it comes
-///   from, so the acts of the one the rule is about can start a `count` over: with
-///   `count(edit, Since(commit)) <= 3`, one who commits after every third edit never reaches
-///   the limit. Write such a limit on a scope those acts cannot close, or accept it. A claim
-///   closes the scope only from one who covers the authors of the rules that read it
-///   ([`super::tx`]).
+///   loosens a limit on `count` (the count starts over). With `By::Anyone`, the acts of the one
+///   the rule is about can start a `count` over: with `count(edit, Since(commit by Anyone)) <=
+///   3`, one who commits after every third edit never reaches the limit. With
+///   `count(push, Since(review by Under(reviewer))) <= 3`, only a review by the reviewer or an
+///   actor below it starts the count over, and with `Since(review by Only(user))` only the
+///   user's own review does.
 /// - To let only a call that succeeded close the interval, restrict the filter to
 ///   `ok == true`. A call that failed, or that was stopped and never ran, does not match, and
 ///   the interval it belongs to goes on.
@@ -206,10 +289,25 @@ pub enum Scope {
     /// From the last mode switch that took effect, a switch to the mode already in effect
     /// included.
     Mode,
-    /// From [`EventKind::TaskStart`].
-    Task,
-    /// After the last event that matches the filter.
-    Since(EventFilter),
+    /// From the last [`EventKind::TaskStart`] whose actor the `By` chooses, or the start of the
+    /// session.
+    Task(By),
+    /// From the last [`EventKind::PromptSubmit`] whose actor the `By` chooses, or the start of
+    /// the session.
+    Turn(By),
+    /// After the last event the selector chooses.
+    Since(Selector),
+}
+
+impl Scope {
+    /// Who may start the scope again or close it, when the scope says.
+    pub(super) fn by(&self) -> Option<&By> {
+        match self {
+            Self::Task(by) | Self::Turn(by) => Some(by),
+            Self::Since(selector) => Some(&selector.by),
+            Self::Session | Self::Mode => None,
+        }
+    }
 }
 
 /// A predicate on the judged event and the events before it.
@@ -228,14 +326,14 @@ pub enum Pred {
     /// Such an event happened within the scope, the judged event included.
     Once {
         /// The event looked for.
-        event: EventFilter,
+        select: Selector,
         /// Since when.
         scope: Scope,
     },
     /// The number of such events within the scope, the judged event included, compares to `n`.
     Count {
         /// The events counted.
-        event: EventFilter,
+        select: Selector,
         /// Since when.
         scope: Scope,
         /// How the count compares.
@@ -243,17 +341,18 @@ pub enum Pred {
         /// What it is compared with.
         n: u32,
     },
-    /// The last event within the scope that matches the filter meets the condition. False when
-    /// there was no such event. The condition is read from that event as a condition of
+    /// The last event within the scope that the selector chooses meets the condition. False
+    /// when there was no such event. The condition is read from that event as a condition of
     /// [`Pred::Now`] is from the judged one, so it may compare a number
     /// (`Last { Measured where oracle == "bench", Session, score >= 0.8 }`) and an event whose
     /// value is not known gives unknown.
     ///
-    /// `Last { event: EventFilter { kind, cond: None }, scope, test: Cond::Eq(field, value) }`
-    /// is "the field had this value in the last event of its kind".
+    /// `Last { select: Selector { filter: EventFilter { kind, cond: None }, by: By::Anyone },
+    /// scope, test: Cond::Eq(field, value) }` is "the field had this value in the last event of
+    /// its kind".
     Last {
-        /// The events looked at: the last one that matches counts.
-        event: EventFilter,
+        /// The events looked at: the last one chosen counts.
+        select: Selector,
         /// Since when.
         scope: Scope,
         /// What must hold of that event, read from the kind of the filter.
@@ -271,15 +370,24 @@ pub enum Pred {
 /// the same temporal part share a slot.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Temporal {
-    Once(EventFilter, Scope),
-    Count(EventFilter, Scope),
-    Last(EventFilter, Scope),
+    Once(Selector, Scope),
+    Count(Selector, Scope),
+    Last(Selector, Scope),
 }
 
 impl Temporal {
     pub(super) fn scope(&self) -> &Scope {
         match self {
             Self::Once(_, scope) | Self::Count(_, scope) | Self::Last(_, scope) => scope,
+        }
+    }
+
+    /// The events the operator looks at.
+    pub(super) fn selector(&self) -> &Selector {
+        match self {
+            Self::Once(selector, _) | Self::Count(selector, _) | Self::Last(selector, _) => {
+                selector
+            }
         }
     }
 }
@@ -395,8 +503,8 @@ impl Scope {
     /// What is wrong with the scope: the filter of a `Since` is checked like the filter of a
     /// `once`.
     fn check_into(&self, errors: &mut Vec<PredError>) {
-        if let Self::Since(filter) = self {
-            filter.check_into(errors);
+        if let Self::Since(selector) = self {
+            selector.filter.check_into(errors);
         }
     }
 }
@@ -414,13 +522,17 @@ impl Pred {
             Self::Now(cond) => cond.check_into(subject, errors),
             // Whether the principal is one of the hierarchy is the catalog's to check.
             Self::ModeIs(_) | Self::ActorUnder(_) => {}
-            Self::Once { event, scope } | Self::Count { event, scope, .. } => {
-                event.check_into(errors);
+            Self::Once { select, scope } | Self::Count { select, scope, .. } => {
+                select.filter.check_into(errors);
                 scope.check_into(errors);
             }
-            Self::Last { event, scope, test } => {
-                event.check_into(errors);
-                test.check_into(event.kind, errors);
+            Self::Last {
+                select,
+                scope,
+                test,
+            } => {
+                select.filter.check_into(errors);
+                test.check_into(select.filter.kind, errors);
                 scope.check_into(errors);
             }
             Self::All(preds) | Self::Any(preds) => {
@@ -429,6 +541,35 @@ impl Pred {
                 }
             }
             Self::Not(pred) => pred.check_into(subject, errors),
+        }
+    }
+
+    /// Adds to `out` every principal the predicate names in the hierarchy of actors that `out`
+    /// does not hold yet, in the order they first appear: those of `ActorUnder` and of every `By`
+    /// of its selectors and scopes (`Under` and `Only`). What the catalog checks against the
+    /// hierarchy, over every predicate of a policy into one `out`.
+    pub(super) fn named_actors_into<'a>(&'a self, out: &mut Vec<&'a Principal>) {
+        let mut note = |principal: &'a Principal| {
+            if !out.contains(&principal) {
+                out.push(principal);
+            }
+        };
+        match self {
+            Self::Now(_) | Self::ModeIs(_) => {}
+            Self::ActorUnder(principal) => note(principal),
+            Self::Once { select, scope }
+            | Self::Count { select, scope, .. }
+            | Self::Last { select, scope, .. } => {
+                temporal_bys(select, scope)
+                    .filter_map(By::principal)
+                    .for_each(note);
+            }
+            Self::All(preds) | Self::Any(preds) => {
+                for pred in preds {
+                    pred.named_actors_into(out);
+                }
+            }
+            Self::Not(pred) => pred.named_actors_into(out),
         }
     }
 
@@ -442,9 +583,11 @@ impl Pred {
     fn temporals_into(&self, out: &mut Vec<Temporal>) {
         let found = match self {
             Self::Now(_) | Self::ModeIs(_) | Self::ActorUnder(_) => None,
-            Self::Once { event, scope } => Some(Temporal::Once(event.clone(), scope.clone())),
-            Self::Count { event, scope, .. } => Some(Temporal::Count(event.clone(), scope.clone())),
-            Self::Last { event, scope, .. } => Some(Temporal::Last(event.clone(), scope.clone())),
+            Self::Once { select, scope } => Some(Temporal::Once(select.clone(), scope.clone())),
+            Self::Count { select, scope, .. } => {
+                Some(Temporal::Count(select.clone(), scope.clone()))
+            }
+            Self::Last { select, scope, .. } => Some(Temporal::Last(select.clone(), scope.clone())),
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
                     pred.temporals_into(out);
@@ -476,15 +619,19 @@ impl Pred {
 
     fn judged_reads_into(&self, out: &mut Vec<JudgedRead>) {
         let since = |scope: &Scope| match scope {
-            Scope::Since(filter) => judged_read(filter),
+            Scope::Since(selector) => judged_read(&selector.filter),
             _ => None,
         };
         let found = match self {
             Self::Now(_) | Self::ModeIs(_) | Self::ActorUnder(_) => Vec::new(),
-            Self::Once { event, scope } | Self::Count { event, scope, .. } => {
-                vec![judged_read(event), since(scope)]
+            Self::Once { select, scope } | Self::Count { select, scope, .. } => {
+                vec![judged_read(&select.filter), since(scope)]
             }
-            Self::Last { event, scope, test } => vec![last_read(event, test), since(scope)],
+            Self::Last {
+                select,
+                scope,
+                test,
+            } => vec![last_read(&select.filter, test), since(scope)],
             Self::All(preds) | Self::Any(preds) => {
                 for pred in preds {
                     pred.judged_reads_into(out);
@@ -532,17 +679,38 @@ pub(super) enum Reading {
 pub(super) enum StateAtom<'a> {
     /// `ModeIs(mode)`.
     Mode(&'a Mode),
-    /// `ActorUnder(principal)`.
+    /// `ActorUnder(principal)`, or a `By::Under(principal)` of a selector or a scope.
     Actor(&'a Principal),
 }
 
 /// Every atom of `pred` that reads the state, each once, with the direction `pred` reads it in
 /// when it stands at `site`: the one place that answers this, for every such atom. An atom read
-/// in two directions is `Unreadable`.
+/// in two directions is `Unreadable`. A `By::Under` of a temporal operator, of its selector or
+/// its scope, is read as [`by_reading`] says, wherever it stands.
 pub(super) fn state_readings(pred: &Pred, site: Site) -> Vec<(StateAtom<'_>, Reading)> {
     let mut out = Vec::new();
     readings_into(pred, site, false, &mut out);
     out
+}
+
+/// The principal a `By::Under` reads, with the direction it is read in: always `Unreadable`.
+/// Placing an actor under the principal makes its later acts counted, or able to close or start a scope
+/// again, and which way that moves a rule cannot be told. The one answer, for a selector and a
+/// scope of a predicate and for the scope a temporary adjustment lasts within.
+///
+/// `Anyone` and `Only` read nothing a spawn can move: a spawned leaf is never the principal of an
+/// `Only`, so they give none.
+pub(super) fn by_reading(by: &By) -> Option<(&Principal, Reading)> {
+    match by {
+        By::Anyone | By::Only(_) => None,
+        By::Under(principal) => Some((principal, Reading::Unreadable)),
+    }
+}
+
+/// The `By`s of a temporal operator: that of its selector, and that of its scope when the scope
+/// has one.
+fn temporal_bys<'a>(select: &'a Selector, scope: &'a Scope) -> impl Iterator<Item = &'a By> {
+    std::iter::once(&select.by).chain(scope.by())
 }
 
 fn readings_into<'a>(
@@ -561,7 +729,15 @@ fn readings_into<'a>(
             return;
         }
         Pred::Not(pred) => return readings_into(pred, site, !negated, out),
-        Pred::Now(_) | Pred::Once { .. } | Pred::Count { .. } | Pred::Last { .. } => return,
+        Pred::Once { select, scope }
+        | Pred::Count { select, scope, .. }
+        | Pred::Last { select, scope, .. } => {
+            for (principal, reading) in temporal_bys(select, scope).filter_map(by_reading) {
+                note_reading(out, StateAtom::Actor(principal), reading);
+            }
+            return;
+        }
+        Pred::Now(_) => return,
     };
     let reading = if site == Site::GuardWhen && !negated {
         Reading::Positive
@@ -776,23 +952,28 @@ mod tests {
         );
     }
 
+    /// Every event of `kind`, of anyone.
+    fn any(kind: EventKind, cond: Option<Cond>) -> Selector {
+        Selector {
+            filter: EventFilter { kind, cond },
+            by: By::Anyone,
+        }
+    }
+
     #[test]
     fn a_temporal_condition_is_read_from_its_own_kind() {
         let ran_tests = Pred::Once {
-            event: EventFilter {
-                kind: EventKind::ToolUse,
-                cond: Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
-            },
-            scope: Scope::Task,
+            select: any(
+                EventKind::ToolUse,
+                Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
+            ),
+            scope: Scope::Task(By::Anyone),
         };
         // The subject is a stop; the condition inside `once` reads the tool use it looks for.
         assert!(ran_tests.check(EventKind::Stop).is_empty());
         let wrong = Pred::Once {
-            event: EventFilter {
-                kind: EventKind::Stop,
-                cond: Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
-            },
-            scope: Scope::Task,
+            select: any(EventKind::Stop, Some(Cond::Eq(Field::Ok, Lit::Bool(true)))),
+            scope: Scope::Task(By::Anyone),
         };
         assert_eq!(wrong.check(EventKind::Stop).len(), 1);
     }
@@ -800,26 +981,62 @@ mod tests {
     #[test]
     fn the_same_temporal_part_is_one_slot() {
         let once = Pred::Once {
-            event: EventFilter {
-                kind: EventKind::Stop,
-                cond: None,
-            },
-            scope: Scope::Task,
+            select: any(EventKind::Stop, None),
+            scope: Scope::Task(By::Anyone),
         };
         let pred = Pred::All(vec![
             once.clone(),
             Pred::Not(Box::new(once)),
             Pred::Count {
-                event: EventFilter {
-                    kind: EventKind::Stop,
-                    cond: None,
-                },
-                scope: Scope::Task,
+                select: any(EventKind::Stop, None),
+                scope: Scope::Task(By::Anyone),
                 cmp: Cmp::Ge,
                 n: 2,
             },
+            // Who acted is part of the temporal part: another slot.
+            Pred::Once {
+                select: Selector {
+                    filter: EventFilter {
+                        kind: EventKind::Stop,
+                        cond: None,
+                    },
+                    by: By::Under(Principal::new("user")),
+                },
+                scope: Scope::Task(By::Anyone),
+            },
         ]);
-        assert_eq!(pred.temporals().len(), 2);
+        assert_eq!(pred.temporals().len(), 3);
+    }
+
+    #[test]
+    fn a_principal_a_selector_or_a_scope_chooses_by_is_read_in_no_direction() {
+        let reviewer = Principal::new("reviewer");
+        let user = Principal::new("user");
+        let count = Pred::Count {
+            select: Selector {
+                filter: EventFilter {
+                    kind: EventKind::ToolUse,
+                    cond: None,
+                },
+                by: By::Under(reviewer.clone()),
+            },
+            scope: Scope::Task(By::Under(user.clone())),
+            cmp: Cmp::Le,
+            n: 3,
+        };
+        // Even in a guard's `when` under no `not`.
+        assert_eq!(
+            state_readings(&count, Site::GuardWhen),
+            vec![
+                (StateAtom::Actor(&reviewer), Reading::Unreadable),
+                (StateAtom::Actor(&user), Reading::Unreadable),
+            ]
+        );
+        let anyone = Pred::Once {
+            select: any(EventKind::Stop, None),
+            scope: Scope::Turn(By::Anyone),
+        };
+        assert!(state_readings(&anyone, Site::GuardWhen).is_empty());
     }
 
     #[test]
@@ -851,14 +1068,11 @@ mod tests {
     }
 
     #[test]
-    fn the_atoms_that_read_the_state_are_found_through_the_temporal_operators_untouched() {
+    fn the_atoms_that_read_the_state_are_found_through_the_temporal_operators_of_anyone() {
         let mode: Mode = "strict".parse().unwrap();
         let once = Pred::Once {
-            event: EventFilter {
-                kind: EventKind::Stop,
-                cond: None,
-            },
-            scope: Scope::Task,
+            select: any(EventKind::Stop, None),
+            scope: Scope::Task(By::Anyone),
         };
         let pred = Pred::All(vec![once, Pred::ModeIs(mode.clone())]);
         assert_eq!(

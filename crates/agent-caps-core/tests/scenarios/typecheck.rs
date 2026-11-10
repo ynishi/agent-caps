@@ -12,7 +12,7 @@ use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::tx::TxPolicy;
 
 use super::common::{
-    GUARD, agent, catalog, commit_filter, edit, exemption, id, rejected, src_edit_guard,
+    GUARD, agent, anyone, catalog, commit_filter, edit, exemption, id, rejected, src_edit_guard,
     test_guard, tested_in, verdict, violated,
 };
 
@@ -21,26 +21,26 @@ use super::common::{
 #[test]
 fn an_ill_typed_since_filter_is_rejected() {
     let bad = || {
-        Scope::Since(EventFilter {
+        Scope::Since(anyone(EventFilter {
             kind: EventKind::Stop,
             cond: Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
-        })
+        }))
     };
     let mut guard = test_guard(Level::Advise);
     guard.fixtures = vec![];
     guard.rule = Rule::Structural(Pred::All(vec![
         tested_in(bad()),
         Pred::Count {
-            event: commit_filter(false),
+            select: anyone(commit_filter(false)),
             scope: bad(),
             cmp: Cmp::Ge,
             n: 2,
         },
         Pred::Last {
-            event: EventFilter {
+            select: anyone(EventFilter {
                 kind: EventKind::ToolUse,
                 cond: None,
-            },
+            }),
             scope: bad(),
             test: Cond::Eq(Field::Ok, Lit::Bool(true)),
         },
@@ -95,7 +95,12 @@ fn an_ill_typed_exemption_takes_no_effect() {
         Some(Inadmissible::ExemptionError(_))
     ));
     // The same for the filter of the scope it lasts within.
-    let within = |filter| exemption(Some(on_a.clone()), Lifetime::Within(Scope::Since(filter)));
+    let within = |filter| {
+        exemption(
+            Some(on_a.clone()),
+            Lifetime::Within(Scope::Since(anyone(filter))),
+        )
+    };
     let good = EventFilter {
         kind: EventKind::Stop,
         cond: None,

@@ -18,7 +18,7 @@ use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, OTHER, REWARD, Written, accept, agent, at, authority, bind, binding_id, catalog,
+    GUARD, OTHER, REWARD, Written, accept, agent, anyone, at, authority, bind, binding_id, catalog,
     clippy_reward, graph_of, id, inside, mode, outcome, outside, rejected, test_guard, tested,
     the_agent, the_helper, the_user, verdict,
 };
@@ -425,10 +425,10 @@ fn counting(cond: Option<Cond>) -> Written {
     let mut guard = test_guard(Level::Advise);
     guard.fixtures = vec![];
     guard.when = Some(Pred::Count {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::Judged,
             cond,
-        },
+        }),
         scope: Scope::Session,
         cmp: Cmp::Lt,
         n: 1,
@@ -440,10 +440,10 @@ fn counting(cond: Option<Cond>) -> Written {
 /// one when `None`), was a denial.
 fn last_judgment(cond: Option<Cond>) -> Pred {
     Pred::Last {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::Judged,
             cond,
-        },
+        }),
         scope: Scope::Session,
         test: denied(),
     }
@@ -549,14 +549,14 @@ fn an_unnamed_read_of_judgments_is_accepted_beside_a_policy_below() {
     // At any depth of the predicate, and in the scope of a `once` or a `last` as well.
     let mut deep = counting(None);
     deep.rule = Rule::Structural(Pred::Not(Box::new(Pred::Once {
-        event: EventFilter {
+        select: anyone(EventFilter {
             kind: EventKind::Stop,
             cond: None,
-        },
-        scope: Scope::Since(EventFilter {
+        }),
+        scope: Scope::Since(anyone(EventFilter {
             kind: EventKind::Judged,
             cond: Some(denied()),
-        }),
+        })),
     })));
     catalog(vec![deep, agent_guard(Level::Force)], vec![]);
 }
@@ -777,10 +777,10 @@ fn a_last_of_judgments_whose_test_names_a_policy_below_is_rejected() {
         let mut guard = test_guard(Level::Advise);
         guard.fixtures = vec![];
         guard.rule = Rule::Structural(Pred::Last {
-            event: EventFilter {
+            select: anyone(EventFilter {
                 kind: EventKind::Judged,
                 cond: event,
-            },
+            }),
             scope: Scope::Session,
             test,
         });

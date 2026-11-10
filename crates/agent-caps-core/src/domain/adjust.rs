@@ -15,6 +15,12 @@
 //! the rules. A raise for a while is a Force binding added; a lowering for a while is a Force
 //! binding suspended with an Advise binding added, in one adjustment.
 //!
+//! An adjustment that lasts within a scope ends when the scope starts again or closes. When that
+//! cannot be told (an actor of unknown place, a condition not known yet), it is kept as possibly
+//! ended ([`super::state::Holding`]) and read in the direction that tightens, part by part: an
+//! exemption covers nothing, a binding it adds still holds, and a binding it suspends is not
+//! suspended. What cannot be told never loosens a rule; a later known start or close ends it.
+//!
 //! An adjustment and a cancel are claims, judged by their result alone ([`super::tx`]): what
 //! lowers a policy asks the authors of the bindings that carried what it lost (a temporary binding
 //! by the one who made the adjustment), an exemption that starts asks the guard's author and the
@@ -47,7 +53,9 @@
 //! - a rebinding that lasts for the next judgment: a policy that a rebinding turns off writes no
 //!   record of a judgment, so the lifetime would never end;
 //! - a rebinding that neither adds nor suspends anything;
-//! - whose lifetime lasts within a `Since` scope whose filter does not read as a predicate would.
+//! - whose lifetime lasts within a `Since` scope whose filter does not read as a predicate would;
+//! - whose lifetime lasts within a scope that chooses by a principal outside the hierarchy
+//!   (`By::Under` or `By::Only`), as a rule may not.
 //!
 //! A cancel of an id that no adjustment in effect has is refused too
 //! ([`Inadmissible::NotHeld`]).
@@ -62,7 +70,7 @@ use std::fmt;
 
 use super::authority::{Authority, NotWithin, Principal};
 use super::name::{AdjustmentId, BindingId, PolicyId, Reason};
-use super::predicate::{Cond, PredError, Scope};
+use super::predicate::{By, Cond, PredError, Reading, Scope, by_reading};
 use super::schema::{At, EventKind, Level};
 
 /// How long an adjustment lasts.
@@ -72,13 +80,26 @@ pub enum Lifetime {
     /// [`super::schema::Judgment::Exempted`] judgment uses it up. An exemption only.
     Next,
     /// Until the scope starts again. Within [`Scope::Since`], until the event after the one the
-    /// filter matched: that event is judged with the adjustment still in effect.
+    /// selector chose: that event is judged with the adjustment still in effect. A scope that
+    /// chooses by actor ([`super::predicate::By::Under`]) ends the adjustment only at the acts of
+    /// the actors it chooses, so a spawn that places a child under its principal changes who
+    /// ends it, and is asked of the one who made the adjustment ([`super::tx`]).
     Within(Scope),
     /// Until the instant, compared with the time of the judged event.
     Until(At),
 }
 
 impl Lifetime {
+    /// The principal the lifetime reads in the hierarchy of actors, with the direction it reads
+    /// it in: the `By::Under` of the scope it lasts within, read as a predicate's scope is
+    /// ([`by_reading`]). None for any other lifetime.
+    pub(super) fn reading(&self) -> Option<(&Principal, Reading)> {
+        match self {
+            Self::Within(scope) => scope.by().and_then(by_reading),
+            Self::Next | Self::Until(_) => None,
+        }
+    }
+
     /// Whether the lifetime has not run out by the time of an event at `at`. Only `Until` ends by
     /// time; `Next` ends when it is used and `Within` when its scope starts again, both in the
     /// fold of the state.
@@ -256,6 +277,9 @@ pub enum Inadmissible {
     SinceFilterError(Vec<PredError>),
     /// A rebinding adds nothing and suspends nothing.
     Empty,
+    /// The scope of a `Within` lifetime chooses by a principal that is not in the hierarchy
+    /// (`By::Under` or `By::Only`), as a rule may not ([`super::catalog::AcceptError::UnknownActor`]).
+    UnknownActor(Principal),
     /// The one who makes a temporary binding is not in the hierarchy (one outside it, or a leaf a
     /// spawn added).
     AuthorUnknown(Principal),
@@ -297,6 +321,10 @@ impl fmt::Display for Inadmissible {
                 errors(f, e)
             }
             Self::Empty => f.write_str("the rebinding adds and suspends nothing"),
+            Self::UnknownActor(p) => write!(
+                f,
+                "the lifetime chooses by {p}, who is not in the hierarchy"
+            ),
             Self::AuthorUnknown(p) => write!(f, "{p} is not in the hierarchy"),
             Self::AuthorAbove { policy, author } => {
                 write!(f, "{author} is neither the author of {policy} nor below it")
@@ -372,8 +400,15 @@ impl AdjustIndex {
         if !adjustment.lifetime.lasts_at(at) {
             return Err(Inadmissible::Expired);
         }
-        if let Lifetime::Within(Scope::Since(filter)) = &adjustment.lifetime {
-            let errors = filter.check();
+        // A rule's `By` is held to the hierarchy when the catalog is accepted; a lifetime's here.
+        if let Lifetime::Within(scope) = &adjustment.lifetime
+            && let Some(principal) = scope.by().and_then(By::principal)
+            && !authority.contains(principal)
+        {
+            return Err(Inadmissible::UnknownActor(principal.clone()));
+        }
+        if let Lifetime::Within(Scope::Since(selector)) = &adjustment.lifetime {
+            let errors = selector.filter.check();
             if !errors.is_empty() {
                 return Err(Inadmissible::SinceFilterError(errors));
             }

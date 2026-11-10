@@ -5,7 +5,7 @@ use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::catalog::{AcceptError, Target};
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::policy::{DefLayer, Expect, Fixture, Level, ModeScope, Rule};
-use agent_caps_core::domain::predicate::{Cond, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, Lit, Pred, Scope};
 use agent_caps_core::domain::schema::Field;
 
 use super::common::{
@@ -171,7 +171,7 @@ fn a_fixture_that_fails_rejects_the_catalog_unless_it_is_a_known_gap() {
 /// same exemption from the root covers the guard.
 #[test]
 fn a_loosening_claim_in_a_fixture_takes_effect_as_it_would_at_run_time() {
-    let exempt = exempt_n(1, GUARD, None, Lifetime::Within(Scope::Task));
+    let exempt = exempt_n(1, GUARD, None, Lifetime::Within(Scope::Task(By::Anyone)));
     let with = |claim, expect| {
         let mut guard = test_guard(Level::Force);
         guard.fixtures.push(fixture(

@@ -11,7 +11,7 @@ use agent_caps_core::domain::catalog::{AcceptError, Catalog, Effect, Target};
 use agent_caps_core::domain::change::{ChangeRejected, Loosening};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::policy::{DefLayer, Level, ModeScope, PolicyGraph};
-use agent_caps_core::domain::predicate::{Cond, Lit, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, Lit, Scope};
 use agent_caps_core::domain::schema::Field;
 use agent_caps_core::domain::state::Known;
 use agent_caps_core::domain::tx::checks::RuleMove;
@@ -66,7 +66,7 @@ fn exempt(n: u8, path: Option<&str>) -> Body {
         n,
         GUARD,
         path.map(|path| Cond::Eq(Field::Path, Lit::Text(path.to_owned()))),
-        Lifetime::Within(Scope::Task),
+        Lifetime::Within(Scope::Task(By::Anyone)),
     )
 }
 

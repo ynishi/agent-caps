@@ -9,7 +9,7 @@ use agent_caps_core::domain::catalog::{Capabilities, Catalog};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Verdict, judge};
 use agent_caps_core::domain::policy::Level;
-use agent_caps_core::domain::predicate::Scope;
+use agent_caps_core::domain::predicate::{By, Scope};
 use agent_caps_core::domain::state::Known;
 use agent_caps_core::domain::tx::{
     AdjustmentCheck, CheckFinding, CheckName, Combine, Confidence, TxDecision, TxInput, TxPolicy,
@@ -28,7 +28,7 @@ fn stranger() -> Principal {
 
 /// An exemption of the guard of the scenarios for the task.
 fn exempt() -> Body {
-    exempt_n(1, GUARD, None, Lifetime::Within(Scope::Task))
+    exempt_n(1, GUARD, None, Lifetime::Within(Scope::Task(By::Anyone)))
 }
 
 /// The root's guard on edits under `src/`, Force, and Force on the end of a turn in `fix`.
