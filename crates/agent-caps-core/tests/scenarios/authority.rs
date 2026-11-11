@@ -19,8 +19,8 @@ use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy};
 
 use super::common::{
     GUARD, OTHER, REWARD, Written, accept, agent, anyone, at, authority, bind, binding_id,
-    by_author, catalog, clippy_reward, graph_of, id, inside, mode, outcome, outside, rejected,
-    set_id, test_guard, tested, the_agent, the_helper, the_user, verdict,
+    by_author, by_author_declaring, catalog, clippy_reward, graph_of, id, inside, mode, outcome,
+    outside, rejected, set_id, test_guard, tested, the_agent, the_helper, the_user, verdict,
 };
 
 const AGENT_REWARD: &str = "00000000-0000-7000-8000-000000000004";
@@ -1110,15 +1110,19 @@ fn two_roots_do_not_cover_each_other() {
     guard_a.author = a.clone();
     let mut guard_b = other_user_guard(Level::Force);
     guard_b.author = b.clone();
+    let roots = [a.clone(), b.clone()];
     let before = Catalog::accept(
-        by_author(graph_of(vec![guard_a.clone(), guard_b.clone()], vec![])),
+        by_author_declaring(
+            graph_of(vec![guard_a.clone(), guard_b.clone()], vec![]),
+            &roots,
+        ),
         two_roots,
     )
     .unwrap();
 
     let mut lowered_b = guard_b.clone();
     lowered_b.level = Some(Level::Advise);
-    let after = by_author(graph_of(vec![guard_a.clone(), lowered_b], vec![]));
+    let after = by_author_declaring(graph_of(vec![guard_a.clone(), lowered_b], vec![]), &roots);
     assert_eq!(
         loosenings(before.change(after, &a)),
         vec![
@@ -1133,7 +1137,10 @@ fn two_roots_do_not_cover_each_other() {
     lowered_a.level = Some(Level::Advise);
     assert!(
         before
-            .change(by_author(graph_of(vec![lowered_a, guard_b], vec![])), &a)
+            .change(
+                by_author_declaring(graph_of(vec![lowered_a, guard_b], vec![]), &roots),
+                &a
+            )
             .is_ok()
     );
 }
@@ -1194,7 +1201,13 @@ fn a_catalog_accepted_again_with_a_new_hierarchy_uses_it() {
     assert!(below.change(removed(), &the_user()).is_ok());
 
     let two_roots = Authority::new([(the_user(), None), (the_agent(), None)]).unwrap();
-    let beside = Catalog::accept(by_author(graph.clone()), two_roots.clone()).unwrap();
+    // Every root that owns a set declares the bound.
+    let roots = [the_user(), the_agent()];
+    let beside = Catalog::accept(
+        by_author_declaring(graph.clone(), &roots),
+        two_roots.clone(),
+    )
+    .unwrap();
     assert_eq!(beside.authority(), &two_roots);
     assert_eq!(
         loosenings(beside.change(removed(), &the_user())),

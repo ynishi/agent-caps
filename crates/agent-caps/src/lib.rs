@@ -13,6 +13,7 @@
 //! A guard that stops the end of a turn until `cargo test` has passed within the task:
 //!
 //! ```
+//! use agent_caps::domain::adjust::TemporaryBound;
 //! use agent_caps::domain::authority::{Authority, Principal};
 //! use agent_caps::domain::catalog::{Capabilities, Catalog};
 //! use agent_caps::domain::event::{Body, Event};
@@ -80,8 +81,10 @@
 //!     author: user.clone(),
 //! };
 //! // The graph holds each policy and binding by its id: a second one with an id, or a second
-//! // policy with a name, is refused here, with every clash at once.
-//! let policies = PolicyGraph::parse(vec![guard], vec![binding]).unwrap();
+//! // policy with a name, is refused here, with every clash at once. The root declares in its
+//! // set the longest period a temporary adjustment may have, which a catalog needs.
+//! let bound = TemporaryBound::from_millis(24 * 60 * 60 * 1000).unwrap();
+//! let policies = PolicyGraph::parse_with(vec![guard], vec![binding], vec![], Some(bound)).unwrap();
 //! // A catalog is accepted from sets of policies, each with its owner: here one set, the user's.
 //! // A shared set and a project's own are two sources, composed by adding only.
 //! // The set's id is a surrogate key the store gives, as a policy's is; its name is for people.

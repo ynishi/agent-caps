@@ -90,9 +90,9 @@ fn exempt(n: u8, path: Option<&str>) -> Body {
 #[test]
 fn a_binding_added_by_one_below_does_not_lower_the_rule_above() {
     let before = catalog(vec![test_guard(Level::Force)], vec![]);
-    let (policies, mut bindings, classifiers) = before.graph().clone().into_parts();
+    let (policies, mut bindings, classifiers, bound) = before.graph().clone().into_parts();
     bindings.push(bind(GUARD, 1, Level::Inform, ModeScope::Any, the_agent()));
-    let graph = PolicyGraph::parse_with(policies, bindings, classifiers).unwrap();
+    let graph = PolicyGraph::parse_with(policies, bindings, classifiers, bound).unwrap();
     let after = before.change(by_author(graph), &the_agent()).unwrap();
     assert_eq!(guard_effect(&after), Effect::On(Level::Force));
 }

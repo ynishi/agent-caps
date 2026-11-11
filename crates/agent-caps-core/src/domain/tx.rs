@@ -8,7 +8,7 @@
 //!
 //! ```text
 //! Catalog::apply_with(state, event, &TxPolicy)
-//!   carried = state.carry(event)                 what the past and the time bring; an act
+//!   carried = state.carry(event, index)          what the past and the time bring; an act
 //!                                                  advances the clock, a claim does not; kept
 //!   act   → carried.step(event)                  not judged
 //!   claim → carried.admits(event)                  an adjustment or a cancel that cannot take
@@ -300,7 +300,8 @@ pub struct TxReport {
 impl Catalog {
     /// The catalog of the sets `sources` under the hierarchy `authority`, when it keeps every
     /// invariant of [`super::catalog`]. The structure is checked first: every item of a set is by
-    /// its owner or one below ([`Authority::within`]), the sets compose
+    /// its owner or one below ([`Authority::within`]), the bound on a temporary adjustment is
+    /// declared by the roots ([`AcceptError::NoTemporaryBound`]), the sets compose
     /// ([`Sources::compose`](super::set::Sources::compose)), and the composed graph holds. The
     /// fixtures, only of a graph whose structure holds, are then folded by [`Catalog::fold`], the
     /// same transaction as a run. The catalog keeps the sources and the hierarchy.
@@ -369,7 +370,7 @@ fn transact(
     policy: &TxPolicy,
 ) -> (State, TxReport) {
     let table = catalog.slots();
-    let carried = state.carry(table, event);
+    let carried = state.carry(table, event, catalog.index());
     if event.body.kind().nature() == Nature::Act {
         let report = TxReport {
             decision: TxDecision::Commit,

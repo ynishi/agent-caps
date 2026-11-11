@@ -117,7 +117,7 @@ fn the_origin_is_its_own_value_apart_from_a_record_lost_in_the_fold() {
     assert!(lost.adjustments_lost());
 }
 
-/// FR20, FR46, UC3: an adjustment made before a fold from the middle may only strengthen, so
+/// FR20, FR55, UC3: an adjustment made before a fold from the middle may only strengthen, so
 /// every rule takes effect at least as strongly as such an adjustment could make it: an Advise
 /// guard is at Force. A lowering made within the fold is held as recorded and shows among the
 /// adjustments, and the ceiling keeps the effect from going down; a raise made within it holds.

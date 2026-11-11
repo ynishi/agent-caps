@@ -13,8 +13,8 @@ use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, OTHER, agent, at, catalog, edit, exempt_n, id, src_edit_guard, test_guard, the_agent,
-    the_helper, the_user, unreadable, user, verdict,
+    GUARD, OTHER, agent, at, catalog, edit, exempt_n, exempt_n_by, id, src_edit_guard, test_guard,
+    the_agent, the_helper, the_user, unreadable, user, verdict,
 };
 
 /// An exemption of `guard` with no cover, for the task; its id is the `n`th.
@@ -110,8 +110,18 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
         Verdict::Deny(_)
     ));
 
-    // `Until` is compared with the time of the judged event.
-    let until = at(the_user(), 0, exempt(Lifetime::Until(At::from_millis(100))));
+    // The time it ends by is compared with the time of the judged event.
+    let until = at(
+        the_user(),
+        0,
+        exempt_n_by(
+            1,
+            GUARD,
+            Some(Cond::Eq(Field::Path, Lit::Text("src/a.rs".to_owned()))),
+            Lifetime::Timed,
+            At::from_millis(100),
+        ),
+    );
     let edit_at = |millis| at(the_agent(), millis, edit("src/a.rs").body);
     assert_eq!(
         verdict(&catalog, &[start.clone(), until.clone(), edit_at(99)]),
@@ -155,7 +165,7 @@ fn an_exemption_from_the_agent_covers_nothing_whatever_its_lifetime() {
             span: Span::Session,
             by: By::Anyone,
         }),
-        Lifetime::Until(At::from_millis(1_000)),
+        Lifetime::Timed,
     ];
     for lifetime in lifetimes {
         for target in [
@@ -247,17 +257,17 @@ fn a_principal_exempts_the_guards_it_covers_and_no_other() {
     );
 }
 
-/// FR34, FR46, FR45: an exemption whose `Until` the clock has passed when it is claimed (an act
-/// at or after it came before) adds nothing: its transaction is aborted as expired, with no
-/// finding, and nothing is exempted.
+/// FR34, FR55, FR45: an exemption whose time to end by the clock has passed when it is claimed
+/// (an act at or after it came before) adds nothing: its transaction is aborted as expired, with
+/// no finding, and nothing is exempted.
 #[test]
-fn an_exemption_claimed_after_its_until_adds_nothing() {
+fn an_exemption_claimed_after_its_end_by_adds_nothing() {
     let catalog = catalog(vec![src_edit_guard()], vec![]);
     let start = at(the_agent(), 200, Body::TaskStart);
     let late = at(
         the_user(),
         200,
-        exempt_n(1, GUARD, None, Lifetime::Until(At::from_millis(100))),
+        exempt_n_by(1, GUARD, None, Lifetime::Timed, At::from_millis(100)),
     );
     let report = catalog.admit(
         &catalog.fold(Origin::Genesis, [&start]),

@@ -25,8 +25,8 @@ use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, Written, adjustment, anyone, at, catalog, exempt_n, fixture, id, mode, test_guard,
-    tested_in, the_agent, the_user, verdict, violated, words,
+    GUARD, Written, adjustment_by, anyone, at, catalog, ends_by, exempt_n, exempt_n_by, fixture,
+    id, mode, test_guard, tested_in, the_agent, the_user, verdict, violated, words,
 };
 
 const HOUR: i64 = 3_600_000;
@@ -40,9 +40,21 @@ fn warned() -> Verdict {
     Verdict::Warn(vec![Cause::Violated(id(GUARD))])
 }
 
-/// The `n`th adjustment of the agent's: the test guard raised to Force for `lifetime`.
+/// The `n`th adjustment of the agent's: the test guard raised to Force for `lifetime`, within the
+/// scenarios' bound.
 fn raise(n: u8, lifetime: Lifetime) -> Body {
-    adjustment(
+    raise_by(n, lifetime, ends_by())
+}
+
+/// The `n`th adjustment of the agent's: the test guard raised to Force until the instant, which
+/// nothing but a cancel and the time ends before.
+fn raise_until(n: u8, millis: i64) -> Body {
+    raise_by(n, Lifetime::Timed, At::from_millis(millis))
+}
+
+/// The test guard raised to Force for `lifetime`, ending by `ends_by`.
+fn raise_by(n: u8, lifetime: Lifetime, ends_by: At) -> Body {
+    adjustment_by(
         n,
         Temporary::Rebind {
             add: vec![TemporaryBinding {
@@ -52,6 +64,7 @@ fn raise(n: u8, lifetime: Lifetime) -> Body {
             suspend: vec![],
         },
         lifetime,
+        ends_by,
     )
 }
 
@@ -86,18 +99,14 @@ fn switch_at(millis: i64) -> Event {
     at(the_user(), millis, Body::ModeSwitch { to: mode("fix") })
 }
 
-/// FR45, FR46: a claim dated in the future does not end a raise with `Until`, since a claim's
-/// time does not advance the clock; the next act at or after `Until` does.
+/// FR45, FR55: a claim dated in the future does not end a raise that ends by a time, since a
+/// claim's time does not advance the clock; the next act at or after the time does.
 #[test]
 fn a_claim_dated_in_the_future_does_not_end_a_raise() {
     let catalog = advised();
     let raised = [
         task_at(0),
-        at(
-            the_agent(),
-            0,
-            raise(1, Lifetime::Until(At::from_millis(100))),
-        ),
+        at(the_agent(), 0, raise_until(1, 100)),
         switch_at(500),
     ];
     assert_eq!(effect_after(&catalog, &raised), Effect::On(Level::Force));
@@ -119,17 +128,13 @@ fn a_claim_dated_in_the_future_does_not_end_a_raise() {
     );
 }
 
-/// FR45, FR46: a raise claimed at a time after its `Until`, while the clock is still before it,
-/// is admitted, and ends at the first act past `Until`.
+/// FR45, FR55: a raise claimed at a time after the time it ends by, while the clock is still
+/// before it, is admitted, and ends at the first act past that time.
 #[test]
-fn a_raise_claimed_after_its_until_by_its_own_time_is_admitted_by_the_clock() {
+fn a_raise_claimed_after_its_end_by_its_own_time_is_admitted_by_the_clock() {
     let catalog = advised();
     let start = task_at(0);
-    let late = at(
-        the_agent(),
-        200,
-        raise(1, Lifetime::Until(At::from_millis(100))),
-    );
+    let late = at(the_agent(), 200, raise_until(1, 100));
     let report = catalog.admit(
         &catalog.fold(Origin::Genesis, [&start]),
         &late,
@@ -152,19 +157,12 @@ fn a_raise_claimed_after_its_until_by_its_own_time_is_admitted_by_the_clock() {
     );
 }
 
-/// FR45, FR34: before any act there is no time yet, and a raise with `Until` holds, however late
-/// the claims around it are dated; the first act past `Until` ends it.
+/// FR45, FR34: before any act there is no time yet, and a raise that ends by a time holds,
+/// however late the claims around it are dated; the first act past that time ends it.
 #[test]
-fn before_any_act_a_raise_with_until_holds() {
+fn before_any_act_a_raise_that_ends_by_a_time_holds() {
     let catalog = advised();
-    let claims = [
-        at(
-            the_agent(),
-            500,
-            raise(1, Lifetime::Until(At::from_millis(100))),
-        ),
-        switch_at(1_000),
-    ];
+    let claims = [at(the_agent(), 500, raise_until(1, 100)), switch_at(1_000)];
     assert_eq!(effect_after(&catalog, &claims), Effect::On(Level::Force));
     let mut events = claims.to_vec();
     events.push(task_at(150));
@@ -203,18 +201,18 @@ fn switch_guard() -> Written {
 }
 
 /// FR45, FR34, UC25: a guard that judges a mode switch, a claim, is not exempted by an exemption
-/// whose `Until` the switch's own time has passed, with no act in between: the cover is read at
-/// the later of the clock and the switch's time, since an exemption that ends sooner only
-/// tightens. A switch dated before `Until` is exempted.
+/// whose time to end by the switch's own time has passed, with no act in between: the cover is
+/// read at the later of the clock and the switch's time, since an exemption that ends sooner only
+/// tightens. A switch dated before that time is exempted.
 #[test]
-fn an_exemption_past_its_until_by_the_claims_time_does_not_cover_the_claim() {
+fn an_exemption_past_its_end_by_the_claims_time_does_not_cover_the_claim() {
     let catalog = catalog(vec![switch_guard()], vec![]);
     let exempted = [
         task_at(0),
         at(
             the_user(),
             0,
-            exempt_n(1, GUARD, None, Lifetime::Until(At::from_millis(100))),
+            exempt_n_by(1, GUARD, None, Lifetime::Timed, At::from_millis(100)),
         ),
     ];
     let judged = |switch: Event| {
@@ -224,7 +222,7 @@ fn an_exemption_past_its_until_by_the_claims_time_does_not_cover_the_claim() {
     };
     assert_eq!(judged(switch_at(50)), Verdict::Allow);
     assert_eq!(judged(switch_at(150)), violated());
-    // The exemption is still held: no act has carried the clock past its `Until`.
+    // The exemption is still held: no act has carried the clock past the time it ends by.
     assert_eq!(
         catalog.fold(Origin::Genesis, &exempted).adjustments().len(),
         1
@@ -233,7 +231,8 @@ fn an_exemption_past_its_until_by_the_claims_time_does_not_cover_the_claim() {
 
 /// FR45, FR34: an exemption that lasts `Within(Every(1h))` does not cover a claim dated past
 /// the hour's boundary, with no act in between: its cover is read at the later of the clock and
-/// the claim's time, as an `Until`'s is. A switch dated inside the hour is exempted.
+/// the claim's time, as the time an exemption ends by is. A switch dated inside the hour is
+/// exempted.
 #[test]
 fn an_exemption_within_a_window_does_not_cover_a_claim_dated_past_it() {
     let catalog = catalog(vec![switch_guard()], vec![]);
@@ -328,7 +327,7 @@ fn an_act_dated_earlier_does_not_move_the_window_back() {
     );
 }
 
-/// FR45, FR46: an adjustment that lasts `Within(Every(1h))` ends at the hour's boundary, at the
+/// FR45, FR55: an adjustment that lasts `Within(Every(1h))` ends at the hour's boundary, at the
 /// first act past it.
 #[test]
 fn an_adjustment_within_a_window_ends_at_the_boundary() {
@@ -377,9 +376,9 @@ fn lost_tool_use_at(millis: i64) -> Event {
     )
 }
 
-/// FR45, FR46, FR20: a record that could not be read and may only have been a mode switch, a
+/// FR45, FR55, FR20: a record that could not be read and may only have been a mode switch, a
 /// claim, carries a claim's time: dated far ahead, it neither starts a window again nor ends a
-/// raise with `Until`. One that may have been a tool use, an act, does both.
+/// raise that ends by a time. One that may have been a tool use, an act, does both.
 #[test]
 fn an_unreadable_record_advances_the_clock_only_when_it_may_have_been_an_act() {
     let far = 10 * HOUR;
@@ -392,12 +391,12 @@ fn an_unreadable_record_advances_the_clock_only_when_it_may_have_been_an_act() {
     );
 
     let raised = advised();
-    let after = |lifetime: Lifetime, lost: Event| {
-        let events = [task_at(0), at(the_agent(), 0, raise(1, lifetime)), lost];
+    let after = |raise: Body, lost: Event| {
+        let events = [task_at(0), at(the_agent(), 0, raise), lost];
         effect_after(&raised, &events)
     };
-    let until = || Lifetime::Until(At::from_millis(100));
-    let window = || Lifetime::Within(Scope::Every(hour()));
+    let until = || raise_until(1, 100);
+    let window = || raise(1, Lifetime::Within(Scope::Every(hour())));
     assert_eq!(
         after(until(), lost_switch_at(far)),
         Effect::On(Level::Force)

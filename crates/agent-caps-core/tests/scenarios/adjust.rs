@@ -20,9 +20,9 @@ use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy, TxReport};
 
 use super::common::{
-    GUARD, OTHER, REWARD, adjustment, adjustment_id, agent, anyone, at, bind, binding_id, catalog,
-    clippy_reward, exempt_n, id, inside, mode_switch, push_after_allowed, test_guard, the_agent,
-    the_helper, the_user, unreadable, user, verdict, violated,
+    GUARD, OTHER, REWARD, adjustment, adjustment_by, adjustment_id, agent, anyone, at, bind,
+    binding_id, catalog, clippy_reward, exempt_n, id, inside, mode_switch, push_after_allowed,
+    test_guard, the_agent, the_helper, the_user, unreadable, user, verdict, violated,
 };
 
 /// The id of a meta policy of these scenarios.
@@ -115,19 +115,20 @@ fn warned() -> Verdict {
     Verdict::Warn(vec![Cause::Violated(id(GUARD))])
 }
 
-/// FR46, UC6: a raise for a while is a Force binding added. It tightens, so the agent may make
-/// it; the guard stops while it lasts, and warns again from its `Until` on.
+/// FR55, UC6: a raise for a while is a Force binding added. It tightens, so the agent may make
+/// it; the guard stops while it lasts, and warns again from the time it ends by on.
 #[test]
-fn a_temporary_raise_takes_effect_and_ends_at_its_until() {
+fn a_temporary_raise_takes_effect_and_ends_at_the_time_it_ends_by() {
     let catalog = catalog(vec![test_guard(Level::Advise)], vec![]);
     let start = agent(Body::TaskStart);
     let raise = at(
         the_agent(),
         0,
-        adjustment(
+        adjustment_by(
             1,
             rebind(&[(GUARD, Level::Force)], &[]),
-            Lifetime::Until(At::from_millis(100)),
+            Lifetime::Timed,
+            At::from_millis(100),
         ),
     );
     assert_eq!(
@@ -151,7 +152,7 @@ fn a_temporary_raise_takes_effect_and_ends_at_its_until() {
     );
 }
 
-/// FR46, UC25: a lowering for a while suspends the Force binding and adds an Advise one. It
+/// FR55, UC25: a lowering for a while suspends the Force binding and adds an Advise one. It
 /// loosens, as to the author of the suspended binding: the agent cannot make it, the user can, and
 /// the guard then warns.
 #[test]
@@ -189,7 +190,7 @@ fn a_temporary_lowering_needs_the_cover_of_the_suspended_bindings_author() {
     );
 }
 
-/// FR46, UC25: the agent cannot hide a loss behind a binding of its own. It may add an equal Force
+/// FR55, UC25: the agent cannot hide a loss behind a binding of its own. It may add an equal Force
 /// binding to the user's guard, but suspending the user's binding next to it is a loosening as to
 /// the user, though the guard stays at Force; so is doing both in one adjustment. Otherwise the
 /// agent could cancel its own binding later.
@@ -222,7 +223,7 @@ fn suspending_anothers_binding_behind_an_equal_binding_of_ones_own_is_refused() 
     assert_eq!(loosening_moves(&report), vec![suspended]);
 }
 
-/// FR46, UC25: a cancel is judged by its result. Cancelling the user's raise lowers the guard, as
+/// FR55, UC25: a cancel is judged by its result. Cancelling the user's raise lowers the guard, as
 /// to the user, so the agent cannot; cancelling the user's lowering raises it, so anyone may.
 #[test]
 fn a_cancel_is_judged_by_what_ending_the_adjustment_moves() {
@@ -267,7 +268,7 @@ fn a_cancel_is_judged_by_what_ending_the_adjustment_moves() {
     );
 }
 
-/// FR46, FR2, FR14: an adjustment that cannot take effect takes none, even from the root: a
+/// FR55, FR2, FR14: an adjustment that cannot take effect takes none, even from the root: a
 /// rebinding for the next judgment, Force on a reward or on a guard without the fixtures of a
 /// stopping guard, a meta policy or a binding of one, a policy the catalog lacks, a rebinding that
 /// changes nothing, and an id held by an adjustment in effect.
@@ -383,7 +384,7 @@ fn an_adjustment_that_cannot_take_effect_takes_none() {
     );
 }
 
-/// FR46, UC25, FR38: a temporary binding is held to the rule of a binding of the catalog: its
+/// FR55, UC25, FR38: a temporary binding is held to the rule of a binding of the catalog: its
 /// maker is of the hierarchy and is the policy's author or below it. The user cannot bind the
 /// agent's guard, nor can one outside the hierarchy or a leaf a spawn added; the helper below the
 /// agent can, and the agent, who covers the helper, may still exempt its own guard.
@@ -437,7 +438,7 @@ fn a_temporary_binding_is_by_the_policys_author_or_one_below_it() {
     assert_eq!(report.decision, TxDecision::Commit, "{report:?}");
 }
 
-/// FR46, FR53, UC25: a claim that closes the scope another's raise lasts within ends the raise,
+/// FR55, FR53, UC25: a claim that closes the scope another's raise lasts within ends the raise,
 /// and is judged by that: the agent's score that closes `Since(score)` lowers the user's raise, so
 /// it needs the user's cover; the user's own score does not.
 #[test]
@@ -487,7 +488,7 @@ fn a_claim_that_closes_the_scope_of_anothers_raise_needs_the_raisers_cover() {
     assert_eq!(verdict(&catalog, &events), warned());
 }
 
-/// FR46, FR20, UC3: a lost record that may have been an adjustment or a cancel makes every rule
+/// FR55, FR20, UC3: a lost record that may have been an adjustment or a cancel makes every rule
 /// as strong as a temporary binding could make it, to the end of the fold: a guard with the
 /// fixtures of a stopping guard stops though the user lowered it (the suspension is not taken to
 /// hold), and a guard without them, off before, advises.
@@ -531,7 +532,7 @@ fn a_lost_adjustment_makes_each_rule_as_strong_as_a_temporary_binding_could() {
     }
 }
 
-/// FR46, UC6: the adjustments in effect are seen in the state, each with who made it, until it is
+/// FR55, UC6: the adjustments in effect are seen in the state, each with who made it, until it is
 /// cancelled.
 #[test]
 fn the_state_shows_the_adjustments_in_effect_with_who_made_them() {
@@ -556,7 +557,7 @@ fn the_state_shows_the_adjustments_in_effect_with_who_made_them() {
     assert_eq!(seen(&events), vec![(the_agent(), adjustment_id(2))]);
 }
 
-/// FR46, FR11, FR20: a temporary binding holds under every mode, and a suspension under every
+/// FR55, FR11, FR20: a temporary binding holds under every mode, and a suspension under every
 /// mode; when the mode is not known each mode is computed to the end and the strongest taken.
 #[test]
 fn a_temporary_binding_under_an_unknown_mode() {

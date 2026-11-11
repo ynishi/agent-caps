@@ -15,9 +15,9 @@ use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, 
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
-    ACTS, GUARD, OTHER, Written, agent, anyone, at, bash, catalog, commit_filter, edit, exempt_n,
-    exemption, fixture, id, outcome, test_guard, tested_in, the_agent, the_user, unreadable,
-    verdict, violated, words,
+    ACTS, GUARD, OTHER, Written, agent, anyone, at, bash, catalog, commit_filter, edit,
+    exempt_n_by, exemption, fixture, id, outcome, test_guard, tested_in, the_agent, the_user,
+    unreadable, verdict, violated, words,
 };
 
 fn test_run() -> Event {
@@ -464,7 +464,7 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
     let until = at(
         the_user(),
         0,
-        exempt_n(1, GUARD, None, Lifetime::Until(At::from_millis(10))),
+        exempt_n_by(1, GUARD, None, Lifetime::Timed, At::from_millis(10)),
     );
     let mut events = start().to_vec();
     events.extend([until, warned, at(the_agent(), 20, Body::Stop)]);

@@ -23,13 +23,13 @@ use agent_caps_core::domain::set::{JoinConflict, SetId, Source, Sources, Sources
 
 use super::common::{
     GUARD, OTHER, REWARD, Written, agent, authority, bash, bind, binding_id, clippy_reward,
-    graph_of, id, outcome, push_after_allowed, set, set_id, set_name, set_pair, test_guard,
-    the_agent, the_user, violated, written,
+    declaring, default_bound, graph_of, id, outcome, push_after_allowed, set, set_id, set_name,
+    set_pair, test_guard, the_agent, the_user, violated, written,
 };
 
 const PROJECT_GUARD: &str = "00000000-0000-7000-8000-000000000004";
 
-/// The shared set, the user's: the test guard and the reward bound by it.
+/// The graph of the shared set: the test guard and the reward bound by it.
 fn shared_graph(guard: Level) -> PolicyGraph {
     graph_of(
         vec![test_guard(guard), clippy_reward(Level::Advise)],
@@ -37,8 +37,14 @@ fn shared_graph(guard: Level) -> PolicyGraph {
     )
 }
 
+/// A set of the user's, which declares the scenarios' bound as every set a root owns does.
+fn users_set(name: &str, graph: PolicyGraph) -> Source {
+    set(name, the_user(), declaring(graph, Some(default_bound())))
+}
+
+/// The shared set, the user's.
 fn shared(guard: Level) -> Source {
-    set("shared", the_user(), shared_graph(guard))
+    users_set("shared", shared_graph(guard))
 }
 
 /// A guard of the project's: a shell call must succeed, written by `author` at Advise.
@@ -175,9 +181,8 @@ fn two_sets_that_disagree_on_an_item_are_refused_with_the_pair() {
         ])
     );
 
-    let same_name = set(
+    let same_name = users_set(
         "project",
-        the_user(),
         graph_of(
             vec![project_guard(OTHER, "test-before-stop", the_user())],
             vec![],
@@ -200,8 +205,8 @@ fn two_sets_that_disagree_on_an_item_are_refused_with_the_pair() {
 /// of the sets' ids, and two sets with the same item are not a pair.
 #[test]
 fn three_sets_under_one_id_give_every_pair_that_differs() {
-    let copy = set("copy", the_user(), shared_graph(Level::Force));
-    let other = set("other", the_user(), shared_graph(Level::Advise));
+    let copy = users_set("copy", shared_graph(Level::Force));
+    let other = users_set("other", shared_graph(Level::Advise));
     assert_eq!(
         conflicts(vec![shared(Level::Force), other.clone(), copy.clone()]),
         in_order(vec![
@@ -215,7 +220,7 @@ fn three_sets_under_one_id_give_every_pair_that_differs() {
             ),
         ])
     );
-    let third = set("third", the_user(), shared_graph(Level::Inform));
+    let third = users_set("third", shared_graph(Level::Inform));
     assert_eq!(
         conflicts(vec![other, third, shared(Level::Force)]),
         in_order(vec![
@@ -241,9 +246,8 @@ fn three_sets_under_one_id_give_every_pair_that_differs() {
 #[test]
 fn a_conflict_and_an_unknown_author_are_reported_at_once() {
     let stranger = Principal::new("stranger");
-    let with_stranger = set(
+    let with_stranger = users_set(
         "third",
-        the_user(),
         graph_of(
             vec![],
             vec![bind(
@@ -257,7 +261,7 @@ fn a_conflict_and_an_unknown_author_are_reported_at_once() {
     );
     let errors = accept(vec![
         shared(Level::Force),
-        set("other", the_user(), shared_graph(Level::Advise)),
+        users_set("other", shared_graph(Level::Advise)),
         with_stranger,
     ])
     .unwrap_err();
@@ -271,7 +275,7 @@ fn a_conflict_and_an_unknown_author_are_reported_at_once() {
             AcceptError::Conflict(
                 sources(vec![
                     shared(Level::Force),
-                    set("other", the_user(), shared_graph(Level::Advise))
+                    users_set("other", shared_graph(Level::Advise))
                 ])
                 .compose()
                 .unwrap_err()
@@ -285,7 +289,7 @@ fn a_conflict_and_an_unknown_author_are_reported_at_once() {
 /// them out keeps what the other holds: the sources are composed again.
 #[test]
 fn two_sets_with_the_same_item_hold_it_once_and_removing_one_keeps_it() {
-    let copy = set("copy", the_user(), shared_graph(Level::Force));
+    let copy = users_set("copy", shared_graph(Level::Force));
     let both = sources(vec![shared(Level::Force), copy]);
     assert_eq!(both.compose().unwrap(), shared_graph(Level::Force));
 
@@ -386,9 +390,8 @@ fn an_item_by_an_author_outside_the_sets_owner_is_refused_at_accept() {
 /// rule that reads it, and is not the agent's to make.
 #[test]
 fn a_swap_of_a_set_is_judged_as_one_change() {
-    let shared = set(
+    let shared = users_set(
         "shared",
-        the_user(),
         graph_of(
             vec![test_guard(Level::Inform), push_after_allowed(GUARD)],
             vec![],
@@ -428,7 +431,7 @@ fn a_set_with_a_meta_policy_cannot_be_added_by_a_change() {
     let mut meta = project_guard(OTHER, "meta-guard", the_user());
     meta.layer = DefLayer::Meta;
     meta.level = Some(Level::Advise);
-    let meta_set = set("meta", the_user(), graph_of(vec![meta], vec![]));
+    let meta_set = users_set("meta", graph_of(vec![meta], vec![]));
 
     assert!(accept(vec![shared(Level::Force), meta_set.clone()]).is_ok());
 
@@ -483,14 +486,13 @@ fn adding_a_set_by_its_owner_needs_no_approval_and_one_in_another_name_is_refuse
     let with_project = before.sources().with(project()).unwrap();
     assert!(before.change(with_project, &the_agent()).is_ok());
 
-    let empty = set("more", the_user(), PolicyGraph::default());
+    let empty = users_set("more", PolicyGraph::default());
     assert_eq!(
         loosenings(before.change(before.sources().with(empty).unwrap(), &the_agent())),
         vec![uncovered(Target::Set(set_id("more")))]
     );
-    let users = set(
+    let users = users_set(
         "more",
-        the_user(),
         graph_of(
             vec![project_guard(PROJECT_GUARD, "more-bash-ok", the_user())],
             vec![],

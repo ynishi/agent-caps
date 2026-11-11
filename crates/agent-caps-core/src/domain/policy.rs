@@ -62,6 +62,7 @@
 use std::collections::btree_map::{self, BTreeMap, Entry};
 use std::fmt;
 
+use super::adjust::TemporaryBound;
 use super::authority::{Authority, Principal};
 use super::event::Event;
 use super::name::{BindingId, ClassifierName, Mode, PolicyId, PolicyName};
@@ -418,6 +419,13 @@ pub struct PolicyDef {
 /// a policy equals itself, since every value in it has an equality that is total
 /// ([`super::predicate::Number`]).
 ///
+/// A graph may also declare the longest period of a temporary adjustment
+/// ([`TemporaryBound`]). It is the declaration of a set, not an item that composes: it counts
+/// only in a set a root owns, where the catalog gathers it ([`super::catalog::Catalog::accept`]),
+/// and the graph the sets compose to ([`super::set::Sources::compose`]) declares none. A
+/// declaration is part of the graph's equality, so changing it changes the set, and
+/// [`super::change`] judges that like any other change of the set.
+///
 /// What the items say of each other (a binding names a policy that exists, a reward a guard, a
 /// rule a classifier) is checked when a catalog accepts the graph, with everything else that needs
 /// the hierarchy.
@@ -429,6 +437,8 @@ pub struct PolicyGraph {
     /// Each policy's name, with its id: kept by the one insert beside `policies`, and the names
     /// of exactly its policies in every graph `parse` returns.
     names: BTreeMap<PolicyName, PolicyId>,
+    /// The longest period of a temporary adjustment the graph declares, if it does.
+    bound: Option<TemporaryBound>,
 }
 
 /// One item that may enter a graph, given to the one insert.
@@ -502,8 +512,9 @@ impl fmt::Display for GraphError {
 impl std::error::Error for GraphError {}
 
 impl PolicyGraph {
-    /// The graph of `policies` and `bindings`, with no classifier ([`PolicyGraph::parse_with`]),
-    /// when no two policies share an id or a name and no two bindings share an id. Otherwise
+    /// The graph of `policies` and `bindings`, with no classifier and no bound
+    /// ([`PolicyGraph::parse_with`]), when no two policies share an id or a name and no two
+    /// bindings share an id. Otherwise
     /// every clash found, each once, in the order of [`Clash`]: the policies' ids, then the
     /// bindings' ids, each by id, then the names.
     ///
@@ -515,19 +526,24 @@ impl PolicyGraph {
         policies: Vec<PolicyDef>,
         bindings: Vec<Binding>,
     ) -> Result<Self, Vec<GraphError>> {
-        Self::parse_with(policies, bindings, Vec::new())
+        Self::parse_with(policies, bindings, Vec::new(), None)
     }
 
     /// The graph of `policies`, `bindings` and `classifiers`: [`PolicyGraph::parse`] with the
-    /// classifiers declared, when no two share a name. A classifier given twice under one name is
-    /// a clash of the name, even when the two are equal, since in one graph it is a slip; the
-    /// clashes come in the order of [`Clash`], the classifiers' names last.
+    /// classifiers declared, when no two share a name, and with the `bound` the graph declares, if
+    /// any. A classifier given twice under one name is a clash of the name, even when the two are
+    /// equal, since in one graph it is a slip; the clashes come in the order of [`Clash`], the
+    /// classifiers' names last. The bound clashes with nothing.
     pub fn parse_with(
         policies: Vec<PolicyDef>,
         bindings: Vec<Binding>,
         classifiers: Vec<Classifier>,
+        bound: Option<TemporaryBound>,
     ) -> Result<Self, Vec<GraphError>> {
-        let mut graph = Self::default();
+        let mut graph = Self {
+            bound,
+            ..Self::default()
+        };
         let items = policies
             .into_iter()
             .map(|def| Item::Policy(Box::new(def)))
@@ -675,14 +691,28 @@ impl PolicyGraph {
         def.map(|def| Item::Policy(Box::new(def.clone())))
     }
 
-    /// The policies and the bindings, each by id, and the classifiers, by name: exactly what
-    /// [`PolicyGraph::parse_with`] takes, so that a caller that makes another graph from this one
-    /// loses no item.
-    pub fn into_parts(self) -> (Vec<PolicyDef>, Vec<Binding>, Vec<Classifier>) {
+    /// The longest period of a temporary adjustment the graph declares, if it does. A catalog
+    /// reads it only from a set a root owns ([`super::catalog::AcceptError::BoundNotRoot`]).
+    pub fn temporary_bound(&self) -> Option<TemporaryBound> {
+        self.bound
+    }
+
+    /// The policies and the bindings, each by id, the classifiers, by name, and the bound:
+    /// exactly what [`PolicyGraph::parse_with`] takes, so that a caller that makes another graph
+    /// from this one loses nothing.
+    pub fn into_parts(
+        self,
+    ) -> (
+        Vec<PolicyDef>,
+        Vec<Binding>,
+        Vec<Classifier>,
+        Option<TemporaryBound>,
+    ) {
         (
             self.policies.into_values().collect(),
             self.bindings.into_values().collect(),
             self.classifiers.into_values().collect(),
+            self.bound,
         )
     }
 }
