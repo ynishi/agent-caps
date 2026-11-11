@@ -94,11 +94,11 @@
 //!
 //! # Invariants
 //!
-//! - Ids and names of policies are unique, and so are the ids of bindings: the
-//!   [`PolicyGraph`] of a set cannot hold a duplicate ([`PolicyGraph::parse`],
-//!   [`super::policy::Clash`]), and two sets compose only when they hold the same item under
-//!   each id they share, and no two policies of one name ([`AcceptError::Conflict`]). A binding
-//!   names a policy of the composed graph ([`AcceptError::UnknownBindingPolicy`]), whichever set
+//! - Ids of policies are unique, and so are the ids of bindings: the [`PolicyGraph`] of a set
+//!   cannot hold a duplicate ([`PolicyGraph::parse`], [`super::policy::Clash`]), and two sets
+//!   compose only when they hold the same item under each id they share
+//!   ([`AcceptError::Conflict`]). Names are not: two policies, or two sets, may share one. A
+//!   binding names a policy of the composed graph ([`AcceptError::UnknownBindingPolicy`]), whichever set
 //!   holds it.
 //! - The owner of every set is a principal of the hierarchy ([`AcceptError::UnknownOwner`]), and
 //!   every item of a set is by its owner or one below it ([`AcceptError::NotWithinOwner`]), so a
@@ -202,7 +202,7 @@
 //! # Errors
 //!
 //! [`Catalog::accept`] returns every [`AcceptError`] it finds at once, in [`Rejected`], so a
-//! policy graph can be fixed in one pass. A graph with a duplicate id or name is refused before,
+//! policy graph can be fixed in one pass. A graph with a duplicate id is refused before,
 //! when it is made ([`PolicyGraph::parse`]), with every clash at once. What each set says of its
 //! own items needs no composition, and is checked of every set before the sets are composed: an
 //! owner or an author outside the hierarchy, an item not within its set's owner, and the
@@ -260,9 +260,9 @@ impl fmt::Display for Target {
 /// One reason a policy graph was not accepted.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AcceptError {
-    /// Two sets hold different items under one id, or two policies of one name
-    /// ([`Sources::compose`]). To fix it, make the two items equal, give them their own ids and
-    /// names, or leave one out.
+    /// Two sets hold different items under one id, or two classifiers of one name
+    /// ([`Sources::compose`]). To fix it, make the two items equal, give them their own ids (a
+    /// classifier its own name), or leave one out.
     Conflict(JoinConflict),
     /// The owner of the set is not a principal of the hierarchy. Its items are not checked
     /// against it.

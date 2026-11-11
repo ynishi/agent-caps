@@ -7,9 +7,9 @@
 //!
 //! ```text
 //! policies, bindings ─ PolicyGraph::parse ─▶ PolicyGraph
-//!                                              (keyed by id: no id or name twice; one order, by id)
+//!                                              (keyed by id: no id twice; one order, by id)
 //! Source { id, name, owner, graph } … ─ Sources::new ─▶ Sources
-//!                                              (the sets of policies, by id: no id or name twice)
+//!                                              (the sets of policies, by id: no id twice)
 //! Sources, Lineage ─ Catalog::accept ─▶ Catalog
 //!                                             (each item within its set's owner; Sources::compose,
 //!                                               only adding merges; then structure, what each

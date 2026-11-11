@@ -1,6 +1,6 @@
 //! The policy graph: policies and bindings keyed by id, made only by `PolicyGraph::parse`, which
-//! refuses a duplicate id or name with every clash at once; and the one order, by id, that the
-//! lists of a catalog and the reports of a judgment follow whatever order the caller gave.
+//! refuses a duplicate id with every clash at once (a name is no identity); and the one order, by
+//! id, that the lists of a catalog and the reports of a judgment follow whatever order the caller gave.
 
 use agent_caps_core::domain::catalog::Effect;
 use agent_caps_core::domain::event::Body;
@@ -24,23 +24,20 @@ fn clashes(policies: Vec<PolicyDef>, bindings: Vec<Binding>) -> Vec<Clash> {
         .collect()
 }
 
-/// FR1, FR42: a second policy with an id already there, a second binding with an id already
-/// there and a second policy with a name already there are each refused, all reported at once, in
-/// the order of the clashes whatever the order they were given in.
+/// FR1, FR42: a second policy with an id already there and a second binding with an id already
+/// there are each refused, all reported at once, in the order of the clashes whatever the order
+/// they were given in.
 #[test]
-fn a_duplicate_id_or_name_is_refused_with_every_clash_at_once() {
-    // The guard's id again, with other examples; and the guard's name again, on another id.
+fn a_duplicate_id_is_refused_with_every_clash_at_once() {
+    // The guard's id again, with other examples.
     let mut same_id = test_guard_def();
     same_id.fixtures.clear();
-    let mut same_name = test_guard_def();
-    same_name.id = id(OTHER);
-    let policies = vec![same_name, same_id, test_guard_def()];
+    let policies = vec![same_id, test_guard_def()];
     let other = bind(GUARD, 1, Level::Inform, ModeScope::Any, the_user());
     let bindings = vec![other.clone(), other];
     let expected = vec![
         Clash::Policy(id(GUARD)),
         Clash::Binding(binding_id(id(GUARD), 1)),
-        Clash::Name("test-before-stop".parse().unwrap()),
     ];
     assert_eq!(clashes(policies.clone(), bindings.clone()), expected);
     assert_eq!(
@@ -52,26 +49,29 @@ fn a_duplicate_id_or_name_is_refused_with_every_clash_at_once() {
     );
 }
 
-/// FR1, FR42: the name of a policy refused for its id is still checked: a policy with that name
-/// on another id clashes by the name, whatever order the three are given in.
+/// FR67: a policy's name is no identity. Two policies of one name under two ids are two policies
+/// of the graph; only their ids are checked, whatever order they are given in.
 #[test]
-fn the_name_of_a_policy_refused_for_its_id_is_still_checked() {
+fn two_policies_of_one_name_under_two_ids_are_both_in_the_graph() {
     let named = |policy: &str, name: &str| {
         let mut def = test_guard_def();
         def.id = id(policy);
         def.name = name.parse().unwrap();
         def
     };
-    let expected = vec![Clash::Policy(id(GUARD)), Clash::Name("b".parse().unwrap())];
-    let (a, b, other_b) = (named(GUARD, "a"), named(GUARD, "b"), named(OTHER, "b"));
+    let (b, other_b) = (named(GUARD, "b"), named(OTHER, "b"));
     for policies in [
-        vec![a.clone(), b.clone(), other_b.clone()],
-        vec![b.clone(), a.clone(), other_b.clone()],
-        vec![other_b.clone(), a.clone(), b.clone()],
-        vec![other_b, b, a],
+        vec![b.clone(), other_b.clone()],
+        vec![other_b.clone(), b.clone()],
     ] {
-        assert_eq!(clashes(policies, vec![]), expected);
+        let graph = PolicyGraph::parse(policies, vec![]).unwrap();
+        assert_eq!(graph.policies().count(), 2);
     }
+    // A third under the guard's id is refused by its id alone.
+    assert_eq!(
+        clashes(vec![named(GUARD, "a"), b, other_b], vec![]),
+        vec![Clash::Policy(id(GUARD))]
+    );
 }
 
 /// FR1, FR42: within one graph, an item given twice is a slip even when the two are equal: it is

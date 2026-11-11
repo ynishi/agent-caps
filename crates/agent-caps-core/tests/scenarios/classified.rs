@@ -488,7 +488,7 @@ fn an_unnamed_or_undeclared_classifier_is_refused() {
     reading(Some(Cond::All(vec![name("commit-why@3"), answer_ok]))).unwrap();
 }
 
-/// FR52, FR48: two sets that declare the same classifier the same hold one declaration; two that
+/// FR52, FR67: two sets that declare the same classifier the same hold one declaration; two that
 /// declare it differently (here, by the last record) conflict, whichever set comes first.
 #[test]
 fn declarations_with_different_content_clash_on_composition() {
