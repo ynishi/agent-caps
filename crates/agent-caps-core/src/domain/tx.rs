@@ -12,16 +12,18 @@
 //!                                                  (apply gives it back); fold starts its own
 //!   carried = state.carry(event, index)          what the past and the time bring; an act
 //!                                                  advances the clock, a claim does not; kept
+//!                                                  with what takes effect
 //!   act   → carried.step(event)                  not judged
 //!   claim → carried.admits(event)                  an adjustment, a cancel or a record of a
-//!                                                  judgment that cannot take effect: carried,
+//!                                                  judgment that cannot take effect: state,
 //!                                                  Abort, TxReport::inadmissible
 //!           after   = carried.clone().step(event)  applied to a copy
 //!           changes = State::changes(carried, after)
 //!           each check.judge(input) → Vec<CheckFinding>     the domain's checks, then the extra ones
 //!           floor   = every Loosens finding: Authority::may_loosen(by, authors) is Ok
 //!           policy  = TxPolicy.combine(findings)
-//!           after when the floor and the policy both commit, carried otherwise
+//!           after when the floor and the policy both commit, state otherwise
+//!                                                  (an aborted claim leaves it as it was)
 //! ```
 //!
 //! The domain holds only the steps and the floor. What a point of view sees is an
@@ -481,6 +483,11 @@ impl std::error::Error for StaleApply {}
 /// report of its transaction. See the module doc for the steps. It does not check that the state
 /// is the catalog's: it is reached only from an entry that has ([`Catalog::owns`]) or from a
 /// fold, which starts the state itself, and it is the only place a [`TxInput`] is made.
+///
+/// An aborted claim gives back the state it was given, not the state carried to it: what the
+/// carry of a claim does (settle the scopes the previous event closed, drop what ran out by a
+/// clock it does not move) the carry of the next event does as well, so a history folded without
+/// its aborted claims gives the same state as one folded with them, to the last event.
 fn transact(
     catalog: &Catalog,
     state: State,
@@ -488,8 +495,8 @@ fn transact(
     policy: &TxPolicy,
 ) -> (State, TxReport) {
     let table = catalog.slots();
-    let carried = state.carry(table, event, catalog.index());
     if event.body.kind().nature() == Nature::Act {
+        let carried = state.carry(table, event, catalog.index());
         let report = TxReport {
             decision: TxDecision::Commit,
             findings: Vec::new(),
@@ -499,6 +506,7 @@ fn transact(
         let kept = carried.step(table, event, catalog.index(), catalog.authority());
         return (kept, report);
     }
+    let carried = state.clone().carry(table, event, catalog.index());
     if let Err(reason) = carried.admits(event, catalog.index(), catalog.authority()) {
         let report = TxReport {
             decision: TxDecision::Abort,
@@ -506,7 +514,7 @@ fn transact(
             uncovered: Vec::new(),
             inadmissible: Some(reason),
         };
-        return (carried, report);
+        return (state, report);
     }
     let after = carried
         .clone()
@@ -550,7 +558,7 @@ fn transact(
     };
     match decision {
         TxDecision::Commit => (after, report),
-        TxDecision::Abort => (carried, report),
+        TxDecision::Abort => (state, report),
     }
 }
 

@@ -22,6 +22,7 @@
 
 mod common;
 
+mod aborted_claim;
 mod accept;
 mod adjust;
 mod authority;

@@ -1020,9 +1020,11 @@ impl State {
 
     /// The state carried to `event`: steps 1, 1b, 1c and 2 of the module doc. It reads of the
     /// event only whether it is an act and its time, never its actor, so it is the same whoever
-    /// the event comes from, and it is always kept. The one place that advances the clock: to the
-    /// later of the clock and the event's time, for an act alone. `index` is the catalog's: the
-    /// bound is read from it at the first act, and only there.
+    /// the event comes from. It is kept with an act or a claim that takes effect; an aborted claim
+    /// leaves the state as it was given, and the next carry does what this one would have. The
+    /// one place that advances the clock: to the later of the clock and the event's time, for an
+    /// act alone. `index` is the catalog's: the bound is read from it at the first act, and only
+    /// there.
     pub(super) fn carry(mut self, table: &SlotTable, event: &Event, index: &AdjustIndex) -> Self {
         // 1. The scopes the previous event closed.
         for (scope, truth) in std::mem::take(&mut self.closing) {
