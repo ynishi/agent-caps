@@ -44,7 +44,7 @@ use std::fmt;
 #[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 pub struct Principal(String);
 
-/// The stored form of a principal is its key. Any key makes a principal, so reading it back
+/// The encoded form of a principal is its key. Any key makes a principal, so reading it back
 /// cannot fail.
 #[cfg(feature = "serde")]
 impl From<String> for Principal {
@@ -173,7 +173,7 @@ pub struct Authority {
     parents: BTreeMap<Principal, Option<Principal>>,
 }
 
-/// The stored form of [`Authority`]: the links [`Authority::new`] takes, not the map the hierarchy
+/// The encoded form of [`Authority`]: the links [`Authority::new`] takes, not the map the hierarchy
 /// keeps, so that decoding always goes through the one place that checks the root, the parents
 /// and the loops. Private, and without `transparent`, `flatten` or `default`, each of which would
 /// be a way to a value that did not go through the constructor.

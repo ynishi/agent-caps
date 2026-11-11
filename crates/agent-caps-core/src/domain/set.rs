@@ -116,11 +116,11 @@ use std::str::FromStr;
 
 use super::authority::Principal;
 #[cfg(feature = "serde")]
-use super::name::stored_as_text;
+use super::encoding::Errors;
+#[cfg(feature = "serde")]
+use super::name::encoded_as_text;
 use super::name::{NameError, is_name, parse_uuid, write_uuid};
 use super::policy::{Clash, Origin, PolicyGraph};
-#[cfg(feature = "serde")]
-use super::stored::Errors;
 
 /// The surrogate key of a set of policies: unique among the sources of a catalog, the order they
 /// are composed in, and what a set keeps through its versions and renames. The application that
@@ -175,7 +175,7 @@ impl fmt::Display for SetName {
 }
 
 #[cfg(feature = "serde")]
-stored_as_text!(SetId, SetName);
+encoded_as_text!(SetId, SetName);
 
 /// One set of policies: its id, its name, the principal it belongs to, and its graph. Every item
 /// of the graph is by the owner or one below it, which [`super::catalog::Catalog::accept`] checks.
@@ -252,7 +252,7 @@ pub struct Sources {
     sets: BTreeMap<SetId, Source>,
 }
 
-/// The stored form of [`Sources`]: the input of [`Sources::new`], not the map the sources keep,
+/// The encoded form of [`Sources`]: the input of [`Sources::new`], not the map the sources keep,
 /// so that decoding always goes through the one place that decides that no id is given twice.
 /// Private, and without `transparent`, `flatten` or `default`, each of which would be
 /// a way to a value that did not go through the constructor.

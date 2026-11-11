@@ -65,13 +65,13 @@ use std::fmt;
 
 use super::adjust::TemporaryBound;
 use super::authority::{Authority, Principal};
+#[cfg(feature = "serde")]
+use super::encoding::Errors;
 use super::event::Event;
 use super::name::{BindingId, ClassifierName, Mode, PolicyId, PolicyName};
 use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Selector, Truth, reads_unnarrowed};
 use super::schema::{EventKind, Field};
 use super::state::{Known, SlotTable, State};
-#[cfg(feature = "serde")]
-use super::stored::Errors;
 
 // `Level` is defined in `schema` so that a record of a judgment (`event`), which carries the
 // levels it was written and enforced at, does not depend on this module; it is read from here.
@@ -117,7 +117,7 @@ impl std::error::Error for ModeSetError {}
 #[cfg_attr(feature = "serde", serde(try_from = "ModeSetRaw", into = "ModeSetRaw"))]
 pub struct ModeSet(Vec<Mode>);
 
-/// The stored form of [`ModeSet`]: the modes [`ModeSet::new`] takes, so that decoding always goes
+/// The encoded form of [`ModeSet`]: the modes [`ModeSet::new`] takes, so that decoding always goes
 /// through it. Private, and without `transparent`, `flatten` or `default`, each of which would be
 /// a way to a value that did not go through the constructor.
 #[cfg(feature = "serde")]
@@ -234,7 +234,7 @@ pub struct Calibration {
     max_false_stops: u32,
 }
 
-/// The stored form of [`Calibration`]: the numbers [`Calibration::new`] takes, so that decoding
+/// The encoded form of [`Calibration`]: the numbers [`Calibration::new`] takes, so that decoding
 /// always goes through it. Private, and without `transparent`, `flatten` or `default`, each of
 /// which would be a way to a value that did not go through the constructor.
 #[cfg(feature = "serde")]
@@ -280,7 +280,7 @@ pub struct CalibrationRecord {
     false_stops: u32,
 }
 
-/// The stored form of [`CalibrationRecord`]: the counts [`CalibrationRecord::new`] takes, so that
+/// The encoded form of [`CalibrationRecord`]: the counts [`CalibrationRecord::new`] takes, so that
 /// decoding always goes through it. Private, and without `transparent`, `flatten` or `default`,
 /// each of which would be a way to a value that did not go through the constructor.
 #[cfg(feature = "serde")]
@@ -564,7 +564,7 @@ pub struct PolicyGraph {
     bound: Option<TemporaryBound>,
 }
 
-/// The stored form of [`PolicyGraph`]: what [`PolicyGraph::parse_with`] takes, not the maps the
+/// The encoded form of [`PolicyGraph`]: what [`PolicyGraph::parse_with`] takes, not the maps the
 /// graph keeps, so that decoding always goes through the one insert that refuses an id twice.
 /// Private, and without `transparent`, `flatten` or
 /// `default`, each of which would be a way to a value that did not go through the constructor.

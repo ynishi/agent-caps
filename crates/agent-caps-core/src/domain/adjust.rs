@@ -147,7 +147,7 @@ impl Lifetime {
 #[cfg_attr(feature = "serde", serde(try_from = "i64", into = "i64"))]
 pub struct TemporaryBound(i64);
 
-/// The stored form of a bound is its milliseconds, read back through
+/// The encoded form of a bound is its milliseconds, read back through
 /// [`TemporaryBound::from_millis`].
 #[cfg(feature = "serde")]
 impl TryFrom<i64> for TemporaryBound {
