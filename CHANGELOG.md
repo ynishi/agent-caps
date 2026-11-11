@@ -688,6 +688,14 @@ and this project adheres to
 
 ### Fixed
 
+- A record of a judgment is admitted only in the name of the judged policy's
+  author (#63, FR59). Before, a `Judged` in another's name, or of a policy the
+  catalog does not hold, was kept whenever no rule read it, so whatever counts
+  the records could be fed judgments no rule made. It is now refused with the
+  new `Inadmissible::NotTheAuthor` (or `Inadmissible::UnknownPolicy`). A fold
+  under a changed catalog drops the earlier records of a policy it no longer
+  holds, or whose author changed under the same id, so a count of them starts
+  again: the stopping side.
 - "The latest bench score is at least 0.8" can be written: the last score of an
   oracle compared as a number, so a high score that a low one followed no
   longer lets a turn end (#4).
