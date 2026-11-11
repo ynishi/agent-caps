@@ -58,7 +58,7 @@ fn keeper() -> Catalog {
                 Cond::Eq(Field::Tool, Lit::Text("Edit".to_owned())),
                 Cond::Eq(Field::Tool, Lit::Text("Write".to_owned())),
             ]),
-            Cond::Glob(Field::Path, GlobPattern::new(".caps/*")),
+            Cond::Glob(Field::Path, GlobPattern::new(".caps/**").unwrap()),
         ]))),
         rule: Rule::Structural(Pred::Not(Box::new(Pred::ActorUnder(the_agent())))),
         polarity: Polarity::Guard,
@@ -102,6 +102,25 @@ fn a_write_to_the_store_from_below_its_keeper_is_stopped() {
     );
     assert_eq!(
         verdict(&keeper, &[write(&the_agent(), "Edit", "src/a.rs")]),
+        Verdict::Allow
+    );
+}
+
+/// FR57, FR58: the store's pattern is `.caps/**`, so a write to a deeper path under it by one
+/// below the keeper is stopped too, which `.caps/*` left open.
+#[test]
+fn a_write_to_a_deeper_path_of_the_store_is_stopped() {
+    let keeper = keeper();
+    assert_eq!(
+        verdict(&keeper, &[write(&the_agent(), "Edit", ".caps/sub/x.toml")]),
+        violated()
+    );
+    assert_eq!(
+        verdict(&keeper, &[write(&the_agent(), "Write", ".caps/a/b/c.toml")]),
+        violated()
+    );
+    assert_eq!(
+        verdict(&keeper, &[write(&the_user(), "Edit", ".caps/sub/x.toml")]),
         Verdict::Allow
     );
 }

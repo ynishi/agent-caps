@@ -10,6 +10,15 @@ and this project adheres to
 
 ### Added
 
+- A `**` in a path pattern (#51): a whole segment `**/` matches zero or more
+  directories (`a/**/b` matches `a/b` and `a/x/y/b`), a `**` that ends the
+  pattern matches the rest of the path (`a/**` matches everything under `a/`,
+  not `a` itself), and `**` alone matches every path. A `**` inside a segment
+  (`a**b`) is refused when the pattern is made. A pattern is compiled once
+  when it is made, and matching stays linear with no backtracking. New:
+  `GlobPattern::as_str()`. Breaking, before 1.0: `GlobPattern::new` returns
+  `Result<GlobPattern, NameError>`, and `NameError` has a new variant, `Glob`.
+
 - A requirements ledger, `agent_caps::_requirements`: use cases, principles and
   functional requirements in one module doc, outside semver. `cargo test`
   checks its tables and every `UC<n>` / `FR<n>` cited in a doc comment, and
