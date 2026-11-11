@@ -298,6 +298,8 @@ fn verdict_of(
 /// How one policy takes effect differently between two points (`rule_moves`): a claim's, before
 /// and after it, or a change's, under one mode.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum RuleMove {
     /// Its effect goes down: a loosening.
     Lowered {

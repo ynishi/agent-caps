@@ -210,6 +210,8 @@ pub fn classify_classifier(before: Option<&Classifier>, after: Option<&Classifie
 
 /// One way a change loosens what `by` does not cover.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Loosening {
     /// A policy `by` does not cover is removed or changed in a way that cannot be read as
     /// stricter, a binding `by` does not cover is removed, lowered, rescoped or taken over, a
@@ -225,6 +227,7 @@ pub enum Loosening {
     /// that moves is moved by that.
     Moves {
         /// The mode compared (`None` for no mode).
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
         mode: Option<Mode>,
         /// Every author the loosening asks, those `by` covers included.
         authors: Vec<Principal>,

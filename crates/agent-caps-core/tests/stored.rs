@@ -1,5 +1,5 @@
 //! The stored form of the records (FR61): `Sources`, `Authority` and the `Event`s behind a state,
-//! encoded behind the `serde` feature.
+//! and how a change loosens (FR66, `Loosening`), encoded behind the `serde` feature.
 //!
 //! One sample holds every variant of every enum the stored form reaches, and everything else is
 //! checked against it:
@@ -26,7 +26,8 @@ use agent_caps_core::domain::adjust::{
     Adjustment, Lifetime, Temporary, TemporaryBinding, TemporaryBound,
 };
 use agent_caps_core::domain::authority::{Authority, Principal};
-use agent_caps_core::domain::catalog::Catalog;
+use agent_caps_core::domain::catalog::{Catalog, Target};
+use agent_caps_core::domain::change::Loosening;
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::name::{
     AdjustmentId, BindingId, ClassifierName, CommandWords, GlobPattern, Meter, Mode, PolicyId,
@@ -42,8 +43,10 @@ use agent_caps_core::domain::predicate::{
 };
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment, KindSet};
 use agent_caps_core::domain::set::{SetId, SetName, Source, Sources};
-use agent_caps_core::domain::state::Lineage;
+use agent_caps_core::domain::state::{Lineage, SlotId};
 use agent_caps_core::domain::stored::VERSION;
+use agent_caps_core::domain::tx::checks::RuleMove;
+use agent_caps_core::domain::tx::{FindingDetail, Reader};
 use serde::de::value::F64Deserializer;
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +60,7 @@ struct Sample {
     sources: Sources,
     authority: Authority,
     events: Vec<Event>,
+    loosenings: Vec<Loosening>,
 }
 
 fn principal(key: &str) -> Principal {
@@ -670,11 +674,91 @@ fn events() -> Vec<Event> {
     events
 }
 
+/// A slot's id, which has no constructor: it is read from its stored form, its number.
+fn slot(n: usize) -> SlotId {
+    serde_json::from_str(&n.to_string()).unwrap()
+}
+
+/// The ways a change loosens, every variant of each enum on the way once or more: the items of a
+/// catalog, the moves of a rule, the details of a finding and the readers a spawn loosens.
+fn loosenings() -> Vec<Loosening> {
+    let classifier: ClassifierName = "commit-why@3".parse().unwrap();
+    let moves = vec![
+        RuleMove::Lowered {
+            policy: policy_id(1),
+            authors: vec![user(), agent()],
+        },
+        RuleMove::Raised {
+            policy: policy_id(2),
+        },
+        RuleMove::Exempted {
+            policy: policy_id(1),
+            authors: vec![user()],
+        },
+        RuleMove::Unexempted {
+            policy: policy_id(2),
+        },
+        RuleMove::Suspended {
+            policy: policy_id(3),
+            binding: binding_id(1),
+            authors: vec![],
+        },
+    ];
+    let uncovered = |target| Loosening::Uncovered { target };
+    vec![
+        uncovered(Target::Policy(policy_id(1))),
+        uncovered(Target::Binding(binding_id(1))),
+        uncovered(Target::Classifier(classifier)),
+        uncovered(Target::Set(set_id(1))),
+        Loosening::Moves {
+            mode: Some(mode("strict")),
+            authors: vec![user(), agent()],
+            detail: FindingDetail::Rules {
+                moves,
+                reading: vec![policy_id(4)],
+            },
+        },
+        Loosening::Moves {
+            mode: None,
+            authors: vec![],
+            detail: FindingDetail::Mode {
+                reading: vec![policy_id(1), policy_id(2)],
+            },
+        },
+        Loosening::Moves {
+            mode: Some(mode("relaxed")),
+            authors: vec![helper()],
+            detail: FindingDetail::Slot {
+                slot: slot(2),
+                reading: vec![policy_id(3)],
+            },
+        },
+        Loosening::Moves {
+            mode: None,
+            authors: vec![agent()],
+            detail: FindingDetail::Spawn {
+                child: principal("child"),
+                under: helper(),
+                loosened: vec![
+                    Reader::Policy(policy_id(1)),
+                    Reader::Adjustment(adjustment_id(1)),
+                ],
+            },
+        },
+        Loosening::Moves {
+            mode: None,
+            authors: vec![user()],
+            detail: FindingDetail::Described("a check from outside".to_owned()),
+        },
+    ]
+}
+
 fn sample() -> Sample {
     Sample {
         sources: sources(),
         authority: authority(),
         events: events(),
+        loosenings: loosenings(),
     }
 }
 
@@ -739,11 +823,16 @@ seen! {
     PolaritySeen { guard, reward }
     DefLayerSeen { meta, base }
     ExpectSeen { violated, satisfied, not_applicable, unknown }
+    LooseningSeen { uncovered, moves }
+    TargetSeen { policy, binding, classifier, set }
+    FindingDetailSeen { rules, mode, slot, spawn, described }
+    RuleMoveSeen { lowered, raised, exempted, unexempted, suspended }
+    ReaderSeen { policy, adjustment }
     OptionSeen {
         when_some, when_none, filter_cond_some, filter_cond_none, cover_some, cover_none,
         command_some, command_none, path_some, path_none, ok_some, ok_none, amount_some,
         amount_none, record_some, record_none, bound_some, bound_none, known_gap_true,
-        known_gap_false,
+        known_gap_false, moves_mode_some, moves_mode_none,
     }
 }
 
@@ -770,6 +859,11 @@ struct Seen {
     polarity: PolaritySeen,
     def_layer: DefLayerSeen,
     expect: ExpectSeen,
+    loosening: LooseningSeen,
+    target: TargetSeen,
+    finding_detail: FindingDetailSeen,
+    rule_move: RuleMoveSeen,
+    reader: ReaderSeen,
     option: OptionSeen,
 }
 
@@ -797,6 +891,11 @@ impl Seen {
             polarity,
             def_layer,
             expect,
+            loosening,
+            target,
+            finding_detail,
+            rule_move,
+            reader,
             option,
         } = self;
         body.assert_all();
@@ -820,6 +919,11 @@ impl Seen {
         polarity.assert_all();
         def_layer.assert_all();
         expect.assert_all();
+        loosening.assert_all();
+        target.assert_all();
+        finding_detail.assert_all();
+        rule_move.assert_all();
+        reader.assert_all();
         option.assert_all();
     }
 }
@@ -1236,10 +1340,90 @@ fn walk_sources(seen: &mut Seen, sources: &Sources) {
     }
 }
 
+fn walk_target(seen: &mut Seen, target: &Target) {
+    match target {
+        Target::Policy(_) => seen.target.policy = true,
+        Target::Binding(_) => seen.target.binding = true,
+        Target::Classifier(_) => seen.target.classifier = true,
+        Target::Set(_) => seen.target.set = true,
+    }
+}
+
+fn walk_rule_move(seen: &mut Seen, rule_move: &RuleMove) {
+    match rule_move {
+        RuleMove::Lowered {
+            policy: _,
+            authors: _,
+        } => seen.rule_move.lowered = true,
+        RuleMove::Raised { policy: _ } => seen.rule_move.raised = true,
+        RuleMove::Exempted {
+            policy: _,
+            authors: _,
+        } => seen.rule_move.exempted = true,
+        RuleMove::Unexempted { policy: _ } => seen.rule_move.unexempted = true,
+        RuleMove::Suspended {
+            policy: _,
+            binding: _,
+            authors: _,
+        } => seen.rule_move.suspended = true,
+    }
+}
+
+fn walk_reader(seen: &mut Seen, reader: &Reader) {
+    match reader {
+        Reader::Policy(_) => seen.reader.policy = true,
+        Reader::Adjustment(_) => seen.reader.adjustment = true,
+    }
+}
+
+fn walk_finding_detail(seen: &mut Seen, detail: &FindingDetail) {
+    match detail {
+        FindingDetail::Rules { moves, reading: _ } => {
+            seen.finding_detail.rules = true;
+            moves.iter().for_each(|m| walk_rule_move(seen, m));
+        }
+        FindingDetail::Mode { reading: _ } => seen.finding_detail.mode = true,
+        FindingDetail::Slot {
+            slot: _,
+            reading: _,
+        } => seen.finding_detail.slot = true,
+        FindingDetail::Spawn {
+            child: _,
+            under: _,
+            loosened,
+        } => {
+            seen.finding_detail.spawn = true;
+            loosened.iter().for_each(|r| walk_reader(seen, r));
+        }
+        FindingDetail::Described(_) => seen.finding_detail.described = true,
+    }
+}
+
+fn walk_loosening(seen: &mut Seen, loosening: &Loosening) {
+    match loosening {
+        Loosening::Uncovered { target } => {
+            seen.loosening.uncovered = true;
+            walk_target(seen, target);
+        }
+        Loosening::Moves {
+            mode,
+            authors: _,
+            detail,
+        } => {
+            seen.loosening.moves = true;
+            match mode {
+                Some(_) => seen.option.moves_mode_some = true,
+                None => seen.option.moves_mode_none = true,
+            }
+            walk_finding_detail(seen, detail);
+        }
+    }
+}
+
 /// Every variant of every enum the stored form reaches is in the sample, so the golden form
 /// holds all of them.
 ///
-/// FR61.
+/// FR61, FR66.
 #[test]
 fn the_sample_reaches_every_variant_the_stored_form_has() {
     let sample = sample();
@@ -1249,6 +1433,10 @@ fn the_sample_reaches_every_variant_the_stored_form_has() {
         .events
         .iter()
         .for_each(|event| walk_body(&mut seen, &event.body));
+    sample
+        .loosenings
+        .iter()
+        .for_each(|loosening| walk_loosening(&mut seen, loosening));
     seen.assert_all();
 }
 
@@ -1259,7 +1447,7 @@ fn the_sample_reaches_every_variant_the_stored_form_has() {
 /// of the file. It catches a file rewritten without a new version, not a forger. Changing a hash
 /// is changing the stored form: raise `VERSION`, add a new file and a new line here, and leave
 /// the older file and its line as they are.
-const GOLDEN_HASHES: [(u32, u64); 1] = [(1, 0x307a_7c43_81a4_da09)];
+const GOLDEN_HASHES: [(u32, u64); 2] = [(1, 0x307a_7c43_81a4_da09), (2, 0x680a_3512_db79_dff6)];
 
 fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
@@ -1405,6 +1593,7 @@ fn the_sample_decodes_to_what_was_encoded() {
     let back: Sample = serde_json::from_str(&json).unwrap();
     assert_eq!(back.sources, sample.sources);
     assert_eq!(back.authority, sample.authority);
+    assert_eq!(back.loosenings, sample.loosenings);
     assert_eq!(back.events.len(), sample.events.len());
     for (before, after) in sample.events.iter().zip(&back.events) {
         assert!(same_event(before, after), "{before:?} came back {after:?}");
@@ -1700,4 +1889,107 @@ fn a_score_that_is_not_a_number_is_refused() {
     );
     let ok = r#"{"Measured":{"oracle":"o","score":0.5}}"#;
     assert!(serde_json::from_str::<Body>(ok).is_ok());
+}
+
+/// Every way a change loosens is the same after a round trip, one by one and as the list a
+/// rejected change holds, and the same text again when it is encoded again.
+///
+/// FR66.
+#[test]
+fn a_loosening_decodes_to_what_was_encoded() {
+    for loosening in loosenings() {
+        let json = serde_json::to_string(&loosening).unwrap();
+        let back: Loosening = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, loosening, "{json}");
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+    }
+    let all = loosenings();
+    let json = serde_json::to_string(&all).unwrap();
+    assert_eq!(serde_json::from_str::<Vec<Loosening>>(&json).unwrap(), all);
+}
+
+/// A slot's id is stored as its number, as it is, and read back as it was written: it is the
+/// fact of the record that names it, and no rule is there to check it.
+///
+/// FR66.
+#[test]
+fn a_slot_id_is_its_number() {
+    assert_eq!(serde_json::to_string(&slot(7)).unwrap(), "7");
+    assert_eq!(serde_json::from_str::<SlotId>("7").unwrap(), slot(7));
+    let json = serde_json::to_string(&FindingDetail::Slot {
+        slot: slot(3),
+        reading: vec![],
+    })
+    .unwrap();
+    assert_eq!(json, r#"{"Slot":{"slot":3,"reading":[]}}"#);
+    // Not a number a slot could have.
+    refused::<SlotId>("-1", "invalid value");
+    refused::<SlotId>("\"3\"", "invalid type");
+}
+
+/// A field no type has is refused in every shape a loosening holds, so a record written by a
+/// newer version is not read with a part dropped; a field that may hold nothing is refused when
+/// it is missing.
+///
+/// FR66.
+#[test]
+fn a_loosening_with_a_field_no_type_has_is_refused() {
+    let policy = id_text(1);
+    let binding = binding_id(1).to_string();
+    let adjustment = adjustment_id(1).to_string();
+    let target = format!(r#"{{"Policy":"{policy}"}}"#);
+    refused::<Loosening>(
+        &format!(r#"{{"Uncovered":{{"target":{target},"extra":1}}}}"#),
+        "unknown field `extra`",
+    );
+    let moves = |mode: &str, detail: &str| {
+        format!(r#"{{"Moves":{{{mode}"authors":[],"detail":{detail}}}}}"#)
+    };
+    let mode = r#""mode":null,"#;
+    let ok = moves(mode, r#"{"Mode":{"reading":[]}}"#);
+    assert!(serde_json::from_str::<Loosening>(&ok).is_ok());
+    refused::<Loosening>(
+        &moves(r#""mode":null,"extra":1,"#, r#"{"Mode":{"reading":[]}}"#),
+        "unknown field `extra`",
+    );
+    refused::<Loosening>(
+        &moves("", r#"{"Mode":{"reading":[]}}"#),
+        "missing field `mode`",
+    );
+    for detail in [
+        r#"{"Rules":{"moves":[],"reading":[],"extra":1}}"#.to_owned(),
+        r#"{"Mode":{"reading":[],"extra":1}}"#.to_owned(),
+        r#"{"Slot":{"slot":1,"reading":[],"extra":1}}"#.to_owned(),
+        r#"{"Spawn":{"child":"a","under":"b","loosened":[],"extra":1}}"#.to_owned(),
+        format!(
+            r#"{{"Rules":{{"moves":[{{"Raised":{{"policy":"{policy}","extra":1}}}}],"reading":[]}}}}"#
+        ),
+        format!(
+            r#"{{"Rules":{{"moves":[{{"Lowered":{{"policy":"{policy}","authors":[],"extra":1}}}}],"reading":[]}}}}"#
+        ),
+        format!(
+            r#"{{"Rules":{{"moves":[{{"Suspended":{{"policy":"{policy}","binding":"{binding}","authors":[],"extra":1}}}}],"reading":[]}}}}"#
+        ),
+    ] {
+        refused::<FindingDetail>(&detail, "unknown field `extra`");
+    }
+    // A newtype variant is one key: a second key is not read.
+    refused::<Reader>(
+        &format!(r#"{{"Adjustment":"{adjustment}","extra":1}}"#),
+        "expected value",
+    );
+    refused::<Reader>(
+        &format!(r#"{{"Policy":"{policy}","Adjustment":"{adjustment}"}}"#),
+        "expected value",
+    );
+    refused::<Target>(
+        &format!(r#"{{"Binding":"{binding}","Policy":"{policy}"}}"#),
+        "expected value",
+    );
+    // Each part is read through its own constructor.
+    refused::<Target>(r#"{"Policy":"not an id"}"#, "is not a hyphenated UUID");
+    refused::<FindingDetail>(
+        r#"{"Spawn":{"child":"a","under":"b","loosened":[{"Policy":"x"}]}}"#,
+        "`x` is not a hyphenated UUID",
+    );
 }

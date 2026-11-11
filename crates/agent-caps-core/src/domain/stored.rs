@@ -1,9 +1,9 @@
 //! What the stored form of the domain's records shares: its version, the error of a value made
 //! of several parts, and the form of a number that is not finite.
 //!
-//! Behind the `serde` feature, the records of a catalog (`Sources`, `Authority`) and the events
-//! behind a state are encoded so that decoding a value with a checking constructor goes only
-//! through that constructor (FR61). A type with a private field is stored as the input of its
+//! Behind the `serde` feature, the records of a catalog (`Sources`, `Authority`), the events
+//! behind a state, and how a change loosens (`Loosening`) are encoded so that decoding a value
+//! with a checking constructor goes only through that constructor (FR61). A type with a private field is stored as the input of its
 //! constructor (a `Raw` kept private in the module of the type), a type of plain data as it is.
 //! This module is the lowest layer of the domain, as `authority` is: it uses no other module, and
 //! `arch-lint.toml` keeps it so, so each module of the domain can use what is here.
@@ -21,7 +21,7 @@ use std::fmt;
 /// The version of the stored form. Raise it when the golden form changes: a name of a field or of
 /// a variant, or the shape of a value, that the stored form has. An older version stays readable
 /// to whoever keeps the records and brings them up to this one.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Every error a constructor found, as the error of decoding a value that has several: the
 /// constructors of [`Sources`](super::set::Sources) and of
