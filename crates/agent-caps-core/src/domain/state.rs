@@ -220,7 +220,7 @@ use super::schema::{At, EventKind, Judgment, Nature};
 #[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct Lineage(Arc<str>);
 
-/// The stored form of a lineage is its text, read back through [`Lineage::new`].
+/// The encoded form of a lineage is its text, read back through [`Lineage::new`].
 #[cfg(feature = "serde")]
 impl TryFrom<String> for Lineage {
     type Error = EmptyLineage;
@@ -327,7 +327,7 @@ pub enum Known<T> {
 /// One slot of a state: what one temporal operator of the catalog remembers. The id is
 /// meaningful only within the catalog whose state it is.
 ///
-/// The stored form of a slot's id is its number, as it is (`transparent`, so the `serde` feature
+/// The encoded form of a slot's id is its number, as it is (`transparent`, so the `serde` feature
 /// adds no public way to make one). A slot's id has meaning only in the catalog that the record
 /// naming it speaks of. No rule can check it, and the only thing that reads one is the comparison
 /// of `Catalog::reads_slot`, which does not use it as an index, so a number read back is taken as

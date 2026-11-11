@@ -1,26 +1,21 @@
-//! The stored form of the records (FR61): `Sources`, `Authority` and the `Event`s behind a state,
-//! and how a change loosens (FR66, `Loosening`), encoded behind the `serde` feature.
+//! The encoding of the records (FR68): `Sources`, `Authority` and the `Event`s behind a state,
+//! and how a change loosens (FR66, `Loosening`), encoded behind the `serde` feature. It is a
+//! tool for mapping the core's values, not the form a store keeps them in, so nothing here pins
+//! a version of it.
 //!
-//! One sample holds every variant of every enum the stored form reaches, and everything else is
+//! One sample holds every variant of every enum the encoding reaches, and everything else is
 //! checked against it:
 //!
 //! - The sample is walked by matches with no wildcard, each setting a flag of a struct that
 //!   has one field per variant, and the struct is taken apart with no `..` and every field
 //!   asserted. A variant added to an enum stops the match compiling until it has an arm, the arm
 //!   needs a field, and a field the sample does not reach fails the test.
-//! - The golden form, `tests/stored/v{VERSION}.json`, is the sample as `serde_json` writes it.
-//!   Every golden form has its hash in [`GOLDEN_HASHES`]. Changing the hash is changing the
-//!   stored form: raise `VERSION` and add a new file and a new hash. An old file and its hash are
-//!   never deleted. To write the file of the current version, run the tests with
-//!   `UPDATE_GOLDEN=1`.
 //! - The sample decodes to what was encoded, a finite number to the bit, and a catalog accepted
 //!   from the decoded sources has the graph of one accepted from the originals.
 //! - Every value with a checking constructor is refused, with the constructor's own error, when
 //!   it is decoded from a form the constructor would refuse, and a field no type has is refused.
 
-use std::collections::BTreeSet;
 use std::fmt::Debug;
-use std::path::PathBuf;
 
 use agent_caps_core::domain::adjust::{
     Adjustment, Lifetime, Temporary, TemporaryBinding, TemporaryBound,
@@ -44,7 +39,6 @@ use agent_caps_core::domain::predicate::{
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment, KindSet};
 use agent_caps_core::domain::set::{SetId, SetName, Source, Sources};
 use agent_caps_core::domain::state::{Lineage, SlotId};
-use agent_caps_core::domain::stored::VERSION;
 use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, Reader};
 use serde::de::value::F64Deserializer;
@@ -53,7 +47,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------------------------
 // The sample
 
-/// What the golden form holds: the records the stored form is for.
+/// What the sample holds: the records the encoding is for.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Sample {
@@ -674,7 +668,7 @@ fn events() -> Vec<Event> {
     events
 }
 
-/// A slot's id, which has no constructor: it is read from its stored form, its number.
+/// A slot's id, which has no constructor: it is read from its encoded form, its number.
 fn slot(n: usize) -> SlotId {
     serde_json::from_str(&n.to_string()).unwrap()
 }
@@ -1420,12 +1414,12 @@ fn walk_loosening(seen: &mut Seen, loosening: &Loosening) {
     }
 }
 
-/// Every variant of every enum the stored form reaches is in the sample, so the golden form
-/// holds all of them.
+/// Every variant of every enum the encoding reaches is in the sample, so the round trip covers
+/// all of them.
 ///
-/// FR61, FR66.
+/// FR68, FR66.
 #[test]
-fn the_sample_reaches_every_variant_the_stored_form_has() {
+fn the_sample_reaches_every_variant_the_encoding_has() {
     let sample = sample();
     let mut seen = Seen::default();
     walk_sources(&mut seen, &sample.sources);
@@ -1438,102 +1432,6 @@ fn the_sample_reaches_every_variant_the_stored_form_has() {
         .iter()
         .for_each(|loosening| walk_loosening(&mut seen, loosening));
     seen.assert_all();
-}
-
-// ---------------------------------------------------------------------------------------------
-// The golden form
-
-/// The hash of the golden form of each version, the current one included: FNV-1a over the bytes
-/// of the file. It catches a file rewritten without a new version, not a forger. Changing a hash
-/// is changing the stored form: raise `VERSION`, add a new file and a new line here, and leave
-/// the older file and its line as they are.
-const GOLDEN_HASHES: [(u32, u64); 2] = [(1, 0x307a_7c43_81a4_da09), (2, 0x680a_3512_db79_dff6)];
-
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
-
-fn golden_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/stored")
-}
-
-fn golden_path(version: u32) -> PathBuf {
-    golden_dir().join(format!("v{version}.json"))
-}
-
-/// The sample as the golden file of the current version holds it.
-fn golden_text() -> String {
-    format!("{}\n", serde_json::to_string_pretty(&sample()).unwrap())
-}
-
-/// The golden form of the current version is the sample as it is written now. A change of a name
-/// or of a shape the stored form has fails here, and the way out is a new version, not a new
-/// file under the old one.
-///
-/// FR61.
-#[test]
-fn the_golden_form_of_the_current_version_is_the_sample() {
-    let path = golden_path(VERSION);
-    let expected = golden_text();
-    if std::env::var_os("UPDATE_GOLDEN").is_some_and(|value| value == "1") {
-        std::fs::create_dir_all(golden_dir()).unwrap();
-        std::fs::write(&path, &expected).unwrap();
-        println!(
-            "wrote {} (hash {:#018x}); put the hash in GOLDEN_HASHES",
-            path.display(),
-            fnv1a(expected.as_bytes())
-        );
-    }
-    let golden = std::fs::read_to_string(&path).unwrap_or_else(|error| {
-        panic!(
-            "the golden form {} cannot be read ({error}). Write it with \
-             `UPDATE_GOLDEN=1 cargo test -p agent-caps-core --features serde --test stored`",
-            path.display()
-        )
-    });
-    assert!(
-        golden == expected,
-        "the stored form is not the golden form of version {VERSION} ({}). If the shape of the \
-         stored form changed on purpose, raise `stored::VERSION`, write the new file with \
-         `UPDATE_GOLDEN=1` and add its hash to GOLDEN_HASHES; do not rewrite the old file",
-        path.display()
-    );
-}
-
-/// Every golden form is the file its hash says, the current version has one, and no file lacks a
-/// hash: a golden form is never rewritten or dropped without the hash changing in the diff.
-///
-/// FR61.
-#[test]
-fn every_golden_form_is_the_file_its_hash_says() {
-    assert!(
-        GOLDEN_HASHES.iter().any(|(version, _)| *version == VERSION),
-        "version {VERSION} has no hash in GOLDEN_HASHES"
-    );
-    for (version, hash) in GOLDEN_HASHES {
-        let path = golden_path(version);
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("{} cannot be read: {error}", path.display()));
-        let found = fnv1a(&bytes);
-        assert_eq!(
-            found,
-            hash,
-            "{} has the hash {found:#018x}, not {hash:#018x}: the golden form of a version is not \
-             rewritten; raise `stored::VERSION` and add a new file",
-            path.display()
-        );
-    }
-    let hashed: BTreeSet<String> = GOLDEN_HASHES
-        .iter()
-        .map(|(version, _)| format!("v{version}.json"))
-        .collect();
-    let files: BTreeSet<String> = std::fs::read_dir(golden_dir())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    assert_eq!(files, hashed, "a golden file and the hashes differ");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1585,7 +1483,7 @@ fn same_event(a: &Event, b: &Event) -> bool {
 /// The sample decodes to what was encoded: the same sources, authority and events, a finite
 /// number to the bit, and the same text when it is encoded again.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn the_sample_decodes_to_what_was_encoded() {
     let sample = sample();
@@ -1605,7 +1503,7 @@ fn the_sample_decodes_to_what_was_encoded() {
 
 /// The numbers a JSON number cannot carry are written as text and read back.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_number_that_is_not_finite_is_written_as_text() {
     let score = |score: f64| Body::Measured {
@@ -1634,15 +1532,15 @@ fn accepted(sources: Sources) -> Catalog {
     Catalog::accept(
         sources,
         authority(),
-        Lineage::new("stored").expect("a lineage"),
+        Lineage::new("encoded").expect("a lineage"),
     )
     .unwrap_or_else(|rejected| panic!("the sample is not accepted: {rejected:?}"))
 }
 
-/// The sources that come back are the sources that were stored: a catalog accepted from them has
+/// The sources that come back are the sources that were encoded: a catalog accepted from them has
 /// the graph of one accepted from the originals.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_catalog_accepted_from_decoded_sources_has_the_same_graph() {
     let sources = sources();
@@ -1653,7 +1551,7 @@ fn a_catalog_accepted_from_decoded_sources_has_the_same_graph() {
 
 /// A lineage is written as its text and read back through its constructor.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_lineage_and_a_principal_are_their_text() {
     let lineage = Lineage::new("main-line").unwrap();
@@ -1695,7 +1593,7 @@ fn set_json(id: &str, name: &str) -> String {
 /// A name, an id, a reason, a pattern, command words and a lineage that their constructors
 /// refuse are refused when decoded, with the constructor's error.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_text_the_constructor_refuses_is_refused() {
     const NOT_A_UUID: &str = "is not a hyphenated UUID";
@@ -1721,14 +1619,14 @@ fn a_text_the_constructor_refuses_is_refused() {
 /// A length that is not more than zero, and an amount or a number the constructors refuse, are
 /// refused when decoded.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_number_the_constructor_refuses_is_refused() {
     refused::<Window>("0", "not positive");
     refused::<Scope>(r#"{"Every":-1}"#, "not positive");
     refused::<TemporaryBound>("-5", "not positive");
     refused::<Amount>("-1.0", "negative amount");
-    // A JSON number is finite, so a deserializer that holds NaN stands in for the stored form of
+    // A JSON number is finite, so a deserializer that holds NaN stands in for the encoded form of
     // one.
     let nan = || F64Deserializer::<serde::de::value::Error>::new(f64::NAN);
     let inf = || F64Deserializer::<serde::de::value::Error>::new(f64::INFINITY);
@@ -1756,7 +1654,7 @@ fn a_number_the_constructor_refuses_is_refused() {
 /// A hierarchy with no root, an unknown parent or a loop is refused when decoded, and so are a
 /// set of modes, a bound and a record that their constructors refuse.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_value_of_parts_the_constructor_refuses_is_refused() {
     refused::<Authority>(r#"{"links":[]}"#, "needs at least one root");
@@ -1783,7 +1681,7 @@ fn a_value_of_parts_the_constructor_refuses_is_refused() {
 /// decoded, with every error the constructor found; two sets of one name are read, as a name is
 /// no identity.
 ///
-/// FR61, FR67.
+/// FR68, FR67.
 #[test]
 fn a_graph_and_sources_the_constructor_refuses_are_refused() {
     let id = binding_id(1).to_string();
@@ -1818,9 +1716,10 @@ fn a_graph_and_sources_the_constructor_refuses_are_refused() {
 }
 
 /// A field no type has is refused, in an event, in the struct variant of a body and in the form
-/// a type is stored as, so a record written by a newer version is not read with a part dropped.
+/// a type is encoded as: the encoding reads only what it writes, and reading an older or a newer
+/// form is the job of a store's DTO.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_field_no_type_has_is_refused() {
     let spawn = r#"{"Spawn":{"child":"a","under":"b"}}"#;
@@ -1851,7 +1750,7 @@ fn a_field_no_type_has_is_refused() {
 /// not read as nothing: an exemption missing its cover would otherwise cover every event, and a
 /// filter missing its condition would take every event of its kind.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_missing_field_that_may_hold_nothing_is_refused() {
     let exempt = |cover: &str| format!(r#"{{"Exempt":{{"guard":"{}"{cover}}}}}"#, id_text(1));
@@ -1873,7 +1772,7 @@ fn a_missing_field_that_may_hold_nothing_is_refused() {
 /// A score that is neither a number nor the text of one that is not finite is refused, and a
 /// missing one is too.
 ///
-/// FR61.
+/// FR68.
 #[test]
 fn a_score_that_is_not_a_number_is_refused() {
     refused::<Body>(
@@ -1909,7 +1808,7 @@ fn a_loosening_decodes_to_what_was_encoded() {
     assert_eq!(serde_json::from_str::<Vec<Loosening>>(&json).unwrap(), all);
 }
 
-/// A slot's id is stored as its number, as it is, and read back as it was written: it is the
+/// A slot's id is encoded as its number, as it is, and read back as it was written: it is the
 /// fact of the record that names it, and no rule is there to check it.
 ///
 /// FR66.
@@ -1928,9 +1827,8 @@ fn a_slot_id_is_its_number() {
     refused::<SlotId>("\"3\"", "invalid type");
 }
 
-/// A field no type has is refused in every shape a loosening holds, so a record written by a
-/// newer version is not read with a part dropped; a field that may hold nothing is refused when
-/// it is missing.
+/// A field no type has is refused in every shape a loosening holds, as the encoding reads only
+/// what it writes; a field that may hold nothing is refused when it is missing.
 ///
 /// FR66.
 #[test]

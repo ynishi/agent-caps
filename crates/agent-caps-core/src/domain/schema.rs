@@ -15,7 +15,7 @@
 #[cfg_attr(feature = "serde", serde(from = "i64", into = "i64"))]
 pub struct At(i64);
 
-/// The stored form of an instant is its milliseconds. Any number makes an instant, so reading it
+/// The encoded form of an instant is its milliseconds. Any number makes an instant, so reading it
 /// back cannot fail.
 #[cfg(feature = "serde")]
 impl From<i64> for At {
@@ -207,7 +207,7 @@ impl EventKind {
 #[cfg_attr(feature = "serde", serde(from = "KindSetRaw", into = "KindSetRaw"))]
 pub struct KindSet(Vec<EventKind>);
 
-/// The stored form of [`KindSet`]: the kinds [`KindSet::new`] takes, so that decoding always goes
+/// The encoded form of [`KindSet`]: the kinds [`KindSet::new`] takes, so that decoding always goes
 /// through it. Private, and without `transparent`, `flatten` or `default`, each of which would be
 /// a way to a value that did not go through the constructor.
 #[cfg(feature = "serde")]

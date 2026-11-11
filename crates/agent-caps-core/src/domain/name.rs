@@ -437,12 +437,12 @@ impl fmt::Display for Reason {
     }
 }
 
-/// The stored form of the values that are made from a text: that text. Decoding goes through the
+/// The encoded form of the values that are made from a text: that text. Decoding goes through the
 /// type's `FromStr`, so the rule of the type is checked once, where it is written; encoding writes
 /// what `Display` shows. `serde` takes both as `TryFrom<String>` and `From<T> for String`
 /// (`transparent` is not used: it would fill the private field without the rule).
 #[cfg(feature = "serde")]
-macro_rules! stored_as_text {
+macro_rules! encoded_as_text {
     ($($ty:ty),+ $(,)?) => {$(
         impl TryFrom<String> for $ty {
             type Error = NameError;
@@ -461,10 +461,10 @@ macro_rules! stored_as_text {
 }
 
 #[cfg(feature = "serde")]
-pub(super) use stored_as_text;
+pub(super) use encoded_as_text;
 
 #[cfg(feature = "serde")]
-stored_as_text!(
+encoded_as_text!(
     PolicyId,
     BindingId,
     AdjustmentId,
@@ -475,7 +475,7 @@ stored_as_text!(
     Reason,
 );
 
-/// The stored form of a pattern is its text, read back through [`GlobPattern::new`].
+/// The encoded form of a pattern is its text, read back through [`GlobPattern::new`].
 #[cfg(feature = "serde")]
 impl TryFrom<String> for GlobPattern {
     type Error = NameError;
@@ -492,7 +492,7 @@ impl From<GlobPattern> for String {
     }
 }
 
-/// The stored form of command words is the words, not one text, so a word with a space in it
+/// The encoded form of command words is the words, not one text, so a word with a space in it
 /// comes back as it was; they are read back through [`CommandWords::new`].
 #[cfg(feature = "serde")]
 impl TryFrom<Vec<String>> for CommandWords {

@@ -10,8 +10,8 @@ homepage.workspace = true
 documentation.workspace = true
 readme.workspace = true
 
-# serde is optional and off by default: the core has no dependency unless the stored form
-# (`domain::stored`) is asked for.
+# serde is optional and off by default: the core has no dependency unless the encoded form
+# (`domain::encoding`) is asked for.
 [features]
 serde = ["dep:serde"]
 
@@ -24,5 +24,5 @@ serde_json.workspace = true
 
 # Without `required-features` the test would fail to build when the feature is off.
 [[test]]
-name = "stored"
+name = "encoding"
 required-features = ["serde"]

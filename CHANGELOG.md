@@ -35,10 +35,10 @@ and this project adheres to
   catalog (`Sources`, `Authority`) and the events behind a state (#65). A value
   with a checking constructor (a name, an id, `Authority`, `Sources`,
   `PolicyGraph`, a window, an amount and the rest) is decoded only through that
-  constructor, so a stored form that the constructor would refuse is refused
-  with its error; a field no type has is refused too. The score of a
-  measurement and the answer of a classifier are stored as a JSON number, or
-  as the text `"NaN"`, `"inf"` or `"-inf"`. The form is versioned:
+  constructor, so an encoded form that the constructor would refuse is
+  refused with its error; a field no type has is refused too. The score of a
+  measurement and the answer of a classifier are encoded as a JSON number, or
+  as the text `"NaN"`, `"inf"` or `"-inf"`. The form is versioned (until #84):
   `domain::stored::VERSION` is raised when it changes, and a golden form per
   version (`tests/stored/v1.json`) with its hash fails the test of a change
   that does not raise it (FR61).
@@ -47,9 +47,9 @@ and this project adheres to
   `Loosening` and the types it holds (`Target`, `FindingDetail`, `RuleMove`,
   `Reader` and `SlotId`), by the same rules as the records of a catalog, so a
   store can keep a proposed change with the answer it was given. A slot's id is
-  stored as its number, read back as a fact of the record that names it.
+  encoded as its number, read back as a fact of the record that names it.
   `domain::stored::VERSION` is raised to 2, and `tests/stored/v2.json` is the
-  golden form (the one of version 1 is kept) (FR66).
+  golden form (the one of version 1 is kept) (until #84) (FR66).
 
 - A `**` in a path pattern (#51): a whole segment `**/` matches zero or more
   directories (`a/**/b` matches `a/b` and `a/x/y/b`), a `**` that ends the
@@ -245,6 +245,15 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: the core's `serde` encoding is a tool for mapping the
+  core's values, not a stored form (#84). A store keeps its own DTOs, its own
+  version and its own golden forms, and maps between them and the core's
+  values. `domain::stored` is `domain::encoding`, and `stored::VERSION`, the
+  golden forms (`tests/stored/v1.json`, `v2.json`) and the test that compared
+  them are gone; the checks of a constructor, the refusal of a field no type
+  has and the form of a number that is not finite stay. `CoreVersion` is the
+  version of the core that wrote a record, not a version of a stored form. In
+  the ledger, FR61 is withdrawn for FR68, and what cited it cites FR68.
 - Breaking, before 1.0: a name is no identity (#82). Two sets of a catalog,
   and two policies, may share a name; what tells them apart, and stays
   through their versions, is the id. `Sources::new` refuses only an id given
@@ -252,7 +261,7 @@ and this project adheres to
   twice (`parse_with` also a classifier's name, which is its identity).
   `SourcesError::DuplicateName` and `Clash::Name` are gone. An adapter that
   needs names to be unique guards that itself. In the ledger, FR48 is
-  withdrawn for FR67. The stored form does not change.
+  withdrawn for FR67. The encoding does not change.
 - Breaking, before 1.0: no core enum is `#[non_exhaustive]` any more
   (`Body`, `EventKind`, `Field`, `Rule`, `FindingDetail`). The core is the
   SDK's inside: a new variant stops every match that does not handle it from

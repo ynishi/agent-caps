@@ -477,7 +477,7 @@ impl Scope {
 #[cfg_attr(feature = "serde", serde(try_from = "i64", into = "i64"))]
 pub struct Window(i64);
 
-/// The stored form of a window is its milliseconds, read back through [`Window::from_millis`].
+/// The encoded form of a window is its milliseconds, read back through [`Window::from_millis`].
 #[cfg(feature = "serde")]
 impl TryFrom<i64> for Window {
     type Error = WindowError;
@@ -540,7 +540,7 @@ impl std::error::Error for WindowError {}
 #[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
 pub struct Amount(f64);
 
-/// The stored form of an amount is its number, read back through [`Amount::new`].
+/// The encoded form of an amount is its number, read back through [`Amount::new`].
 #[cfg(feature = "serde")]
 impl TryFrom<f64> for Amount {
     type Error = AmountError;
@@ -622,7 +622,7 @@ impl Eq for Amount {}
 #[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
 pub struct Number(f64);
 
-/// The stored form of a number is the number, read back through [`Number::new`].
+/// The encoded form of a number is the number, read back through [`Number::new`].
 #[cfg(feature = "serde")]
 impl TryFrom<f64> for Number {
     type Error = NumberError;

@@ -1,3 +1,0 @@
-# The golden forms of the stored form are compared byte for byte and by hash, so a checkout must
-# not rewrite their line endings.
-crates/agent-caps-core/tests/stored/*.json -text

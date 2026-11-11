@@ -110,7 +110,7 @@ pub enum Body {
         /// The oracle, by name.
         oracle: String,
         /// The score.
-        #[cfg_attr(feature = "serde", serde(with = "super::stored::float"))]
+        #[cfg_attr(feature = "serde", serde(with = "super::encoding::float"))]
         score: f64,
     },
     /// A classifier answered: a claim, read by the rules that name the classifier (a filter of
@@ -123,7 +123,7 @@ pub enum Body {
         /// The classifier, by name and version.
         classifier: ClassifierName,
         /// The answer.
-        #[cfg_attr(feature = "serde", serde(with = "super::stored::float"))]
+        #[cfg_attr(feature = "serde", serde(with = "super::encoding::float"))]
         answer: f64,
     },
     /// A temporary adjustment is made: an exemption, or bindings added and suspended, for its

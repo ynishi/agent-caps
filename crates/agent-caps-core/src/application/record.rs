@@ -55,7 +55,8 @@ impl fmt::Display for GenerationMark {
 /// The version of agent-caps-core that wrote a record. A catalog that cannot be replayed is
 /// reported with the version that wrote the record it stops at and the running one
 /// ([`Unreplayable`](super::load::Unreplayable)), which is what tells a user to start a new
-/// lineage.
+/// lineage. It is the version of the core that wrote the record, not a version of the form a
+/// store keeps it in.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CoreVersion(String);
 
