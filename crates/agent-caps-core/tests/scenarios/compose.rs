@@ -3,17 +3,20 @@
 //!
 //! The catalog is accepted from its sets and keeps them (`Sources`); the sets compose by adding
 //! only (`Sources::compose`): an item two sets hold the same is one item, and two different items
-//! under one id, or two policies of one name, conflict. So a project's set adds to the shared one
-//! and strengthens it, and never replaces or lowers what it holds; a shared rule is weakened for a
+//! under one id conflict; a name is no identity, so two policies, or two sets, may share one. So a
+//! project's set adds to the shared one and strengthens it, and never replaces or lowers what it holds; a shared rule is weakened for a
 //! project only by a version of the shared set that its owner gives. Adding, removing and swapping
 //! a set are changes of the sources, judged as one change. The join's laws are checked over every
 //! combination of a small pool of graphs (exhaustively, with no generator of random cases).
+
+use std::collections::BTreeSet;
 
 use agent_caps_core::domain::authority::Principal;
 use agent_caps_core::domain::catalog::{AcceptError, Catalog, Target};
 use agent_caps_core::domain::change::{ChangeRejected, Loosening};
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict};
+use agent_caps_core::domain::name::PolicyName;
 use agent_caps_core::domain::policy::{
     Clash, DefLayer, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
 };
@@ -118,7 +121,7 @@ fn uncovered(target: Target) -> Loosening {
     Loosening::Uncovered { target }
 }
 
-/// UC27, FR48, FR42: the shared set and the project's compose to one catalog. The shared guard
+/// UC27, FR67, FR42: the shared set and the project's compose to one catalog. The shared guard
 /// and reward work as they did alone, the project's binding of the reward adds to the shared one
 /// and does not lower it, and the project's guard judges a tool call.
 #[test]
@@ -143,8 +146,8 @@ fn two_sets_compose_to_one_catalog() {
     );
 }
 
-/// UC27, FR48: two sets that hold different policies under one id, or two policies of one name,
-/// are refused with the pair of sets, whichever comes first; the catalog is not accepted.
+/// UC27, FR67: two sets that hold different policies under one id are refused with the pair of
+/// sets, whichever comes first; the catalog is not accepted.
 #[test]
 fn two_sets_that_disagree_on_an_item_are_refused_with_the_pair() {
     let same_id = set(
@@ -180,7 +183,12 @@ fn two_sets_that_disagree_on_an_item_are_refused_with_the_pair() {
             ),
         ])
     );
+}
 
+/// UC27, FR67: a name is no identity. Two sets that hold two policies of one name under two ids
+/// compose to a catalog that holds both.
+#[test]
+fn two_policies_of_one_name_under_two_ids_are_two_policies() {
     let same_name = users_set(
         "project",
         graph_of(
@@ -188,20 +196,18 @@ fn two_sets_that_disagree_on_an_item_are_refused_with_the_pair() {
             vec![],
         ),
     );
-    assert_eq!(
-        conflicts(vec![shared(Level::Force), same_name.clone()]),
-        vec![(
-            Clash::Name("test-before-stop".parse().unwrap()),
-            pair("project", "shared")
-        )]
-    );
-    let Err(errors) = accept(vec![shared(Level::Force), same_name]) else {
-        panic!("two policies of one name were accepted");
-    };
-    assert!(matches!(errors.as_slice(), [AcceptError::Conflict(_)]));
+    let catalog = accept(vec![shared(Level::Force), same_name]).unwrap();
+    let name: PolicyName = "test-before-stop".parse().unwrap();
+    let named: BTreeSet<_> = catalog
+        .graph()
+        .policies()
+        .filter(|def| def.name == name)
+        .map(|def| def.id)
+        .collect();
+    assert_eq!(named, BTreeSet::from([id(GUARD), id(OTHER)]));
 }
 
-/// FR48: of three sets under one id, every pair with different items is a conflict, in the order
+/// FR67: of three sets under one id, every pair with different items is a conflict, in the order
 /// of the sets' ids, and two sets with the same item are not a pair.
 #[test]
 fn three_sets_under_one_id_give_every_pair_that_differs() {
@@ -240,7 +246,7 @@ fn three_sets_under_one_id_give_every_pair_that_differs() {
     );
 }
 
-/// FR48: one pass of errors. What a set says of its own items is checked before the sets are
+/// FR67: one pass of errors. What a set says of its own items is checked before the sets are
 /// composed, so two sets that conflict and a third that holds a binding by one outside the
 /// hierarchy are reported in one rejection.
 #[test]
@@ -285,7 +291,7 @@ fn a_conflict_and_an_unknown_author_are_reported_at_once() {
     );
 }
 
-/// UC27, FR48, FR49: two sets that hold the same items compose to one of each, and taking one of
+/// UC27, FR67, FR49: two sets that hold the same items compose to one of each, and taking one of
 /// them out keeps what the other holds: the sources are composed again.
 #[test]
 fn two_sets_with_the_same_item_hold_it_once_and_removing_one_keeps_it() {
@@ -306,7 +312,7 @@ fn two_sets_with_the_same_item_hold_it_once_and_removing_one_keeps_it() {
     );
 }
 
-/// UC27, FR48, FR49: the project cannot replace or lower a shared binding. By composition, a
+/// UC27, FR67, FR49: the project cannot replace or lower a shared binding. By composition, a
 /// binding of the project's with the shared binding's id is a conflict, not a replacement; by a
 /// change, a version of the shared set made by the project's owner loosens the shared set, the
 /// user's binding and the guard, and each is reported.
@@ -354,7 +360,7 @@ fn the_shared_owner_publishes_a_lower_version_for_the_project() {
     );
 }
 
-/// FR48: an item in a set by one who is neither the set's owner nor below it is refused when the
+/// FR67: an item in a set by one who is neither the set's owner nor below it is refused when the
 /// catalog is accepted: a set holds only what its owner may loosen.
 #[test]
 fn an_item_by_an_author_outside_the_sets_owner_is_refused_at_accept() {
@@ -517,40 +523,32 @@ fn adding_a_set_by_its_owner_needs_no_approval_and_one_in_another_name_is_refuse
         before.sources().with(shared(Level::Advise)),
         Err(SourcesError::Duplicate(set_id("shared")))
     );
-    // So are its id and its name. A set given twice is one id given twice; a name under two ids
-    // is a name given twice; both are reported at once, whatever the order.
+    // A set given twice is one id given twice, whatever the order.
     assert_eq!(
         Sources::new(vec![shared(Level::Force), shared(Level::Advise), project()]),
         Err(vec![SourcesError::Duplicate(set_id("shared"))])
     );
-    let another_shared = Source {
-        id: set_id("another"),
-        ..shared(Level::Force)
-    };
-    assert_eq!(
-        Sources::new(vec![
-            project(),
-            another_shared,
-            shared(Level::Force),
-            shared(Level::Advise),
-        ]),
-        Err(vec![
-            SourcesError::Duplicate(set_id("shared")),
-            SourcesError::DuplicateName(set_name("shared")),
-        ])
-    );
+}
+
+/// UC27, FR67: a set's name is no identity. Two sets of one name under two ids are two sets, and
+/// taking one out by its id leaves the other.
+#[test]
+fn two_sets_of_one_name_are_two_sets() {
+    let before = accept(vec![shared(Level::Force), project()]).unwrap();
     let same_name = Source {
         id: set_id("another"),
-        ..shared(Level::Advise)
+        ..project()
     };
+    assert!(Sources::new(vec![same_name.clone(), project()]).is_ok());
+    let both = before.sources().with(same_name).unwrap();
     assert_eq!(
-        Sources::new(vec![same_name.clone(), shared(Level::Force)]),
-        Err(vec![SourcesError::DuplicateName(set_name("shared"))])
+        both.iter()
+            .filter(|source| source.name == set_name("project"))
+            .count(),
+        2
     );
-    assert_eq!(
-        before.sources().with(same_name),
-        Err(SourcesError::DuplicateName(set_name("shared")))
-    );
+    let left = both.without(&set_id("another")).unwrap();
+    assert_eq!(left, *before.sources());
 }
 
 /// FR49: a set is the one with its id, and its name is its owner's to say. The owner renames its
@@ -583,16 +581,18 @@ fn a_rename_is_a_change_of_the_set() {
     );
     assert!(before.change(shared_renamed, &the_user()).is_ok());
 
-    // A new name another set has is refused before anything is judged.
-    assert_eq!(
-        before.sources().replaced(renamed(project(), "shared")),
-        Err(SourcesError::DuplicateName(set_name("shared")))
-    );
+    // A new name another set has is a name like any other: the two sets stay two by their ids.
+    let shared_twice = before
+        .sources()
+        .replaced(renamed(project(), "shared"))
+        .unwrap();
+    assert!(shared_twice.get(&set_id("project")).is_some());
+    assert!(before.change(shared_twice, &the_agent()).is_ok());
 }
 
 /// The pool of graphs the laws are checked over: empty, the guard alone, the guard with the
 /// reward (which holds the guard the same), the guard at another level (a conflict with it), and a
-/// policy with the guard's name under another id (a conflict of the name).
+/// policy with the guard's name under another id (another policy, which joins beside it).
 fn pool() -> Vec<PolicyGraph> {
     vec![
         PolicyGraph::default(),
@@ -625,7 +625,7 @@ fn join(graphs: &[&PolicyGraph]) -> Result<PolicyGraph, Vec<Clash>> {
     })
 }
 
-/// FR48: the join is commutative, idempotent and has the empty sources as its unit, over every
+/// FR67: the join is commutative, idempotent and has the empty sources as its unit, over every
 /// pair of the pool.
 #[test]
 fn the_join_is_commutative_and_idempotent_with_a_unit() {
@@ -641,7 +641,7 @@ fn the_join_is_commutative_and_idempotent_with_a_unit() {
     }
 }
 
-/// FR48: the join is associative over every triple of the pool: joining two first and then the
+/// FR67: the join is associative over every triple of the pool: joining two first and then the
 /// third gives what joining the three does, and a conflict of two stays one with the third.
 #[test]
 fn the_join_is_associative() {

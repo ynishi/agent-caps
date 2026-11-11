@@ -7,7 +7,7 @@
 //! a project's own are two sources of one catalog.
 //!
 //! ```text
-//! Sources [ Source { id, name, owner, graph } … ]    by SetId, no id or name twice (Sources::new)
+//! Sources [ Source { id, name, owner, graph } … ]    by SetId, no id twice (Sources::new)
 //!   │  with / without(id) / replaced                 add, take out, swap (a new version, same id)
 //!   ▼
 //! Sources::compose ── each policy and binding once, in SetId order, through the graph's one insert
@@ -23,7 +23,8 @@
 //! Composing is a join: the policies and the bindings of every set, by id, and the classifiers, by
 //! name. Two sets with the same item (an equal policy or binding with the same id, an equal
 //! classifier with the same name) hold one item, and two with different items under one id or one
-//! classifier name, or two policies of one name under two ids, conflict ([`JoinConflict`]). The join
+//! classifier name conflict ([`JoinConflict`]). Two policies, or two sets, may share a name: a
+//! name is a label for people, not what tells items apart ([`SetName`]). The join
 //! is commutative, associative and idempotent, with the empty sources as its unit (an empty graph),
 //! so the composed graph does
 //! not depend on the order of the sets, and the same graph given as two sets adds nothing. Inside
@@ -104,11 +105,9 @@
 //!
 //! - [`SourcesError::Duplicate`]: two sets have one id. Give each set its own; a new version of
 //!   a set replaces it ([`Sources::replaced`]) rather than being added beside it.
-//! - [`SourcesError::DuplicateName`]: two sets have one name. Rename one.
 //! - [`SourcesError::Unknown`]: a set taken out or replaced is not one of the sources.
-//! - [`JoinConflict`]: two sets hold different items under one id or one classifier name, or two
-//!   policies of one name. Make the items equal, give them their own ids and names, or leave one
-//!   out.
+//! - [`JoinConflict`]: two sets hold different items under one id or one classifier name. Make
+//!   the items equal, give them their own ids (a classifier its own name), or leave one out.
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::{self, Entry};
@@ -148,9 +147,10 @@ impl fmt::Display for SetId {
     }
 }
 
-/// The name of a set of policies (`shared`, `project-a`), for the people who read it. Two sets of
-/// a catalog never share one; the id, not the name, is what other values refer to, so a set may be
-/// renamed and stay the same set.
+/// The name of a set of policies (`shared`, `project-a`): a label its users and adapters keep, for
+/// the people who read it. It is no identity: two sets of a catalog may share one, and a set may
+/// be renamed and stay the same set. The id is what tells sets apart and what other values refer
+/// to. An adapter that needs names to be unique, as a platform may, guards that itself.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
@@ -198,8 +198,6 @@ pub struct Source {
 pub enum SourcesError {
     /// Two sets have the id.
     Duplicate(SetId),
-    /// Two sets have the name.
-    DuplicateName(SetName),
     /// No set has the id.
     Unknown(SetId),
 }
@@ -208,7 +206,6 @@ impl fmt::Display for SourcesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Duplicate(id) => write!(f, "two sets have the id {id}"),
-            Self::DuplicateName(name) => write!(f, "two sets have the name {name}"),
             Self::Unknown(id) => write!(f, "no set has the id {id}"),
         }
     }
@@ -224,8 +221,8 @@ pub struct JoinConflict {
 }
 
 impl JoinConflict {
-    /// Where the two sets hold different items: a policy's or a binding's id, a policy's name, or
-    /// a classifier's name.
+    /// Where the two sets hold different items: a policy's or a binding's id, or a classifier's
+    /// name.
     pub fn clash(&self) -> &Clash {
         &self.clash
     }
@@ -245,7 +242,7 @@ impl fmt::Display for JoinConflict {
 
 impl std::error::Error for JoinConflict {}
 
-/// The sets a catalog is composed of, by id, no id and no name twice. Made by [`Sources::new`],
+/// The sets a catalog is composed of, by id, no id twice. Made by [`Sources::new`],
 /// and changed only into another value by [`Sources::with`], [`Sources::without`] and
 /// [`Sources::replaced`], which make it through [`Sources::new`] again.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -256,8 +253,8 @@ pub struct Sources {
 }
 
 /// The stored form of [`Sources`]: the input of [`Sources::new`], not the map the sources keep,
-/// so that decoding always goes through the one place that decides that no id and no name is
-/// given twice. Private, and without `transparent`, `flatten` or `default`, each of which would be
+/// so that decoding always goes through the one place that decides that no id is given twice.
+/// Private, and without `transparent`, `flatten` or `default`, each of which would be
 /// a way to a value that did not go through the constructor.
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -285,25 +282,14 @@ impl From<Sources> for SourcesRaw {
 }
 
 impl Sources {
-    /// The sources of `sets`, when no two have one id or one name: the one place that decides
-    /// it. Otherwise every id given twice and every name given twice, each once, ids first, each
-    /// in its order, so what is found does not depend on the order the sets were given in. A name
-    /// is given twice when two ids have it; a set given twice under one id and one name clashes by
-    /// its id alone, as an equal policy given twice in a graph does.
+    /// The sources of `sets`, when no two have one id: the one place that decides it. Otherwise
+    /// every id given twice, each once, in its order, so what is found does not depend on the
+    /// order the sets were given in. Two sets may share a name ([`SetName`]); a set given twice
+    /// clashes by its id, as an equal policy given twice in a graph does.
     pub fn new(sets: Vec<Source>) -> Result<Self, Vec<SourcesError>> {
         let mut sources = Self::default();
-        let mut names = BTreeMap::new();
         let mut errors = Vec::new();
         for source in sets {
-            match names.entry(source.name.clone()) {
-                Entry::Occupied(holder) if *holder.get() != source.id => {
-                    errors.push(SourcesError::DuplicateName(source.name.clone()));
-                }
-                Entry::Occupied(_) => {}
-                Entry::Vacant(slot) => {
-                    slot.insert(source.id);
-                }
-            }
             match sources.sets.entry(source.id) {
                 Entry::Occupied(_) => errors.push(SourcesError::Duplicate(source.id)),
                 Entry::Vacant(slot) => {
@@ -319,7 +305,7 @@ impl Sources {
         Err(errors)
     }
 
-    /// These sources with `source` added, when no set has its id or its name.
+    /// These sources with `source` added, when no set has its id.
     pub fn with(&self, source: Source) -> Result<Self, SourcesError> {
         Self::remade(self.iter().cloned().chain([source]))
     }
@@ -344,8 +330,8 @@ impl Sources {
     }
 
     /// These sources with the set of `source`'s id replaced by `source`, when there is one: a new
-    /// version keeps the id, and may change the graph, the name or the owner, as long as no other
-    /// set has its name. A swap is one change, judged as one difference.
+    /// version keeps the id, and may change the graph, the name or the owner. A swap is one
+    /// change, judged as one difference.
     pub fn replaced(&self, source: Source) -> Result<Self, SourcesError> {
         if !self.sets.contains_key(&source.id) {
             return Err(SourcesError::Unknown(source.id));
@@ -371,7 +357,7 @@ impl Sources {
     /// equal to one of another set as the same item.
     ///
     /// Otherwise every conflict, in the order of [`Clash`] (the policies' ids, the bindings' ids,
-    /// the policies' names, the classifiers' names), and for each clash every pair of sets whose items under it cannot enter one
+    /// the classifiers' names), and for each clash every pair of sets whose items under it cannot enter one
     /// graph, in [`SetId`] order: three sets with three different items under one id give three
     /// pairs, and two sets with the same item are not a pair.
     pub fn compose(&self) -> Result<PolicyGraph, Vec<JoinConflict>> {
@@ -379,7 +365,7 @@ impl Sources {
         let mut clashes: Vec<Clash> = self
             .iter()
             .flat_map(|source| source.graph.items())
-            .flat_map(|item| graph.insert(item, Origin::Joined).err().unwrap_or_default())
+            .filter_map(|item| graph.insert(item, Origin::Joined).err())
             .collect();
         if clashes.is_empty() {
             return Ok(graph);
@@ -404,7 +390,7 @@ impl Sources {
             [a, b]
                 .into_iter()
                 .filter_map(|source| source.graph.item_at(&clash))
-                .flat_map(|item| graph.insert(item, Origin::Joined).err().unwrap_or_default())
+                .filter_map(|item| graph.insert(item, Origin::Joined).err())
                 .any(|found| found == clash)
         };
         let mut pairs = Vec::new();

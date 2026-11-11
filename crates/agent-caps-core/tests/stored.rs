@@ -1779,10 +1779,11 @@ fn a_value_of_parts_the_constructor_refuses_is_refused() {
     assert!(serde_json::from_str::<CalibrationRecord>(r#"{"cases":2,"false_stops":2}"#).is_ok());
 }
 
-/// Two bindings of one id in a graph, and two sets of one name in the sources, are refused when
-/// decoded, with every error the constructor found.
+/// Two bindings of one id in a graph, and two sets of one id in the sources, are refused when
+/// decoded, with every error the constructor found; two sets of one name are read, as a name is
+/// no identity.
 ///
-/// FR61.
+/// FR61, FR67.
 #[test]
 fn a_graph_and_sources_the_constructor_refuses_are_refused() {
     let id = binding_id(1).to_string();
@@ -1806,7 +1807,7 @@ fn a_graph_and_sources_the_constructor_refuses_are_refused() {
             set_json(&set_id(2).to_string(), second)
         )
     };
-    refused::<Sources>(&sets("same", "same"), "two sets have the name same");
+    assert!(serde_json::from_str::<Sources>(&sets("same", "same")).is_ok());
     assert!(serde_json::from_str::<Sources>(&sets("one", "two")).is_ok());
     let twice_id = format!(
         r#"{{"sets":[{0},{1}]}}"#,

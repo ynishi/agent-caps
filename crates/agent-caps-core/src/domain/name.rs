@@ -181,8 +181,10 @@ fn is_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '-' | '_')
 }
 
-/// The name of a policy, for the people who read a verdict. Two policies of a catalog never
-/// share one; the id, not the name, is what other values refer to.
+/// The name of a policy: a label its users and adapters keep, for the people who read a verdict.
+/// It is no identity: two policies of a catalog may share one. The id is what tells policies
+/// apart and what other values refer to. An adapter that needs names to be unique, as a platform
+/// may, guards that itself.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]

@@ -245,6 +245,14 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a name is no identity (#82). Two sets of a catalog,
+  and two policies, may share a name; what tells them apart, and stays
+  through their versions, is the id. `Sources::new` refuses only an id given
+  twice, and `PolicyGraph::parse` only a policy's or a binding's id given
+  twice (`parse_with` also a classifier's name, which is its identity).
+  `SourcesError::DuplicateName` and `Clash::Name` are gone. An adapter that
+  needs names to be unique guards that itself. In the ledger, FR48 is
+  withdrawn for FR67. The stored form does not change.
 - Breaking, before 1.0: no core enum is `#[non_exhaustive]` any more
   (`Body`, `EventKind`, `Field`, `Rule`, `FindingDetail`). The core is the
   SDK's inside: a new variant stops every match that does not handle it from
@@ -364,8 +372,8 @@ and this project adheres to
   key in the hyphenated UUID form, as `PolicyId` is; `NameError::SetId` for
   one that is not), `SetName` (a name, as `Mode` is), `Source { id, name,
   owner, graph }`, `Sources` (by id, made by `Sources::new`, which refuses an
-  id given twice and a name given twice, every one at once, with
-  `SourcesError::Duplicate` and `DuplicateName`; changed into another value
+  id given twice, every one at once, with `SourcesError::Duplicate` (it
+  refused a name given twice too, until #82); changed into another value
   by `with`, `without(id)` and `replaced`, which make it through `new` again
   and refuse an id that is missing with `Unknown`; a new version keeps its id
   and may change its name) and `JoinConflict`, which names the two sets by
@@ -376,7 +384,8 @@ and this project adheres to
   the sets, and `Catalog::graph()` the graph they compose to. Sets compose by
   adding only (`Sources::compose`): the policies and bindings of every set, by
   id, an item two sets hold the same once, and two different items under one
-  id, or two policies of one name, a conflict (`AcceptError::Conflict`, with
+  id a conflict, as two policies of one name were until #82
+  (`AcceptError::Conflict`, with
   the `Clash` and the two sets, every pair that differs, in `SetId` order).
   The join is commutative, associative and idempotent; nothing is replaced by
   id and no set wins over another, so the caller's composition that let a
@@ -394,10 +403,10 @@ and this project adheres to
 - Breaking, before 1.0: a policy graph is keyed by id (#46). The fields of
   `PolicyGraph` are private, and a graph is made only by
   `PolicyGraph::parse(policies, bindings)`, which refuses a second policy or
-  binding with an id already there, even an equal one, and a second policy
-  with a name already there, returning every clash at once
-  (`Vec<GraphError>`, each with its `Clash`: `Policy(id)`, `Binding(id)` or
-  `Name(name)`). Write `PolicyGraph { policies, bindings }` as
+  binding with an id already there, even an equal one, returning every clash
+  at once (`Vec<GraphError>`, each with its `Clash`: `Policy(id)` or
+  `Binding(id)`; a second policy with a name already there was a
+  `Name(name)` clash until #82). Write `PolicyGraph { policies, bindings }` as
   `PolicyGraph::parse(policies, bindings)?`, and read a graph with
   `policies()`, `bindings()`, `policy(id)`, `binding(id)` or `into_parts()`.
   `AcceptError::DuplicateId`, `DuplicateName` and `DuplicateBinding` are gone:

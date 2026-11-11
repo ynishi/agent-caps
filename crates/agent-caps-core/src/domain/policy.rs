@@ -42,8 +42,9 @@
 //!   [`super::catalog`] and [`super::change`]).
 //! - A [`ModeSet`] is not empty and holds no mode twice: [`ModeSet::new`] refuses otherwise.
 //! - A [`PolicyGraph`] holds its policies and bindings by id, and its classifiers by name, no id
-//!   twice, no policy name twice and no classifier name twice: [`PolicyGraph::parse`] refuses
-//!   otherwise ([`Clash`]), through one insert, and so does the composition of sets
+//!   twice and no classifier name twice (two policies may share a name, which is no identity,
+//!   [`PolicyName`]): [`PolicyGraph::parse`] refuses otherwise ([`Clash`]), through one insert,
+//!   and so does the composition of sets
 //!   ([`super::set`]), which takes an equal item of two sets once. Its order is by id (a
 //!   classifier's by name), the one order of everything a catalog lists.
 //! - A [`Calibration`] decides whether a [`CalibrationRecord`] suffices, in one place
@@ -527,7 +528,8 @@ pub struct PolicyDef {
 
 /// What a catalog is accepted from: the policies, and the bindings that put them into effect,
 /// each keyed by its id, and the classifiers they read, each keyed by its name. No two policies
-/// share an id or a name, no two bindings share an id, and no two classifiers share a name:
+/// share an id, no two bindings share an id, and no two classifiers share a name (two policies
+/// may share a name, which is no identity, [`PolicyName`]):
 /// [`PolicyGraph::parse`], [`PolicyGraph::parse_with`] and [`super::set::Sources::compose`] are
 /// the only ways to make one with items, all through one insert, so a graph that exists cannot
 /// hold a duplicate, and code that reads a graph does not check for one again.
@@ -558,16 +560,13 @@ pub struct PolicyGraph {
     policies: BTreeMap<PolicyId, PolicyDef>,
     bindings: BTreeMap<BindingId, Binding>,
     classifiers: BTreeMap<ClassifierName, Classifier>,
-    /// Each policy's name, with its id: kept by the one insert beside `policies`, and the names
-    /// of exactly its policies in every graph `parse` returns.
-    names: BTreeMap<PolicyName, PolicyId>,
     /// The longest period of a temporary adjustment the graph declares, if it does.
     bound: Option<TemporaryBound>,
 }
 
 /// The stored form of [`PolicyGraph`]: what [`PolicyGraph::parse_with`] takes, not the maps the
-/// graph keeps (nor the names it derives), so that decoding always goes through the one insert
-/// that refuses an id or a name twice. Private, and without `transparent`, `flatten` or
+/// graph keeps, so that decoding always goes through the one insert that refuses an id twice.
+/// Private, and without `transparent`, `flatten` or
 /// `default`, each of which would be a way to a value that did not go through the constructor.
 #[cfg(feature = "serde")]
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -622,18 +621,17 @@ pub(super) enum Origin {
     Joined,
 }
 
-/// Why an item cannot enter a graph: the graph already has one with its id, a policy with its
-/// name, or a classifier with its name. A second item with an id (or a classifier's name) already
-/// there is a clash, unless it is equal and comes from another set
-/// ([`super::set::Sources::compose`]); in one graph it is a slip of the one who wrote it.
+/// Why an item cannot enter a graph: the graph already has one with its id, or a classifier with
+/// its name (a classifier's name is its identity). A second item with an id (or a classifier's
+/// name) already there is a clash, unless it is equal and comes from another set
+/// ([`super::set::Sources::compose`]); in one graph it is a slip of the one who wrote it. A
+/// policy's name is no identity ([`PolicyName`]): two policies may share one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Clash {
     /// A second policy has the id.
     Policy(PolicyId),
     /// A second binding has the id.
     Binding(BindingId),
-    /// A second policy has the name.
-    Name(PolicyName),
     /// A second classifier has the name.
     Classifier(ClassifierName),
 }
@@ -643,7 +641,6 @@ impl fmt::Display for Clash {
         match self {
             Self::Policy(id) => write!(f, "two policies have the id {id}"),
             Self::Binding(id) => write!(f, "two bindings have the id {id}"),
-            Self::Name(name) => write!(f, "two policies have the name {name}"),
             Self::Classifier(name) => write!(f, "two classifiers have the name {name}"),
         }
     }
@@ -674,15 +671,12 @@ impl std::error::Error for GraphError {}
 
 impl PolicyGraph {
     /// The graph of `policies` and `bindings`, with no classifier and no bound
-    /// ([`PolicyGraph::parse_with`]), when no two policies share an id or a name and no two
-    /// bindings share an id. Otherwise
-    /// every clash found, each once, in the order of [`Clash`]: the policies' ids, then the
-    /// bindings' ids, each by id, then the names.
+    /// ([`PolicyGraph::parse_with`]), when no two policies and no two bindings share an id.
+    /// Otherwise every clash found, each once, in the order of [`Clash`]: the policies' ids, then
+    /// the bindings' ids, each by id.
     ///
-    /// An id given twice is a clash of the id, and a name given with two different ids a clash
-    /// of the name, so what is found does not depend on the order the items were given in. The
-    /// name of a policy is checked whether or not its id clashed; an equal policy given twice has
-    /// its name under one id, and clashes by its id alone.
+    /// An id given twice is a clash of the id, so what is found does not depend on the order the
+    /// items were given in. Two policies of one name under two ids are two policies.
     pub fn parse(
         policies: Vec<PolicyDef>,
         bindings: Vec<Binding>,
@@ -711,12 +705,7 @@ impl PolicyGraph {
             .chain(bindings.into_iter().map(Item::Binding))
             .chain(classifiers.into_iter().map(Item::Classifier));
         let mut clashes: Vec<Clash> = items
-            .flat_map(|item| {
-                graph
-                    .insert(item, Origin::Written)
-                    .err()
-                    .unwrap_or_default()
-            })
+            .filter_map(|item| graph.insert(item, Origin::Written).err())
             .collect();
         if clashes.is_empty() {
             return Ok(graph);
@@ -730,40 +719,25 @@ impl PolicyGraph {
     }
 
     /// Puts `item` in the graph, unless an item with its id is there already (a classifier's id is
-    /// its name), or, for a policy, a policy of another id has its name: the one place that
-    /// decides whether an item may enter a graph. An item with an id already there is the same
-    /// item, and enters once, only when it is equal and comes from another set (`origin`,
-    /// [`Origin::Joined`]). The id and the name of a policy are checked apart, and every clash is
-    /// returned.
+    /// its name): the one place that decides whether an item may enter a graph. An item with an
+    /// id already there is the same item, and enters once, only when it is equal and comes from
+    /// another set (`origin`, [`Origin::Joined`]). A policy's name is not looked at: two policies
+    /// may share one.
     ///
-    /// A key that is free is taken even when the item clashes on the other, so a later item is
-    /// compared with every id and name given before it. A graph with a clash is never returned
-    /// ([`PolicyGraph::parse`], [`super::set::Sources::compose`]), so this leaves no graph that
-    /// holds one.
-    pub(super) fn insert(&mut self, item: Item, origin: Origin) -> Result<(), Vec<Clash>> {
-        let mut clashes = Vec::new();
+    /// A graph with a clash is never returned ([`PolicyGraph::parse`],
+    /// [`super::set::Sources::compose`]), so this leaves no graph that holds one.
+    pub(super) fn insert(&mut self, item: Item, origin: Origin) -> Result<(), Clash> {
         match item {
-            Item::Policy(def) => {
-                match self.names.entry(def.name.clone()) {
-                    Entry::Occupied(owner) if *owner.get() != def.id => {
-                        clashes.push(Clash::Name(def.name.clone()));
-                    }
-                    Entry::Occupied(_) => {}
-                    Entry::Vacant(slot) => {
-                        slot.insert(def.id);
-                    }
+            Item::Policy(def) => match self.policies.entry(def.id) {
+                Entry::Occupied(there) if origin == Origin::Joined && *there.get() == *def => {}
+                Entry::Occupied(_) => return Err(Clash::Policy(def.id)),
+                Entry::Vacant(slot) => {
+                    slot.insert(*def);
                 }
-                match self.policies.entry(def.id) {
-                    Entry::Occupied(there) if origin == Origin::Joined && *there.get() == *def => {}
-                    Entry::Occupied(_) => clashes.push(Clash::Policy(def.id)),
-                    Entry::Vacant(slot) => {
-                        slot.insert(*def);
-                    }
-                }
-            }
+            },
             Item::Binding(binding) => match self.bindings.entry(binding.id) {
                 Entry::Occupied(there) if origin == Origin::Joined && *there.get() == binding => {}
-                Entry::Occupied(_) => clashes.push(Clash::Binding(binding.id)),
+                Entry::Occupied(_) => return Err(Clash::Binding(binding.id)),
                 Entry::Vacant(slot) => {
                     slot.insert(binding);
                 }
@@ -771,17 +745,13 @@ impl PolicyGraph {
             Item::Classifier(classifier) => match self.classifiers.entry(classifier.name.clone()) {
                 Entry::Occupied(there)
                     if origin == Origin::Joined && *there.get() == classifier => {}
-                Entry::Occupied(_) => clashes.push(Clash::Classifier(classifier.name)),
+                Entry::Occupied(_) => return Err(Clash::Classifier(classifier.name)),
                 Entry::Vacant(slot) => {
                     slot.insert(classifier);
                 }
             },
         }
-        if clashes.is_empty() {
-            Ok(())
-        } else {
-            Err(clashes)
-        }
+        Ok(())
     }
 
     /// The policies, by id.
@@ -829,27 +799,22 @@ impl PolicyGraph {
     pub(super) fn holds(&self, clash: &Clash) -> bool {
         match clash {
             Clash::Policy(id) => self.policies.contains_key(id),
-            Clash::Name(name) => self.names.contains_key(name),
             Clash::Binding(id) => self.bindings.contains_key(id),
             Clash::Classifier(name) => self.classifiers.contains_key(name),
         }
     }
 
-    /// The item the graph holds where `clash` is: the policy with the id or the name, the
-    /// binding with the id, or the classifier with the name.
+    /// The item the graph holds where `clash` is: the policy or the binding with the id, or the
+    /// classifier with the name.
     pub(super) fn item_at(&self, clash: &Clash) -> Option<Item> {
-        let policy = |id: &PolicyId| self.policies.get(id);
-        let def = match clash {
-            Clash::Policy(id) => policy(id),
-            Clash::Name(name) => self.names.get(name).and_then(policy),
-            Clash::Binding(id) => {
-                return self.bindings.get(id).cloned().map(Item::Binding);
-            }
-            Clash::Classifier(name) => {
-                return self.classifiers.get(name).cloned().map(Item::Classifier);
-            }
-        };
-        def.map(|def| Item::Policy(Box::new(def.clone())))
+        match clash {
+            Clash::Policy(id) => self
+                .policies
+                .get(id)
+                .map(|def| Item::Policy(Box::new(def.clone()))),
+            Clash::Binding(id) => self.bindings.get(id).cloned().map(Item::Binding),
+            Clash::Classifier(name) => self.classifiers.get(name).cloned().map(Item::Classifier),
+        }
     }
 
     /// The longest period of a temporary adjustment the graph declares, if it does. A catalog
