@@ -688,6 +688,12 @@ and this project adheres to
 
 ### Fixed
 
+- An aborted claim leaves the state as it was given (#64, FR60). Before, it
+  gave back the state carried to it, with the intervals the previous event
+  closed already settled, so a history folded without its aborted claims could
+  differ from one folded with them when the last event was such a claim. Now
+  the two folds give the same state, and a store may keep only the claims that
+  took effect.
 - A record of a judgment is admitted only in the name of the judged policy's
   author (#63, FR59). Before, a `Judged` in another's name, or of a policy the
   catalog does not hold, was kept whenever no rule read it, so whatever counts
