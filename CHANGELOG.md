@@ -195,6 +195,15 @@ and this project adheres to
 
 ### Changed
 
+- The protection of the policy store and the approval records is stated in
+  the terms of the domain, which has no agent (#18): what a principal keeps
+  is written only by that principal or one above it, by an ordinary Meta
+  policy of the keeper that stops an act whose actor is below it (P6
+  withdrawn for P21, P7 for P22, FR27 for FR57). A scenario shows the write
+  stopped at every depth below the keeper, through an exemption and a mode
+  switch, and for a child its spawner tries to place beside the keeper. Which
+  tools, paths and commands write to the store is the adapter's to tell. No
+  API changes.
 - Breaking, before 1.0: a state is used only with the catalog generation that
   made it (#55). `Catalog::accept(sources, authority, lineage)` takes a
   `Lineage`. `Catalog::apply` and `apply_with` return
