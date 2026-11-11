@@ -173,9 +173,40 @@ and this project adheres to
   New accept errors: `AcceptError::NoTemporaryBound`, `BoundNotRoot { set }`
   and `BoundConflict`. FR46 is withdrawn for FR55, which adds the bound; the
   tests and use cases that cite FR46 cite FR55.
+- A judgment state is tied to the catalog generation that made it (#55, FR56).
+  `Lineage` is a name the caller gives a catalog accepted from nothing
+  (`Lineage::new`, not empty), and `Generation { lineage, n }` is the version of
+  a catalog: `Catalog::accept` starts a lineage at 0 and `Catalog::change`
+  keeps it and goes one on (`Catalog::generation()`; a number that cannot go on
+  is `ChangeRejected::GenerationsExhausted`). `Catalog::start` stamps its
+  generation on the state (`State::generation()`), and `Catalog::owns(&State)`
+  is the one check that the state is the catalog's. A state of another
+  generation is refused as a `StaleState`, which holds both generations and
+  says `kind()`: `Staleness::Behind` (fold the history again under this
+  catalog), `Ahead` (this catalog is the old one) or `OtherLineage` (the wrong
+  catalog). `Catalog::apply` and `apply_with` give a refused state back in
+  `StaleApply`. The domain compares positions only: naming a lineage once and
+  keeping it a single line, one change from the current generation, are the
+  application's and the store's.
+- `TxInput::effective_before()` and `effective_after()`: what takes effect
+  before a claim and after it as the next event finds it, which leaves out an
+  adjustment that lasted only within a scope the claim closed, for a check of
+  one's own. `RuleCheck` reads the state after a claim in the same place.
 
 ### Changed
 
+- Breaking, before 1.0: a state is used only with the catalog generation that
+  made it (#55). `Catalog::accept(sources, authority, lineage)` takes a
+  `Lineage`. `Catalog::apply` and `apply_with` return
+  `Result<State, StaleApply>`; `Catalog::admit`, `judge`,
+  `Catalog::effective_in` and `Catalog::enforced_in` return
+  `Result<_, StaleState>`. `fold` and `fold_with` start the state themselves
+  and stay as they were. `TxInput` has private fields, made only by the
+  transaction: read them with the getters `catalog()`, `event()`, `before()`,
+  `after()` and `changes()`. To migrate, name a lineage when a catalog is
+  accepted from nothing, handle the refusal of a state of another generation
+  (fold the history again under a changed catalog), and call a getter where a
+  check read a field.
 - Breaking, before 1.0: a temporary adjustment states the time it ends by, and
   a catalog declares a bound (#56). `Lifetime` is `Next`, `Within(Scope)` and
   `Timed`: `Lifetime::Until(At)` is removed, and `Adjustment` has a required

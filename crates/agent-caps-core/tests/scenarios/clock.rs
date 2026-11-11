@@ -77,6 +77,7 @@ fn advised() -> Catalog {
 fn effect_after(catalog: &Catalog, events: &[Event]) -> Effect {
     catalog
         .effective_in(&catalog.fold(Origin::Genesis, events))
+        .unwrap()
         .policies
         .iter()
         .find(|p| p.policy.id() == id(GUARD))
@@ -135,11 +136,13 @@ fn a_raise_claimed_after_its_end_by_its_own_time_is_admitted_by_the_clock() {
     let catalog = advised();
     let start = task_at(0);
     let late = at(the_agent(), 200, raise_until(1, 100));
-    let report = catalog.admit(
-        &catalog.fold(Origin::Genesis, [&start]),
-        &late,
-        &TxPolicy::standard(),
-    );
+    let report = catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, [&start]),
+            &late,
+            &TxPolicy::standard(),
+        )
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Commit);
     assert_eq!(report.inadmissible, None);
 

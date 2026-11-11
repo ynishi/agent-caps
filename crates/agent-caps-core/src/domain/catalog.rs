@@ -10,13 +10,29 @@
 //! of one set is sources of one set, `Sources::new(vec![Source { id, name, owner, graph }])`.
 //!
 //! ```text
-//! Catalog::accept(sources, authority) (super::tx)
+//! Catalog::accept(sources, authority, lineage) (super::tx)     generation 0 of the lineage
+//! Catalog::change(after, by) (super::change)                   the parent's lineage, one on
+//!   accept_as(sources, authority, generation)                  the one constructor
 //!   accept_structure        the owners: every item of a set is by its owner or one below
 //!                           (Authority::within); the composition (Sources::compose); then
 //!                           every invariant but the fixtures, of the composed graph: authors,
 //!                           types, rewards, bindings, and what each policy reads (`Reads`)
-//!   the fixtures            folded by the same transaction as a run (Catalog::fold)
+//!   the fixtures            folded by the same transaction as a run (Catalog::fold), after the
+//!                           generation is fixed, so the states they fold carry it
 //! ```
+//!
+//! # Generation
+//!
+//! A catalog has a [`Generation`]: the lineage its caller named when it was accepted from nothing,
+//! and a number that starts at 0 and that each [`Catalog::change`] raises by one. A state carries
+//! the generation of the catalog that started it ([`Catalog::start`]), and [`Catalog::owns`] is
+//! the one place that says whether a state is the catalog's. Every entry that takes a state calls
+//! it first, and refuses a state of another generation as a [`StaleState`] that says which way it
+//! differs ([`StaleState::kind`]); the helpers under the entries do not check again. The slots of a
+//! state are positions in the table of the catalog that made it, so a state read under another
+//! catalog would give wrong answers without any sign. The domain compares positions only: it does
+//! not know the current generation of a lineage, so keeping a lineage a single line (one change
+//! from the current generation, a lineage named once) is the application's and the store's.
 //!
 //! This module holds the structure and the bindings; folding events, and the transaction a claim
 //! goes through, are [`super::tx`]'s, so the fixtures are checked by the same function that
@@ -212,7 +228,7 @@ use super::predicate::{
 };
 use super::schema::EventKind;
 use super::set::{JoinConflict, SetId, Sources};
-use super::state::{Known, Origin, SlotId, SlotTable, State, matched};
+use super::state::{Generation, Known, Origin, SlotId, SlotTable, State, matched};
 
 /// One item of a catalog: a policy, a binding of one, a classifier, or a set of them
 /// ([`super::set`]).
@@ -1100,7 +1116,76 @@ pub struct Catalog {
     reads: Vec<Reads>,
     index: AdjustIndex,
     authority: Authority,
+    /// Its version, which a state started by it carries ([`Catalog::owns`]).
+    generation: Generation,
 }
+
+/// A state that is not the catalog's: it was started by a catalog of another generation. Made
+/// only by [`Catalog::owns`], so a value of this type always says two generations that differ.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleState {
+    state: Generation,
+    catalog: Generation,
+}
+
+/// What the difference between the generation of a state and of the catalog is, and so what the
+/// caller does ([`StaleState::kind`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Staleness {
+    /// The state is of another lineage: the wrong catalog was given.
+    OtherLineage,
+    /// The state is of an earlier generation of the catalog's lineage: fold its history again
+    /// under this catalog ([`Catalog::fold`]).
+    Behind,
+    /// The state is of a later generation of the catalog's lineage: this catalog is the old one,
+    /// so read the newer catalog.
+    Ahead,
+}
+
+impl StaleState {
+    /// The generation of the state.
+    pub fn state(&self) -> &Generation {
+        &self.state
+    }
+
+    /// The generation of the catalog that refused it.
+    pub fn catalog(&self) -> &Generation {
+        &self.catalog
+    }
+
+    /// What the difference is: the one place that says it. Positions are compared only; whether
+    /// the catalog and the state really are of one line is the store's ([`Generation`]).
+    pub fn kind(&self) -> Staleness {
+        if self.state.lineage() != self.catalog.lineage() {
+            Staleness::OtherLineage
+        } else if self.state.n() < self.catalog.n() {
+            Staleness::Behind
+        } else {
+            Staleness::Ahead
+        }
+    }
+}
+
+impl fmt::Display for StaleState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "the state is of generation {} and the catalog is of generation {}: ",
+            self.state, self.catalog
+        )?;
+        f.write_str(match self.kind() {
+            Staleness::OtherLineage => {
+                "the state is of another lineage, so the catalog is the wrong one"
+            }
+            Staleness::Behind => {
+                "the state is behind the catalog, so fold its history again under the catalog"
+            }
+            Staleness::Ahead => "the state is ahead of the catalog, so the catalog is the old one",
+        })
+    }
+}
+
+impl std::error::Error for StaleState {}
 
 /// The scope of a binding that a temporary adjustment adds, and of what a lost record of one may
 /// have added: every mode.
@@ -1140,6 +1225,7 @@ impl Catalog {
     pub(super) fn accept_structure(
         sources: Sources,
         authority: Authority,
+        generation: Generation,
     ) -> Result<Self, Rejected> {
         let mut errors = Vec::new();
         check_owners(&sources, &authority, &mut errors);
@@ -1184,9 +1270,39 @@ impl Catalog {
                 reads,
                 index,
                 authority,
+                generation,
             })
         } else {
             Err(Rejected(errors))
+        }
+    }
+
+    /// The version of the catalog: the lineage the caller named when it was accepted from nothing
+    /// ([`Catalog::accept`]) and its place in it, which each change raises by one
+    /// ([`Catalog::change`]). A state it starts carries it, and only a catalog of the same
+    /// generation uses that state ([`Catalog::owns`]).
+    pub fn generation(&self) -> &Generation {
+        &self.generation
+    }
+
+    /// Whether `state` is this catalog's, which is whether it was started by a catalog of the same
+    /// generation. The one check: every entry that takes a state calls it first
+    /// ([`Catalog::apply`], [`Catalog::apply_with`], [`Catalog::admit`], [`judge`],
+    /// [`Catalog::effective_in`], [`Catalog::enforced_in`]), and the helpers under them do not.
+    /// A state of another generation is refused with both generations and the kind of the
+    /// difference ([`StaleState::kind`]); the slots of a state are positions in the table of the
+    /// catalog that made it, so reading them under another catalog would be wrong without any
+    /// sign. Positions are compared only (see [`Generation`]).
+    ///
+    /// [`judge`]: super::judge::judge
+    pub fn owns(&self, state: &State) -> Result<(), StaleState> {
+        if state.generation() == &self.generation {
+            Ok(())
+        } else {
+            Err(StaleState {
+                state: state.generation().clone(),
+                catalog: self.generation.clone(),
+            })
         }
     }
 
@@ -1235,8 +1351,11 @@ impl Catalog {
     /// holds the history from the catalog's first acceptance on, `Unknown` when it starts in the
     /// middle. There is no default: the caller says which is true, and a `Genesis` for a history
     /// that is not whole counts from zero what was already counted.
+    ///
+    /// The state carries the catalog's generation ([`Catalog::generation`]), which is what makes it
+    /// this catalog's ([`Catalog::owns`]).
     pub fn start(&self, origin: Origin) -> State {
-        State::start(&self.slots, origin)
+        State::start(&self.slots, origin, self.generation.clone())
     }
 
     pub(super) fn slots(&self) -> &SlotTable {
@@ -1318,7 +1437,16 @@ impl Catalog {
     /// other guard and a reward at Advise), with rewards then held to their guards as always. That
     /// is decided here and nowhere else, apart from the choice of the strongest mode, which
     /// [`Catalog::effective`] makes. A meta policy is never touched.
-    pub fn effective_in(&self, state: &State) -> Effective<'_> {
+    ///
+    /// A state of another generation is refused ([`Catalog::owns`]).
+    pub fn effective_in(&self, state: &State) -> Result<Effective<'_>, StaleState> {
+        self.owns(state)?;
+        Ok(self.effective_in_owned(state))
+    }
+
+    /// [`Catalog::effective_in`] for a state already known to be the catalog's
+    /// ([`Catalog::owns`]), which the entry that took it has checked.
+    pub(super) fn effective_in_owned(&self, state: &State) -> Effective<'_> {
         self.effective_in_with(&self.bindings_in(state), state)
     }
 
@@ -1505,8 +1633,15 @@ impl Catalog {
     /// What the catalog is enforced at in `state` on a platform with `caps`:
     /// [`Catalog::enforced`] from [`Catalog::effective_in`], so with the state's temporary
     /// adjustments and its mode. The list an adapter shows while adjustments are in effect.
-    pub fn enforced_in(&self, state: &State, caps: &Capabilities) -> Enforced<'_> {
-        enforce_by_kind(&self.effective_in(state), caps)
+    ///
+    /// A state of another generation is refused ([`Catalog::owns`]).
+    pub fn enforced_in(
+        &self,
+        state: &State,
+        caps: &Capabilities,
+    ) -> Result<Enforced<'_>, StaleState> {
+        self.owns(state)?;
+        Ok(enforce_by_kind(&self.effective_in_owned(state), caps))
     }
 
     /// What `caps` lower, mode by mode: [`Enforced::lowered`] under each compared mode (no mode,

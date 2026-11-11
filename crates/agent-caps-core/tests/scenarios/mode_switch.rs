@@ -274,11 +274,13 @@ fn strict_stop_guard() -> Written {
 
 /// The transaction of `event` from the start.
 fn admit_first(catalog: &Catalog, event: &Event) -> TxReport {
-    catalog.admit(
-        &catalog.start(Origin::Genesis),
-        event,
-        &TxPolicy::standard(),
-    )
+    catalog
+        .admit(
+            &catalog.start(Origin::Genesis),
+            event,
+            &TxPolicy::standard(),
+        )
+        .unwrap()
 }
 
 /// FR11, UC21, UC25, FR41: a switch into the mode a guard applies inside makes it apply to more

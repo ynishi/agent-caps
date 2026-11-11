@@ -49,11 +49,13 @@ fn users_set() -> Target {
 
 /// The transaction of `event` after `before`.
 fn admit(catalog: &Catalog, before: &[Event], event: &Event) -> TxReport {
-    catalog.admit(
-        &catalog.fold(Origin::Genesis, before),
-        event,
-        &TxPolicy::standard(),
-    )
+    catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, before),
+            event,
+            &TxPolicy::standard(),
+        )
+        .unwrap()
 }
 
 /// The verdict of the rule check in the report, which must have one.

@@ -267,6 +267,9 @@ pub enum ChangeRejected {
     UnknownPrincipal,
     /// The change loosens what the one who changes does not cover; every way is listed.
     Loosens(Vec<Loosening>),
+    /// The catalog's generation number is spent, so the change has no next generation
+    /// ([`Catalog::generation`]). Accept the sources again under a new lineage.
+    GenerationsExhausted,
 }
 
 impl fmt::Display for ChangeRejected {
@@ -284,6 +287,9 @@ impl fmt::Display for ChangeRejected {
                     .iter()
                     .try_for_each(|loosening| write!(f, "\n- {loosening}"))
             }
+            Self::GenerationsExhausted => {
+                f.write_str("the catalog has no next generation: its number is spent")
+            }
         }
     }
 }
@@ -299,7 +305,12 @@ impl Catalog {
     /// as one change. The hierarchy is the catalog's own.
     pub fn change(&self, after: Sources, by: &Principal) -> Result<Catalog, ChangeRejected> {
         let authority = self.authority();
-        let next = Catalog::accept(after, authority.clone()).map_err(ChangeRejected::Invalid)?;
+        let generation = self
+            .generation()
+            .next()
+            .ok_or(ChangeRejected::GenerationsExhausted)?;
+        let next = Catalog::accept_as(after, authority.clone(), generation)
+            .map_err(ChangeRejected::Invalid)?;
         let meta = meta_differences(self, &next);
         if !meta.is_empty() {
             return Err(ChangeRejected::Meta(meta));

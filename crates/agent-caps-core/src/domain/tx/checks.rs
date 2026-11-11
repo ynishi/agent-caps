@@ -531,8 +531,9 @@ pub struct RuleCheck;
 impl AdjustmentCheck for RuleCheck {
     fn judge(&self, input: &TxInput<'_>) -> Vec<CheckFinding> {
         // The state after, as the next event finds it: an adjustment that lasts within a scope the
-        // claim closes ends with the claim, so its end is the claim's result.
-        let ended = input.after.with_closed_scopes_ended();
+        // claim closes ends with the claim, so its end is the claim's result. Read where
+        // `TxInput::effective_after` reads it.
+        let ended = input.after_as_found();
         let (was, is) = (input.before, &*ended);
         // One catalog: the rules move only with the mode or the temporary adjustments. Most
         // claims, a record of a judgment among them, move neither, and need no catalog computed.

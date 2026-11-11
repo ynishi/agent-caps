@@ -25,7 +25,7 @@
 //! use agent_caps::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector, Span};
 //! use agent_caps::domain::schema::{At, EventKind, Field};
 //! use agent_caps::domain::set::{Source, Sources};
-//! use agent_caps::domain::state::Origin;
+//! use agent_caps::domain::state::{Lineage, Origin};
 //!
 //! // Who is who is the caller's arrangement: here, the agent's work is below the user's.
 //! let (user, agent) = (Principal::new("user"), Principal::new("agent"));
@@ -94,7 +94,10 @@
 //!     owner: user.clone(),
 //!     graph: policies,
 //! };
-//! let catalog = Catalog::accept(Sources::new(vec![set]).unwrap(), authority).unwrap();
+//! // The caller names the lineage of a catalog accepted from nothing; each change of it goes one
+//! // generation on, and a state is used only with the generation that made it.
+//! let lineage = Lineage::new("mine").unwrap();
+//! let catalog = Catalog::accept(Sources::new(vec![set]).unwrap(), authority, lineage).unwrap();
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];
 //! // A fold says what it knows of the past: this history is whole, from the catalog's first
@@ -102,7 +105,7 @@
 //! let state = catalog.fold(Origin::Genesis, &history);
 //! // A platform that can enforce everything. One that cannot is described to `judge` the same way,
 //! // as data (see below).
-//! let outcome = judge(&catalog, &state, &history[2], &Capabilities::full());
+//! let outcome = judge(&catalog, &state, &history[2], &Capabilities::full()).unwrap();
 //! assert!(matches!(outcome.verdict, Verdict::Deny(_)));
 //! ```
 //!
@@ -196,6 +199,11 @@
 //! - An event does not say whether it is judged before a tool call runs or read back after it,
 //!   so capabilities cannot differ between the two: a filter on `ok` reads unknown before the
 //!   call and lowers the call too.
+//! - A state is used only with the generation of the catalog that made it
+//!   ([`domain::catalog::Catalog::owns`]), and the domain only compares positions
+//!   ([`domain::state::Generation`]): the caller names a lineage once, a store keeps it a single
+//!   line, and a state of an older generation is not moved to a newer catalog but folded again
+//!   from the history.
 #![warn(missing_docs)]
 
 pub mod _requirements;

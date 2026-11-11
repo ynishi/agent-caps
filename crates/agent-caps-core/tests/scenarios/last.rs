@@ -198,19 +198,23 @@ fn a_score_from_below_the_guards_author_does_not_count() {
 fn a_score_that_is_not_a_number_is_not_a_change_when_it_is_left_alone() {
     let catalog = catalog(vec![bench_guard()], vec![]);
     let state = catalog.fold(Origin::Genesis, &[bench(f64::NAN)]);
-    let report = catalog.admit(
-        &state,
-        &measured_by(the_agent(), "lint", 0.1),
-        &TxPolicy::standard(),
-    );
+    let report = catalog
+        .admit(
+            &state,
+            &measured_by(the_agent(), "lint", 0.1),
+            &TxPolicy::standard(),
+        )
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Commit);
     assert!(report.uncovered.is_empty());
     // The same score again from the bench is no change either; a score that replaces it is one,
     // and from one below the guard's author it does not take effect.
     let same = bench_by(the_agent(), f64::NAN);
-    let report = catalog.admit(&state, &same, &TxPolicy::standard());
+    let report = catalog.admit(&state, &same, &TxPolicy::standard()).unwrap();
     assert_eq!(report.decision, TxDecision::Commit);
-    let report = catalog.admit(&state, &bench_by(the_agent(), 0.9), &TxPolicy::standard());
+    let report = catalog
+        .admit(&state, &bench_by(the_agent(), 0.9), &TxPolicy::standard())
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
 }
 

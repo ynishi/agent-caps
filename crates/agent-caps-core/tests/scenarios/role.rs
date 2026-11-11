@@ -81,11 +81,13 @@ fn spawn(spawner: &Principal, child: &Principal, under: &Principal) -> Event {
 
 /// The transaction of `event` after `before`.
 fn admit(catalog: &Catalog, before: &[Event], event: &Event) -> TxReport {
-    catalog.admit(
-        &catalog.fold(Origin::Genesis, before),
-        event,
-        &TxPolicy::standard(),
-    )
+    catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, before),
+            event,
+            &TxPolicy::standard(),
+        )
+        .unwrap()
 }
 
 /// The events, and one more.

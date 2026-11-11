@@ -10,19 +10,22 @@
 //!                                              (keyed by id: no id or name twice; one order, by id)
 //! Source { id, name, owner, graph } … ─ Sources::new ─▶ Sources
 //!                                              (the sets of policies, by id: no id or name twice)
-//! Sources ─ Catalog::accept ─▶ Catalog        (each item within its set's owner; Sources::compose,
+//! Sources, Lineage ─ Catalog::accept ─▶ Catalog
+//!                                             (each item within its set's owner; Sources::compose,
 //!                                               only adding merges; then structure, what each
-//!                                               policy reads, fixtures)
+//!                                               policy reads, fixtures; generation 0 of the lineage)
 //! Catalog::change(Sources, by) ─▶ Catalog     (sets added, removed or swapped, judged as one
-//!                                               change by its result)
-//! events ─ Catalog::fold / apply ─▶ State      (an act is folded; a claim is a transaction)
+//!                                               change by its result; the next generation)
+//! events ─ Catalog::fold / apply ─▶ State      (an act is folded; a claim is a transaction; a state
+//!                                               is the catalog's generation's, Catalog::owns)
 //! Catalog::effective(mode) ─▶ Effective        (as written: every policy On(the strongest level of
 //!                                               its bindings that hold) or Off, Degraded)
-//! Catalog::effective_in(&State) ─▶ Effective   (the same with the state's temporary adjustments:
+//! Catalog::effective_in(&State) ─▶ Result<Effective, StaleState>
+//!                                              (the same with the state's temporary adjustments:
 //!                                               bindings added and suspended for a while)
 //! Catalog::enforced(mode, &Capabilities) ─▶ Enforced
 //!                                              (as the platform holds it: levels capped, Lowering)
-//! judge(&Catalog, &State, &Event, &Capabilities) ─▶ Outcome
+//! judge(&Catalog, &State, &Event, &Capabilities) ─▶ Result<Outcome, StaleState>
 //!                                              (Verdict, Recognitions, Degraded, Lowering)
 //! Outcome::evidence ─▶ Judged events           (by each judged policy's author, folded as claims;
 //!                                               with the written and the enforced level)
@@ -57,6 +60,9 @@
 //!   mode scope holds ([`policy::Binding`]). A policy takes effect at the strongest level of its
 //!   bindings that hold, and is off with none, so adding a binding never lowers a policy.
 //! - Catalog: the accepted set of policies with their bindings ([`catalog`]).
+//! - Lineage and generation: the name the caller gives a catalog accepted from nothing, and the
+//!   version of a catalog in it, which each change raises by one ([`state::Generation`]). A state
+//!   is used only with the generation that made it ([`catalog::Catalog::owns`]).
 //! - Set of policies: a graph with an id and an owner ([`set::Source`]), such as a shared set of
 //!   best practices or a project's own. A catalog is accepted from its sets and keeps them; they
 //!   compose by adding only, and a change adds, removes or swaps sets ([`set`]).

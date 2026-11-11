@@ -62,6 +62,7 @@ pub(super) fn guard_after(catalog: &Catalog, events: &[Event]) -> (Effect, Vec<H
     let state = catalog.fold(Origin::Genesis, events);
     let effect = catalog
         .effective_in(&state)
+        .unwrap()
         .policies
         .iter()
         .find(|p| p.policy.id() == id(GUARD))
@@ -220,11 +221,13 @@ pub(super) fn spawn(spawner: &Principal, child: &Principal, under: &Principal) -
 
 /// The transaction of `event` after `before`.
 fn admit(catalog: &Catalog, before: &[Event], event: &Event) -> TxReport {
-    catalog.admit(
-        &catalog.fold(Origin::Genesis, before),
-        event,
-        &TxPolicy::standard(),
-    )
+    catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, before),
+            event,
+            &TxPolicy::standard(),
+        )
+        .unwrap()
 }
 
 /// What a spawn's check found, when it found one thing: its verdict.

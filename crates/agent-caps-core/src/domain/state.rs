@@ -122,6 +122,9 @@
 //!
 //! # What the state holds
 //!
+//! - The generation of the catalog that started it ([`State::generation`]), which no event
+//!   changes: the slots below are positions in that catalog's table, so only a catalog of that
+//!   generation reads the state ([`super::catalog::Catalog::owns`]).
 //! - What the fold knew of the past when it started ([`Origin`], kept as the `Past` it comes
 //!   to: advanced once, at the first act), apart from the marks of a record lost within it.
 //! - The clock: no time before the first act, then the latest time an act has carried
@@ -194,6 +197,8 @@
 //!   may have started again or closed is handled as one that may have.
 
 use std::borrow::Cow;
+use std::fmt;
+use std::sync::Arc;
 
 use super::adjust::{AdjustIndex, Adjustment, Inadmissible, Lifetime, Temporary, TemporaryBinding};
 use super::authority::{Authority, Principal};
@@ -204,6 +209,92 @@ use super::predicate::{
     Amount, By, Cond, EventFilter, Pred, Scope, Selector, Span, Temporal, Truth,
 };
 use super::schema::{At, EventKind, Judgment, Nature};
+
+/// The name of a line of catalogs, given by the caller: opaque text the domain only compares.
+/// The domain has no source of randomness, so it cannot make one; the caller names each catalog
+/// it accepts from nothing ([`super::catalog::Catalog::accept`]), and every change of that
+/// catalog keeps the name ([`super::catalog::Catalog::change`]). Shared, so that each state a
+/// catalog starts or a transaction copies carries it without copying the text.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Lineage(Arc<str>);
+
+/// A lineage that is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EmptyLineage;
+
+impl fmt::Display for EmptyLineage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a lineage cannot be empty")
+    }
+}
+
+impl std::error::Error for EmptyLineage {}
+
+impl Lineage {
+    /// The lineage named `text`, when it is not empty.
+    pub fn new(text: &str) -> Result<Self, EmptyLineage> {
+        if text.is_empty() {
+            Err(EmptyLineage)
+        } else {
+            Ok(Self(Arc::from(text)))
+        }
+    }
+
+    /// The text of the lineage.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Lineage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The version of a catalog: the lineage it belongs to and its place in it. A catalog accepted
+/// from nothing starts a lineage at 0 and each change raises the number by one, so two
+/// generations of one lineage are ordered and generations of two lineages are not.
+///
+/// The domain only compares positions ([`super::catalog::Catalog::owns`]). Keeping a lineage a
+/// single line, one change from the current generation, is the store's: two changes made from
+/// the same parent both carry the next generation. Only a catalog makes a generation.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Generation {
+    lineage: Lineage,
+    n: u64,
+}
+
+impl Generation {
+    /// The first generation of `lineage`.
+    pub(super) fn first(lineage: Lineage) -> Self {
+        Self { lineage, n: 0 }
+    }
+
+    /// The generation after this one in its lineage; none when the number is spent.
+    pub(super) fn next(&self) -> Option<Self> {
+        Some(Self {
+            lineage: self.lineage.clone(),
+            n: self.n.checked_add(1)?,
+        })
+    }
+
+    /// The lineage.
+    pub fn lineage(&self) -> &Lineage {
+        &self.lineage
+    }
+
+    /// The place in the lineage: 0 for a catalog accepted from nothing.
+    pub fn n(&self) -> u64 {
+        self.n
+    }
+}
+
+impl fmt::Display for Generation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}#{}", self.lineage, self.n)
+    }
+}
 
 /// A value that was seen, or could not be.
 #[derive(Debug, Clone, PartialEq)]
@@ -625,6 +716,9 @@ pub(super) enum Unseen {
 /// with [`super::catalog::Catalog::apply`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
+    /// The generation of the catalog that started it ([`super::catalog::Catalog::start`]); only
+    /// a catalog of that generation uses it ([`super::catalog::Catalog::owns`]).
+    generation: Generation,
     /// What the fold knows of the past before it: `Origin` as the fold started, advanced once, at
     /// the first act.
     past: Past,
@@ -806,7 +900,7 @@ impl State {
     /// as there, and the mode and every slot unknown, as after a record that could not be read
     /// (`Slot::lost`); neither `adjustments_lost` nor the mark of a lost spawn is set (see
     /// [`Origin::Unknown`] and [`State::may_hold_unseen`]).
-    pub(super) fn start(table: &SlotTable, origin: Origin) -> Self {
+    pub(super) fn start(table: &SlotTable, origin: Origin, generation: Generation) -> Self {
         let (mode, slot, past): (_, fn(&Temporal) -> Slot, _) = match origin {
             Origin::Genesis => (Known::Known(None), Slot::start, Past::Whole),
             Origin::Unknown => (
@@ -816,6 +910,7 @@ impl State {
             ),
         };
         Self {
+            generation,
             past,
             clock: Clock(None),
             mode,
@@ -825,6 +920,12 @@ impl State {
             closing: Vec::new(),
             actors: Actors::default(),
         }
+    }
+
+    /// The generation of the catalog that started this state. Only a catalog of the same
+    /// generation uses it ([`super::catalog::Catalog::owns`]).
+    pub fn generation(&self) -> &Generation {
+        &self.generation
     }
 
     /// What the fold knew of the past when it started, read from what it knows of it now
@@ -1277,6 +1378,24 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FR56: the generation after the last number there is has no value, so a change is refused
+    /// (`ChangeRejected::GenerationsExhausted`) and the number does not wrap. The number cannot be
+    /// set through the public API, so it is checked here.
+    #[test]
+    fn a_spent_generation_has_no_next() {
+        let lineage = Lineage::new("l").unwrap();
+        let last = Generation {
+            lineage: lineage.clone(),
+            n: u64::MAX,
+        };
+        assert_eq!(last.next(), None);
+        let before_last = Generation {
+            lineage,
+            n: u64::MAX - 1,
+        };
+        assert_eq!(before_last.next(), Some(last));
+    }
 
     fn p(key: &str) -> Principal {
         Principal::new(key)

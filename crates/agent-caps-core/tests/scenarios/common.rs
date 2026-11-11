@@ -29,7 +29,7 @@ use agent_caps_core::domain::policy::{
 use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector, Span};
 use agent_caps_core::domain::schema::{At, EventKind, Field, KindSet};
 use agent_caps_core::domain::set::{SetId, SetName, Source, Sources};
-use agent_caps_core::domain::state::{Known, Origin};
+use agent_caps_core::domain::state::{Known, Lineage, Origin};
 
 pub const GUARD: &str = "00000000-0000-7000-8000-000000000001";
 pub const REWARD: &str = "00000000-0000-7000-8000-000000000002";
@@ -604,7 +604,12 @@ pub fn by_author_declaring(graph: PolicyGraph, roots: &[Principal]) -> Sources {
 /// `Catalog::accept` of the graph, as one set per author ([`by_author`]), with the hierarchy of
 /// the scenarios.
 pub fn accept(graph: PolicyGraph) -> Result<Catalog, Rejected> {
-    Catalog::accept(by_author(graph), authority())
+    Catalog::accept(by_author(graph), authority(), lineage())
+}
+
+/// The lineage a scenario accepts its catalog under, unless it is about lineages.
+pub fn lineage() -> Lineage {
+    Lineage::new("scenarios").unwrap()
 }
 
 pub fn catalog(policies: Vec<Written>, bindings: Vec<Binding>) -> Catalog {
@@ -645,13 +650,14 @@ pub fn outcome(catalog: &Catalog, events: &[Event]) -> Outcome {
         events.last().unwrap(),
         &Capabilities::full(),
     )
+    .unwrap()
 }
 
 /// Judges `event` after the `log`, then appends the event and the evidence of its judgment to the
 /// log, as a caller does between turns.
 pub fn step(catalog: &Catalog, log: &mut Vec<Event>, event: Event) -> Outcome {
     let state = catalog.fold(Origin::Genesis, log.iter().chain([&event]));
-    let outcome = judge(catalog, &state, &event, &Capabilities::full());
+    let outcome = judge(catalog, &state, &event, &Capabilities::full()).unwrap();
     log.push(event);
     log.extend(outcome.evidence(At::from_millis(0)));
     outcome

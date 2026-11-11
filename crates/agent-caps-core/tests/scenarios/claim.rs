@@ -96,6 +96,7 @@ fn verdict_with(catalog: &Catalog, events: &[Event], policy: &TxPolicy) -> Verdi
         events.last().unwrap(),
         &Capabilities::full(),
     )
+    .unwrap()
     .verdict
 }
 
@@ -106,7 +107,9 @@ fn verdict_with(catalog: &Catalog, events: &[Event], policy: &TxPolicy) -> Verdi
 fn a_stranger_cannot_loosen_but_can_tighten() {
     let catalog = src_and_fix();
     let start = catalog.fold(Origin::Genesis, [&agent(Body::TaskStart)]);
-    let report = catalog.admit(&start, &at(stranger(), 0, exempt()), &TxPolicy::standard());
+    let report = catalog
+        .admit(&start, &at(stranger(), 0, exempt()), &TxPolicy::standard())
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(
         report.uncovered,
@@ -114,7 +117,9 @@ fn a_stranger_cannot_loosen_but_can_tighten() {
     );
 
     let switch = at(stranger(), 0, Body::ModeSwitch { to: mode("fix") });
-    let report = catalog.admit(&start, &switch, &TxPolicy::standard());
+    let report = catalog
+        .admit(&start, &switch, &TxPolicy::standard())
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Commit);
     assert!(report.uncovered.is_empty());
     assert_eq!(
@@ -137,7 +142,9 @@ fn a_combination_that_commits_cannot_get_past_the_floor() {
     };
     let start = agent(Body::TaskStart);
     let claim = agent(exempt());
-    let report = catalog.admit(&catalog.fold(Origin::Genesis, [&start]), &claim, &policy);
+    let report = catalog
+        .admit(&catalog.fold(Origin::Genesis, [&start]), &claim, &policy)
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(
         report.uncovered,
@@ -160,7 +167,9 @@ fn an_added_check_cannot_cancel_a_loosening() {
     };
     let start = agent(Body::TaskStart);
     let claim = agent(exempt());
-    let report = catalog.admit(&catalog.fold(Origin::Genesis, [&start]), &claim, &policy);
+    let report = catalog
+        .admit(&catalog.fold(Origin::Genesis, [&start]), &claim, &policy)
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
     assert!(
         report
@@ -186,7 +195,9 @@ fn a_combination_may_abort_on_an_uncertain_finding() {
     };
     let start = agent(Body::TaskStart);
     let switch = at(the_user(), 0, Body::ModeSwitch { to: mode("fix") });
-    let report = catalog.admit(&catalog.fold(Origin::Genesis, [&start]), &switch, &policy);
+    let report = catalog
+        .admit(&catalog.fold(Origin::Genesis, [&start]), &switch, &policy)
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
     assert!(report.uncovered.is_empty());
     assert_eq!(

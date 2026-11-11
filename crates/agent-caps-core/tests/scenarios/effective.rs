@@ -90,7 +90,8 @@ fn the_effective_policies_are_listed_per_mode() {
         &state,
         events.last().unwrap(),
         &Capabilities::full(),
-    );
+    )
+    .unwrap();
     let judged: Vec<_> = outcome
         .guards
         .iter()

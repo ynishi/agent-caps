@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! state  = catalog.apply(state, &event)        the event is part of its own past
-//! outcome = judge(&catalog, &state, &event, &capabilities)
+//! outcome = judge(&catalog, &state, &event, &capabilities)   Err(StaleState) for a state of
+//!                                                            another generation (Catalog::owns)
 //!   guards  ─▶ Finding ─▶ combined: Deny > Warn > Allow, in no particular order
 //!   rewards ─▶ Recognition, each returned, never combined
 //! outcome.evidence(at) ─▶ Judged events, appended by the caller and folded like any other
@@ -30,7 +31,7 @@
 //!   it.
 
 use super::authority::Principal;
-use super::catalog::{Cap, Capabilities, Catalog, Degraded, Lowering, enforce_in};
+use super::catalog::{Cap, Capabilities, Catalog, Degraded, Lowering, StaleState, enforce_in};
 use super::event::{Body, Event};
 use super::name::PolicyId;
 use super::policy::{Finding, Level};
@@ -175,8 +176,16 @@ impl Outcome {
 /// ([`Capabilities::cap`]) in place of the cap of its kind. Whether a guard stops is decided by
 /// the enforced level. A claim's transaction does not take the capabilities: they are the
 /// platform's fact, and what a claim loosens is judged by the written strength.
-pub fn judge(catalog: &Catalog, state: &State, event: &Event, caps: &Capabilities) -> Outcome {
-    let effective = catalog.effective_in(state);
+///
+/// A state of another generation is refused ([`Catalog::owns`]).
+pub fn judge(
+    catalog: &Catalog,
+    state: &State,
+    event: &Event,
+    caps: &Capabilities,
+) -> Result<Outcome, StaleState> {
+    catalog.owns(state)?;
+    let effective = catalog.effective_in_owned(state);
     let kind = event.body.kind();
     let cap = Cap::Fixed(caps.cap(event));
     let enforced = enforce_in(&effective, caps, |policy| {
@@ -220,13 +229,13 @@ pub fn judge(catalog: &Catalog, state: &State, event: &Event, caps: &Capabilitie
         let policy = l.policy();
         guards.iter().any(|g| g.policy == policy) || rewards.iter().any(|r| r.policy == policy)
     });
-    Outcome {
+    Ok(Outcome {
         verdict: combine(&guards),
         guards,
         rewards,
         degraded: effective.degraded,
         lowered,
-    }
+    })
 }
 
 /// Deny over Warn over Allow; the causes of the strongest kind are kept.
