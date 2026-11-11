@@ -393,7 +393,7 @@ mod tests {
     fn a_comparison_with_an_absent_value_is_false() {
         // A shell call touches no path, so no path pattern matches it.
         let event = bash("cargo test", Some(true));
-        let path = Cond::Glob(Field::Path, GlobPattern::new("*"));
+        let path = Cond::Glob(Field::Path, GlobPattern::new("*").unwrap());
         assert_eq!(event.holds(&path), Truth::False);
     }
 

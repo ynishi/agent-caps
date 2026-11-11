@@ -410,7 +410,7 @@ pub fn src_edit_guard() -> Written {
     guard.subject = EventKind::ToolUse;
     guard.when = Some(Pred::Now(Cond::Glob(
         Field::Path,
-        GlobPattern::new("src/*"),
+        GlobPattern::new("src/*").unwrap(),
     )));
     guard.fixtures = vec![
         fixture(

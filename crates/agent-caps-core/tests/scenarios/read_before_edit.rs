@@ -30,7 +30,10 @@ fn read_before_edit() -> Written {
         subject: EventKind::ToolUse,
         when: Some(Pred::Now(Cond::All(vec![
             Cond::Eq(Field::Tool, Lit::Text("Edit".to_owned())),
-            Cond::Glob(Field::Path, GlobPattern::new("crates/*/src/domain/*.rs")),
+            Cond::Glob(
+                Field::Path,
+                GlobPattern::new("crates/*/src/domain/*.rs").unwrap(),
+            ),
         ]))),
         rule: Rule::Structural(Pred::Once {
             select: anyone(EventFilter {

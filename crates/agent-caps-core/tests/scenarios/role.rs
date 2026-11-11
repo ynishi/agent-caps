@@ -165,7 +165,7 @@ fn secret_guard() -> Written {
         when: Some(Pred::Not(Box::new(Pred::ActorUnder(the_reviewer())))),
         rule: Rule::Structural(Pred::Not(Box::new(Pred::Now(Cond::Glob(
             Field::Path,
-            GlobPattern::new("secrets/*"),
+            GlobPattern::new("secrets/*").unwrap(),
         ))))),
         polarity: Polarity::Guard,
         fixtures: vec![

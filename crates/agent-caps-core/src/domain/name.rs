@@ -24,6 +24,13 @@ pub enum NameError {
     /// A classifier name that is empty or has a character other than an ASCII letter, a digit,
     /// `-`, `_` or `@`.
     Classifier(String),
+    /// A pattern with a `**` that is not a whole segment: `at` is the byte of its first `*`.
+    Glob {
+        /// The pattern as it was written.
+        text: String,
+        /// The byte of the first `*` of the `**` that is not a whole segment.
+        at: usize,
+    },
     /// Command words that are none, or that have an empty word.
     Words,
     /// A reason that is empty or only white space.
@@ -47,6 +54,9 @@ impl fmt::Display for NameError {
                 f,
                 "`{text}` is not a classifier name: one or more ASCII letters, digits, `-`, `_` or `@`"
             ),
+            Self::Glob { text, at } => {
+                write!(f, "`{text}`: a `**` must be a whole segment (byte {at})")
+            }
             Self::Words => f.write_str("command words need at least one word and no empty word"),
             Self::Reason => f.write_str("a reason cannot be empty"),
         }
@@ -307,21 +317,75 @@ impl CommandWords {
     }
 }
 
-/// A shell pattern of the three characters of a plain shell (`*`, `?`, a `[...]` class). It
-/// matches a text as a whole, and no part of it takes a `/`, so `src/*.rs` does not match
-/// `src/a/b.rs`. Any text is a pattern: a `[` with no `]` stands for itself, as in the shell.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GlobPattern(String);
+/// A shell pattern of the characters of a plain shell (`*`, `?`, a `[...]` class), with `**` for
+/// any depth. It matches a text as a whole, and none of the shell characters takes a `/`, so
+/// `src/*.rs` does not match `src/a/b.rs`. A `**` that is a whole segment reaches across `/`:
+/// `a/**/b` matches `a/b` and `a/x/y/b`, a `**` that ends the pattern matches the rest of the text
+/// whatever it holds (`a/**` matches everything under `a/` but not `a` itself), and `**` alone
+/// matches every text. A `[` with no `]` stands for itself, as in the shell.
+///
+/// A pattern is compiled once, when it is made; [`matches`](Self::matches) never fails and stays
+/// linear, with no backtracking (FR58). A text is matched as it is given, with no normalizing:
+/// `a/**` takes `a/../b`, and `.caps/**` does not take `./.caps/x`. A path is expected in the one
+/// form the adapter gives it (relative to the project, with no `.`, `..` or empty segment), which
+/// is the adapter's to make (FR57). Equality and hashing go by the text. The text and its
+/// compiled form are shared behind one pointer, so a pattern is no larger than a pointer in the
+/// conditions and events that hold it.
+#[derive(Clone)]
+pub struct GlobPattern(std::sync::Arc<Glob>);
+
+/// The text of a pattern and what it compiles to.
+struct Glob {
+    text: String,
+    compiled: super::glob::Compiled,
+}
 
 impl GlobPattern {
-    /// The pattern of `text`.
-    pub fn new(text: &str) -> Self {
-        Self(text.to_owned())
+    /// The pattern of `text`. A `**` that is not a whole segment (`a**b`, `**.rs`, `***`) is
+    /// refused, with the byte where it starts, so a pattern never means silently less than it
+    /// reads (FR58).
+    pub fn new(text: &str) -> Result<Self, NameError> {
+        super::glob::Compiled::parse(text)
+            .map(|compiled| {
+                Self(std::sync::Arc::new(Glob {
+                    text: text.to_owned(),
+                    compiled,
+                }))
+            })
+            .map_err(|at| NameError::Glob {
+                text: text.to_owned(),
+                at,
+            })
+    }
+
+    /// The text the pattern was made from.
+    pub fn as_str(&self) -> &str {
+        &self.0.text
     }
 
     /// Whether the pattern matches all of `text`.
     pub fn matches(&self, text: &str) -> bool {
-        super::glob::matches(&self.0, text)
+        self.0.compiled.matches(text)
+    }
+}
+
+impl PartialEq for GlobPattern {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.text == other.0.text
+    }
+}
+
+impl Eq for GlobPattern {}
+
+impl std::hash::Hash for GlobPattern {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.text.hash(state);
+    }
+}
+
+impl fmt::Debug for GlobPattern {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("GlobPattern").field(&self.0.text).finish()
     }
 }
 

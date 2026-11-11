@@ -38,6 +38,7 @@ mod deny_once;
 mod effective;
 mod exemption;
 mod generation;
+mod globstar;
 mod graph;
 mod last;
 mod layers;
