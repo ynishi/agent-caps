@@ -334,9 +334,10 @@ impl Reach {
     }
 }
 
-/// Why a claimed adjustment, or a cancel, cannot take effect, whoever makes it. Its transaction
-/// is aborted and reports this ([`super::tx::TxReport::inadmissible`]), so the one who claimed it
-/// learns that it did not take effect, and why.
+/// Why a claimed adjustment, a cancel, or a record of a judgment cannot take effect, whoever
+/// makes it. Its transaction is aborted and reports this
+/// ([`super::tx::TxReport::inadmissible`]), so the one who claimed it learns that it did not take
+/// effect, and why.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Inadmissible {
     /// An adjustment in effect has the id.
@@ -398,6 +399,18 @@ pub enum Inadmissible {
     },
     /// A cancel names an id that no adjustment in effect has.
     NotHeld(AdjustmentId),
+    /// A record of a judgment is not in the name of the judged policy's author. A record of a
+    /// judgment is written in that name ([`super::judge::Outcome::evidence`]), so one in another
+    /// name is no judgment any rule made (FR59). A record of a policy the catalog has not is
+    /// [`Inadmissible::UnknownPolicy`].
+    NotTheAuthor {
+        /// The judged policy.
+        policy: PolicyId,
+        /// Its author, in whose name the record is written.
+        author: Principal,
+        /// The one the record is in the name of.
+        by: Principal,
+    },
 }
 
 impl fmt::Display for Inadmissible {
@@ -455,6 +468,10 @@ impl fmt::Display for Inadmissible {
                 write!(f, "{author} is neither the author of {policy} nor below it")
             }
             Self::NotHeld(id) => write!(f, "no adjustment in effect has the id {id}"),
+            Self::NotTheAuthor { policy, author, by } => write!(
+                f,
+                "the record of a judgment of {policy} is in the name of {by}, not of its author {author}"
+            ),
         }
     }
 }
@@ -492,6 +509,25 @@ impl AdjustIndex {
     /// The catalog's bound.
     pub(super) fn bound(&self) -> TemporaryBound {
         self.bound
+    }
+
+    /// Whether a record of a judgment of `policy` in the name of `by` may be kept: the one check
+    /// of who a judgment's record belongs to. It is in the name of the policy's author, or it is
+    /// no record of any judgment the catalog's rules made.
+    pub(super) fn admits_judged(
+        &self,
+        policy: PolicyId,
+        by: &Principal,
+    ) -> Result<(), Inadmissible> {
+        match self.policy(policy) {
+            None => Err(Inadmissible::UnknownPolicy(policy)),
+            Some((_, author)) if author != by => Err(Inadmissible::NotTheAuthor {
+                policy,
+                author: author.clone(),
+                by: by.clone(),
+            }),
+            Some(_) => Ok(()),
+        }
     }
 
     /// Whether `adjustment` exceeds the bound: the one check of it, read when an adjustment is

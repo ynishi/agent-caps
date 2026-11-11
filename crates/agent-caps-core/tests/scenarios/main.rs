@@ -40,6 +40,7 @@ mod exemption;
 mod generation;
 mod globstar;
 mod graph;
+mod judged_record;
 mod last;
 mod layers;
 mod limits;

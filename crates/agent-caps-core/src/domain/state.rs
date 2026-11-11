@@ -990,10 +990,11 @@ impl State {
         self.adjustments.iter().any(|h| h.adjustment.id == id)
     }
 
-    /// Whether `event` may take effect on this state as an adjustment or a cancel, whoever makes
-    /// it: an adjustment as `index` admits it, made by the event's principal, and a cancel when an
-    /// adjustment in effect has its id. Any other event is not one, and is `Ok`. The one entry
-    /// point the fold and the transaction both read.
+    /// Whether `event` may take effect on this state as an adjustment, a cancel or a record of a
+    /// judgment, whoever makes it: an adjustment as `index` admits it, made by the event's
+    /// principal; a cancel when an adjustment in effect has its id; a record of a judgment when it
+    /// is in the name of the judged policy's author (`index.admits_judged`). Any other event is
+    /// not one, and is `Ok`. The one entry point the fold and the transaction both read.
     pub(super) fn admits(
         &self,
         event: &Event,
@@ -1007,6 +1008,7 @@ impl State {
                 })
             }
             Body::Cancel { id } if !self.holds_adjustment(*id) => Err(Inadmissible::NotHeld(*id)),
+            Body::Judged { policy, .. } => index.admits_judged(*policy, &event.by),
             _ => Ok(()),
         }
     }

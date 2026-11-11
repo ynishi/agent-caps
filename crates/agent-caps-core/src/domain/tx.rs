@@ -13,8 +13,9 @@
 //!   carried = state.carry(event, index)          what the past and the time bring; an act
 //!                                                  advances the clock, a claim does not; kept
 //!   act   → carried.step(event)                  not judged
-//!   claim → carried.admits(event)                  an adjustment or a cancel that cannot take
-//!                                                  effect: carried, Abort, TxReport::inadmissible
+//!   claim → carried.admits(event)                  an adjustment, a cancel or a record of a
+//!                                                  judgment that cannot take effect: carried,
+//!                                                  Abort, TxReport::inadmissible
 //!           after   = carried.clone().step(event)  applied to a copy
 //!           changes = State::changes(carried, after)
 //!           each check.judge(input) → Vec<CheckFinding>     the domain's checks, then the extra ones
@@ -344,8 +345,8 @@ pub struct TxReport {
     /// What the floor found: for each loosening finding whose authors the claim's author does
     /// not cover, why. Empty when the floor commits.
     pub uncovered: Vec<NotCovered>,
-    /// Why the claim, an adjustment or a cancel, cannot take effect whoever makes it, when it
-    /// cannot ([`State`]'s one answer). Such a claim is aborted with no finding: it changes
+    /// Why the claim, an adjustment, a cancel or a record of a judgment, cannot take effect
+    /// whoever makes it, when it cannot ([`State`]'s one answer). Such a claim is aborted with no finding: it changes
     /// nothing, and saying it committed would tell its maker it took effect.
     pub inadmissible: Option<Inadmissible>,
 }
