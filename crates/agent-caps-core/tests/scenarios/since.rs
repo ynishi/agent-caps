@@ -11,7 +11,7 @@ use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
-use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, Scope, Span};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
@@ -88,7 +88,7 @@ fn no_commit_guard() -> Written {
     guard
 }
 
-/// FR33, UC1: a second commit with no test after the first one is stopped, however recent the
+/// FR53, UC1: a second commit with no test after the first one is stopped, however recent the
 /// test before the first commit was; a new test in between lets it through.
 #[test]
 fn a_second_commit_without_a_new_test_is_stopped() {
@@ -139,7 +139,7 @@ fn a_second_commit_without_a_new_test_is_stopped() {
     );
 }
 
-/// FR33, UC1: the event that closes an interval is judged with the interval before it, and
+/// FR53, UC1: the event that closes an interval is judged with the interval before it, and
 /// the interval starts again before the next event: `once(commit, Since(commit))` is true on a
 /// commit and on nothing else, and `count(commit, Since(commit))` is at most 1.
 #[test]
@@ -188,7 +188,10 @@ fn the_closing_event_is_judged_with_the_interval_before_it() {
     // Closing loosens a count: without the scope, the third commit is the third.
     let task = advise(Pred::Not(Box::new(Pred::Count {
         select: anyone(commit_filter(false)),
-        scope: Scope::Task(By::Anyone),
+        scope: Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        },
         cmp: Cmp::Ge,
         n: 2,
     })));
@@ -198,9 +201,11 @@ fn the_closing_event_is_judged_with_the_interval_before_it() {
     );
 }
 
-/// FR33, UC1: a `Since` scope starts again at a new session and not at a new task.
+/// FR53, UC1: a `Since` scope starts again at the event it looks for, and at the start of no
+/// span: neither a task's nor a session's. A test that came before the new session still counts
+/// until a commit, the event the scope looks for, starts it again.
 #[test]
-fn a_since_scope_starts_again_at_a_session_and_not_at_a_task() {
+fn a_since_scope_survives_the_start_of_a_task_and_of_a_session() {
     let catalog = catalog(
         vec![stop_guard_in(Scope::Since(anyone(commit_filter(false))))],
         vec![],
@@ -217,13 +222,22 @@ fn a_since_scope_starts_again_at_a_session_and_not_at_a_task() {
     assert_eq!(
         verdict(
             &catalog,
-            &[task, test_run(), agent(Body::SessionStart), stop]
+            &[
+                task.clone(),
+                test_run(),
+                agent(Body::SessionStart),
+                stop.clone()
+            ]
         ),
+        Verdict::Allow
+    );
+    assert_eq!(
+        verdict(&catalog, &[task, test_run(), commit(None), stop]),
         violated()
     );
 }
 
-/// FR33, UC1: one event can close several `Since` scopes at once, and each starts again.
+/// FR53, UC1: one event can close several `Since` scopes at once, and each starts again.
 #[test]
 fn two_since_scopes_close_on_one_event() {
     let edited = || EventFilter {
@@ -284,7 +298,7 @@ fn two_since_scopes_close_on_one_event() {
     );
 }
 
-/// FR33, FR20, UC3: an unreadable record closes a `Since` scope as unknown only when the filter's
+/// FR53, FR20, UC3: an unreadable record closes a `Since` scope as unknown only when the filter's
 /// kind is one the record may have been; otherwise a fact already seen stays seen.
 #[test]
 fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind() {
@@ -344,7 +358,7 @@ fn an_unreadable_record_closes_a_since_scope_only_when_it_may_have_been_its_kind
     );
 }
 
-/// FR41, FR33, UC25: a claim from one below the root does not close a `Since` scope that the
+/// FR41, FR53, UC25: a claim from one below the root does not close a `Since` scope that the
 /// root's guard reads: closing it moves the guard's slot, whose direction cannot be read. The
 /// same record from the root, the guard's author, closes it.
 #[test]
@@ -378,7 +392,7 @@ fn a_claim_from_below_does_not_close_a_since_scope_the_roots_guard_reads() {
     assert_eq!(after(record(the_user())), violated());
 }
 
-/// FR41, FR33, UC25: what an earlier event brings is not part of the next claim. An act that
+/// FR41, FR53, UC25: what an earlier event brings is not part of the next claim. An act that
 /// closed a `Since` scope of the root's guard is settled before the claim that follows it, and
 /// an exemption that ran out by the claim's time ends before it, so a genuine record of a
 /// judgment of the principal below, in its own name, counts after either.
@@ -391,7 +405,10 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
     once.name = "warn-once".parse().unwrap();
     once.author = the_agent();
     once.fixtures = vec![];
-    once.rule = Rule::Structural(Pred::Not(Box::new(tested_in(Scope::Task(By::Anyone)))));
+    once.rule = Rule::Structural(Pred::Not(Box::new(tested_in(Scope::Span {
+        span: Span::Task,
+        by: By::Anyone,
+    }))));
     once.when = Some(Pred::Count {
         select: anyone(EventFilter {
             kind: EventKind::Judged,
@@ -400,7 +417,10 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
                 Cond::Eq(Field::Judgment, Lit::Text("warned".to_owned())),
             ])),
         }),
-        scope: Scope::Session,
+        scope: Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        },
         cmp: Cmp::Lt,
         n: 1,
     });
@@ -451,7 +471,7 @@ fn a_record_after_a_closing_act_or_an_expired_exemption_counts() {
     assert_eq!(judged(&events), vec![id(GUARD)]);
 }
 
-/// FR33, FR20: when the filter's condition is not known on an event (`ok` of a call whose result
+/// FR53, FR20: when the filter's condition is not known on an event (`ok` of a call whose result
 /// has not come back), it is not known whether the interval closed, and the guard cannot tell.
 #[test]
 fn a_filter_whose_condition_is_unknown_leaves_the_close_unknown() {
@@ -468,7 +488,7 @@ fn a_filter_whose_condition_is_unknown_leaves_the_close_unknown() {
     assert_eq!(after(commit(Some(true))), violated());
 }
 
-/// FR33, FR34, UC1: an exemption that lasts within `Since(g)` ends after `g`: `g` itself is judged
+/// FR53, FR34, UC1: an exemption that lasts within `Since(g)` ends after `g`: `g` itself is judged
 /// with it, the next event without it. A `g` that failed does not end it, and one whose result is
 /// not known ends it, since it is not known whether it did.
 #[test]

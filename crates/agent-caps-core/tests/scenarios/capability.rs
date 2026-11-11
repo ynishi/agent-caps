@@ -16,7 +16,7 @@ use agent_caps_core::domain::judge::{Cause, Outcome, Recognition, Verdict, judge
 use agent_caps_core::domain::policy::{Level, ModeScope};
 use agent_caps_core::domain::predicate::{Cond, EventFilter, Lit};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 
 use super::common::{
     GUARD, OTHER, REWARD, Written, agent, at, bash, bind, by_author, catalog, clippy_reward,
@@ -62,7 +62,7 @@ fn cannot_stop_ahead() -> Capabilities {
 
 /// The outcome on the last event, with the state folded over all of them, on a platform.
 fn judged_on(catalog: &Catalog, events: &[Event], caps: &Capabilities) -> Outcome {
-    let state = catalog.fold(events);
+    let state = catalog.fold(Origin::Genesis, events);
     judge(catalog, &state, events.last().unwrap(), caps)
 }
 
@@ -525,7 +525,10 @@ fn a_claim_is_judged_by_the_written_strength_whatever_the_platform_holds() {
     let switch = agent(Body::ModeSwitch {
         to: mode("relaxed"),
     });
-    assert_eq!(catalog.fold(&[switch]).mode(), &Known::Known(None));
+    assert_eq!(
+        catalog.fold(Origin::Genesis, &[switch]).mode(),
+        &Known::Known(None)
+    );
 }
 
 /// FR40: the capabilities are type-checked like any filter: one whose condition reads a field its

@@ -9,8 +9,8 @@ use agent_caps_core::domain::catalog::{Capabilities, Catalog};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Verdict, judge};
 use agent_caps_core::domain::policy::Level;
-use agent_caps_core::domain::predicate::{By, Scope};
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::predicate::{By, Scope, Span};
+use agent_caps_core::domain::state::{Known, Origin};
 use agent_caps_core::domain::tx::{
     AdjustmentCheck, CheckFinding, CheckName, Combine, Confidence, TxDecision, TxInput, TxPolicy,
     Verdict as Direction,
@@ -28,7 +28,15 @@ fn stranger() -> Principal {
 
 /// An exemption of the guard of the scenarios for the task.
 fn exempt() -> Body {
-    exempt_n(1, GUARD, None, Lifetime::Within(Scope::Task(By::Anyone)))
+    exempt_n(
+        1,
+        GUARD,
+        None,
+        Lifetime::Within(Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        }),
+    )
 }
 
 /// The root's guard on edits under `src/`, Force, and Force on the end of a turn in `fix`.
@@ -81,7 +89,7 @@ impl AdjustmentCheck for SaysTightens {
 
 /// The verdict on the last event, with the state folded with `policy`.
 fn verdict_with(catalog: &Catalog, events: &[Event], policy: &TxPolicy) -> Verdict {
-    let state = catalog.fold_with(events, policy);
+    let state = catalog.fold_with(Origin::Genesis, events, policy);
     judge(
         catalog,
         &state,
@@ -97,7 +105,7 @@ fn verdict_with(catalog: &Catalog, events: &[Event], policy: &TxPolicy) -> Verdi
 #[test]
 fn a_stranger_cannot_loosen_but_can_tighten() {
     let catalog = src_and_fix();
-    let start = catalog.fold([&agent(Body::TaskStart)]);
+    let start = catalog.fold(Origin::Genesis, [&agent(Body::TaskStart)]);
     let report = catalog.admit(&start, &at(stranger(), 0, exempt()), &TxPolicy::standard());
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(
@@ -110,7 +118,9 @@ fn a_stranger_cannot_loosen_but_can_tighten() {
     assert_eq!(report.decision, TxDecision::Commit);
     assert!(report.uncovered.is_empty());
     assert_eq!(
-        catalog.fold([&agent(Body::TaskStart), &switch]).mode(),
+        catalog
+            .fold(Origin::Genesis, [&agent(Body::TaskStart), &switch])
+            .mode(),
         &Known::Known(Some(mode("fix")))
     );
 }
@@ -127,7 +137,7 @@ fn a_combination_that_commits_cannot_get_past_the_floor() {
     };
     let start = agent(Body::TaskStart);
     let claim = agent(exempt());
-    let report = catalog.admit(&catalog.fold([&start]), &claim, &policy);
+    let report = catalog.admit(&catalog.fold(Origin::Genesis, [&start]), &claim, &policy);
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(
         report.uncovered,
@@ -150,7 +160,7 @@ fn an_added_check_cannot_cancel_a_loosening() {
     };
     let start = agent(Body::TaskStart);
     let claim = agent(exempt());
-    let report = catalog.admit(&catalog.fold([&start]), &claim, &policy);
+    let report = catalog.admit(&catalog.fold(Origin::Genesis, [&start]), &claim, &policy);
     assert_eq!(report.decision, TxDecision::Abort);
     assert!(
         report
@@ -176,15 +186,17 @@ fn a_combination_may_abort_on_an_uncertain_finding() {
     };
     let start = agent(Body::TaskStart);
     let switch = at(the_user(), 0, Body::ModeSwitch { to: mode("fix") });
-    let report = catalog.admit(&catalog.fold([&start]), &switch, &policy);
+    let report = catalog.admit(&catalog.fold(Origin::Genesis, [&start]), &switch, &policy);
     assert_eq!(report.decision, TxDecision::Abort);
     assert!(report.uncovered.is_empty());
     assert_eq!(
-        catalog.fold_with([&start, &switch], &policy).mode(),
+        catalog
+            .fold_with(Origin::Genesis, [&start, &switch], &policy)
+            .mode(),
         &Known::Known(None)
     );
     assert_eq!(
-        catalog.fold([&start, &switch]).mode(),
+        catalog.fold(Origin::Genesis, [&start, &switch]).mode(),
         &Known::Known(Some(mode("fix")))
     );
 }

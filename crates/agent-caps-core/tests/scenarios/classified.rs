@@ -26,7 +26,7 @@ use agent_caps_core::domain::policy::{
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Number, Pred, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::set::{Source, Sources};
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
@@ -225,7 +225,11 @@ fn an_answer_the_agent_writes_is_not_counted() {
     let catalog = catalog_with(Level::Force, Some(enough()));
     let forged = answer_by(the_agent(), 0.9);
     assert_eq!(verdict(&catalog, &[forged.clone(), commit()]), violated());
-    let report = catalog.admit(&catalog.start(), &forged, &TxPolicy::standard());
+    let report = catalog.admit(
+        &catalog.start(Origin::Genesis),
+        &forged,
+        &TxPolicy::standard(),
+    );
     assert_eq!(report.decision, TxDecision::Abort);
     assert!(!report.uncovered.is_empty());
     // A low answer by the agent does not take away the user's high one either.
@@ -246,7 +250,12 @@ fn without_a_record_the_force_guard_is_enforced_at_advise_and_reported() {
     assert_eq!(guard_effect(&catalog), Effect::On(Level::Advise));
     assert_eq!(catalog.effective(&Known::Known(None)).degraded, expected);
     assert_eq!(catalog.effective(&Known::Unknown).degraded, expected);
-    assert_eq!(catalog.effective_in(&catalog.start()).degraded, expected);
+    assert_eq!(
+        catalog
+            .effective_in(&catalog.start(Origin::Genesis))
+            .degraded,
+        expected
+    );
 
     let out = outcome(&catalog, &[commit()]);
     assert_eq!(out.verdict, warned());
@@ -329,7 +338,12 @@ fn a_sufficient_record_leaves_the_guard_at_force() {
     let catalog = catalog_with(Level::Force, Some(enough()));
     assert_eq!(guard_effect(&catalog), Effect::On(Level::Force));
     assert!(catalog.effective(&Known::Known(None)).degraded.is_empty());
-    assert!(catalog.effective_in(&catalog.start()).degraded.is_empty());
+    assert!(
+        catalog
+            .effective_in(&catalog.start(Origin::Genesis))
+            .degraded
+            .is_empty()
+    );
     assert_eq!(outcome(&catalog, &[commit()]).verdict, violated());
 }
 
@@ -577,7 +591,9 @@ fn a_policy_that_judges_answers_is_lowered_while_its_classifier_is_uncalibrated(
         vec![uncalibrated(Shortfall::Missing)]
     );
     assert_eq!(
-        catalog.effective_in(&catalog.start()).degraded,
+        catalog
+            .effective_in(&catalog.start(Origin::Genesis))
+            .degraded,
         vec![uncalibrated(Shortfall::Missing)]
     );
 

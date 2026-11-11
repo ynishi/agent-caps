@@ -15,7 +15,7 @@
 //!
 //! What cannot be written: a rule that counts the events of one actor since it was spawned. The
 //! scope of an agent was removed with the event that started it, and a spawned actor has no name
-//! a rule can use; a rule chooses events by the principal an actor sits under instead (FR44, see
+//! a rule can use; a rule chooses events by the principal an actor sits under instead (FR54, see
 //! the `limits` module).
 
 use agent_caps_core::domain::adjust::Lifetime;
@@ -27,6 +27,7 @@ use agent_caps_core::domain::name::GlobPattern;
 use agent_caps_core::domain::policy::{DefLayer, Expect, Level, Polarity, PolicyDef, Rule};
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
 use agent_caps_core::domain::schema::{EventKind, Field};
+use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::{
     FindingDetail, Reader, TxDecision, TxPolicy, TxReport, Verdict as TxVerdict,
 };
@@ -80,7 +81,11 @@ fn spawn(spawner: &Principal, child: &Principal, under: &Principal) -> Event {
 
 /// The transaction of `event` after `before`.
 fn admit(catalog: &Catalog, before: &[Event], event: &Event) -> TxReport {
-    catalog.admit(&catalog.fold(before), event, &TxPolicy::standard())
+    catalog.admit(
+        &catalog.fold(Origin::Genesis, before),
+        event,
+        &TxPolicy::standard(),
+    )
 }
 
 /// The events, and one more.

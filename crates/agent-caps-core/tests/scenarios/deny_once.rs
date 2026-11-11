@@ -11,8 +11,9 @@ use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Verdict, judge};
 use agent_caps_core::domain::policy::Level;
-use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, Scope, Span};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
+use agent_caps_core::domain::state::Origin;
 
 use super::common::{
     GUARD, Written, agent, anyone, bash, catalog, id, test_guard, the_user, verdict, violated,
@@ -22,7 +23,7 @@ use super::common::{
 /// its own `denied` judgments is below one.
 ///
 /// This was once counted within the agent, so that each sub agent was stopped once. There is no
-/// scope of one agent now: events are chosen by the principal an actor sits under (FR44), and a
+/// scope of one agent now: events are chosen by the principal an actor sits under (FR54), and a
 /// sub agent has no name a rule can use. The count is the session's, and a sub agent that starts
 /// later is let through where its parent was stopped.
 fn deny_once_guard() -> Written {
@@ -35,7 +36,10 @@ fn deny_once_guard() -> Written {
                 Cond::Eq(Field::Judgment, Lit::Text("denied".to_owned())),
             ])),
         }),
-        scope: Scope::Session,
+        scope: Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        },
         cmp: Cmp::Lt,
         n: 1,
     });
@@ -84,14 +88,14 @@ fn a_stopping_guard_denies_until_its_condition_is_seen() {
 /// FR1, UC2, FR41: the guard stops the first end of a turn and lets the second one through. The
 /// record of the denial is written in the name of the guard's author, so it counts. The count is
 /// the session's: "once for each agent" can no longer be written, since a rule chooses events by
-/// the principal an actor sits under, not by one actor (FR44).
+/// the principal an actor sits under, not by one actor (FR54).
 #[test]
 fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     // The judgment is not part of the state; the evidence of it is, and a count reads it.
     let catalog = catalog(vec![deny_once_guard()], vec![]);
     let mut events = vec![agent(Body::SessionStart), agent(Body::TaskStart)];
     let stop = agent(Body::Stop);
-    let state = catalog.fold(events.iter().chain([&stop]));
+    let state = catalog.fold(Origin::Genesis, events.iter().chain([&stop]));
     let first = judge(&catalog, &state, &stop, &Capabilities::full());
     assert!(matches!(first.verdict, Verdict::Deny(_)));
     let evidence = first.evidence(At::from_millis(1));

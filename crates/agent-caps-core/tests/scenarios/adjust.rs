@@ -13,9 +13,9 @@ use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::BindingId;
 use agent_caps_core::domain::policy::{DefLayer, Level};
-use agent_caps_core::domain::predicate::{By, EventFilter, Scope};
+use agent_caps_core::domain::predicate::{By, EventFilter, Scope, Span};
 use agent_caps_core::domain::schema::{At, EventKind};
-use agent_caps_core::domain::state::{Known, State};
+use agent_caps_core::domain::state::{Known, Origin, State};
 use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy, TxReport};
 
@@ -44,7 +44,14 @@ fn rebind(add: &[(&str, Level)], suspend: &[BindingId]) -> Temporary {
 
 /// The `n`th adjustment, a rebinding for the task.
 fn for_the_task(n: u8, change: Temporary) -> Body {
-    adjustment(n, change, Lifetime::Within(Scope::Task(By::Anyone)))
+    adjustment(
+        n,
+        change,
+        Lifetime::Within(Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        }),
+    )
 }
 
 /// The binding the guard's author puts it into effect with.
@@ -70,7 +77,11 @@ fn cancel(n: u8) -> Body {
 
 /// The transaction of `event` after `before`.
 fn admit(catalog: &Catalog, before: &[Event], event: &Event) -> TxReport {
-    catalog.admit(&catalog.fold(before), event, &TxPolicy::standard())
+    catalog.admit(
+        &catalog.fold(Origin::Genesis, before),
+        event,
+        &TxPolicy::standard(),
+    )
 }
 
 /// The moves the rule check of the report found, which must have one that loosens.
@@ -134,7 +145,7 @@ fn a_temporary_raise_takes_effect_and_ends_at_its_until() {
     );
     assert!(
         catalog
-            .fold(&[start, raise, stop_at(100)])
+            .fold(Origin::Genesis, &[start, raise, stop_at(100)])
             .adjustments()
             .is_empty()
     );
@@ -251,8 +262,8 @@ fn a_cancel_is_judged_by_what_ending_the_adjustment_moves() {
         Some(Inadmissible::NotHeld(adjustment_id(7)))
     );
     assert_eq!(
-        stopping.fold(&[start.clone(), agent(cancel(7))]),
-        stopping.fold(&[start])
+        stopping.fold(Origin::Genesis, &[start.clone(), agent(cancel(7))]),
+        stopping.fold(Origin::Genesis, &[start])
     );
 }
 
@@ -286,7 +297,10 @@ fn an_adjustment_that_cannot_take_effect_takes_none() {
         assert_eq!(report.inadmissible, Some(why), "{claim:?}");
         let mut with = before.to_vec();
         with.push(claim);
-        assert_eq!(catalog.fold(&with), catalog.fold(before));
+        assert_eq!(
+            catalog.fold(Origin::Genesis, &with),
+            catalog.fold(Origin::Genesis, before)
+        );
     };
     let alone = std::slice::from_ref(&start);
     let unknown = "00000000-0000-7000-8000-0000000000ff";
@@ -312,11 +326,27 @@ fn an_adjustment_that_cannot_take_effect_takes_none() {
             Inadmissible::Meta(id(META)),
         ),
         (
-            exempt_n(1, META, None, Lifetime::Within(Scope::Task(By::Anyone))),
+            exempt_n(
+                1,
+                META,
+                None,
+                Lifetime::Within(Scope::Span {
+                    span: Span::Task,
+                    by: By::Anyone,
+                }),
+            ),
             Inadmissible::Meta(id(META)),
         ),
         (
-            exempt_n(1, REWARD, None, Lifetime::Within(Scope::Task(By::Anyone))),
+            exempt_n(
+                1,
+                REWARD,
+                None,
+                Lifetime::Within(Scope::Span {
+                    span: Span::Task,
+                    by: By::Anyone,
+                }),
+            ),
             Inadmissible::NotAGuard(id(REWARD)),
         ),
         (
@@ -335,7 +365,7 @@ fn an_adjustment_that_cannot_take_effect_takes_none() {
     // What fits takes effect: Advise on the guard without fixtures, Force on the stopping guard.
     let held_after = |claim: Body| {
         catalog
-            .fold(&[start.clone(), user(claim)])
+            .fold(Origin::Genesis, &[start.clone(), user(claim)])
             .adjustments()
             .len()
     };
@@ -398,13 +428,16 @@ fn a_temporary_binding_is_by_the_policys_author_or_one_below_it() {
         2,
         GUARD,
         None,
-        Lifetime::Within(Scope::Task(By::Anyone)),
+        Lifetime::Within(Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        }),
     ));
     let report = admit(&catalog, &raised, &exempt);
     assert_eq!(report.decision, TxDecision::Commit, "{report:?}");
 }
 
-/// FR46, FR33, UC25: a claim that closes the scope another's raise lasts within ends the raise,
+/// FR46, FR53, UC25: a claim that closes the scope another's raise lasts within ends the raise,
 /// and is judged by that: the agent's score that closes `Since(score)` lowers the user's raise, so
 /// it needs the user's cover; the user's own score does not.
 #[test]
@@ -469,20 +502,23 @@ fn a_lost_adjustment_makes_each_rule_as_strong_as_a_temporary_binding_could() {
         user(adjustment(
             1,
             rebind(&[(GUARD, Level::Advise)], &[base()]),
-            Lifetime::Within(Scope::Session),
+            Lifetime::Within(Scope::Span {
+                span: Span::Session,
+                by: By::Anyone,
+            }),
         )),
     ];
     let mut events = lowered.to_vec();
     events.push(agent(Body::Stop));
     assert_eq!(verdict(&catalog, &events), warned());
-    let state = catalog.fold(&lowered);
+    let state = catalog.fold(Origin::Genesis, &lowered);
     assert_eq!(effect_in(&catalog, &state, OTHER), Effect::Off);
     assert!(!state.adjustments_lost());
 
     for lost in [EventKind::Adjust, EventKind::Cancel] {
         let mut events = lowered.to_vec();
         events.extend([unreadable(&[lost]), agent(Body::TaskStart)]);
-        let state = catalog.fold(&events);
+        let state = catalog.fold(Origin::Genesis, &events);
         assert!(state.adjustments_lost());
         assert_eq!(effect_in(&catalog, &state, GUARD), Effect::On(Level::Force));
         assert_eq!(
@@ -503,7 +539,7 @@ fn the_state_shows_the_adjustments_in_effect_with_who_made_them() {
     let mut events = vec![agent(Body::TaskStart), user(raise(1)), agent(raise(2))];
     let seen = |events: &[Event]| -> Vec<_> {
         catalog
-            .fold(events)
+            .fold(Origin::Genesis, events)
             .adjustments()
             .iter()
             .map(|held| (held.by.clone(), held.adjustment.id))
@@ -530,7 +566,8 @@ fn a_temporary_binding_under_an_unknown_mode() {
     let catalog = catalog(vec![guard], vec![fix.clone()]);
     let advise = user(for_the_task(1, rebind(&[(GUARD, Level::Advise)], &[])));
     let lost_switch = unreadable(&[EventKind::ModeSwitch]);
-    let effect = |events: &[Event]| effect_in(&catalog, &catalog.fold(events), GUARD);
+    let effect =
+        |events: &[Event]| effect_in(&catalog, &catalog.fold(Origin::Genesis, events), GUARD);
 
     assert_eq!(effect(&[]), Effect::Off);
     assert_eq!(
@@ -542,7 +579,10 @@ fn a_temporary_binding_under_an_unknown_mode() {
         Effect::On(Level::Advise)
     );
     let unknown = [advise.clone(), lost_switch.clone()];
-    assert_eq!(catalog.fold(&unknown).mode(), &Known::Unknown);
+    assert_eq!(
+        catalog.fold(Origin::Genesis, &unknown).mode(),
+        &Known::Unknown
+    );
     assert_eq!(effect(&unknown), Effect::On(Level::Force));
 
     let suspend_fix = user(for_the_task(2, rebind(&[], &[fix.id])));

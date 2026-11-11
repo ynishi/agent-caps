@@ -11,7 +11,8 @@
 //! filter   := kind [where Cond]
 //! by       := Anyone | Under(principal) | Only(principal)
 //! selector := filter by by
-//! scope    := Session | Mode | Task(by) | Turn(by) | Since(selector) | Every(window)
+//! scope    := Span(span, by) | Mode | Since(selector) | Every(window)
+//! span     := Session | Task | Turn
 //! order    := < | <= | >= | >
 //! ```
 //!
@@ -273,9 +274,50 @@ pub struct Selector {
     pub by: By,
 }
 
-/// The span a temporal operator counts within, and that an exemption may last for. Each starts
-/// again at its own boundary; a new session starts all of them again but [`Scope::Every`], the
-/// one scope a session does not start again.
+/// A period that an event of the platform opens: a session, a task or a turn. A [`Scope::Span`]
+/// is one of them, with who may start it again.
+///
+/// The spans nest, and the nesting is a partial order: a session holds tasks and turns, and a
+/// task and a turn are siblings, neither inside the other (a platform does not say how a task and
+/// a turn contain each other). The start of a span starts again that span and the spans inside
+/// it, and none outside ([`Scope`]). Which event opens a span ([`Span::opening`]) and which span
+/// is inside which ([`Span::inside`]) are stated here and nowhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Span {
+    /// A session, opened by [`EventKind::SessionStart`].
+    Session,
+    /// A task, opened by [`EventKind::TaskStart`].
+    Task,
+    /// A turn, opened by [`EventKind::PromptSubmit`].
+    Turn,
+}
+
+impl Span {
+    /// Every span.
+    pub(super) const ALL: [Self; 3] = [Self::Session, Self::Task, Self::Turn];
+
+    /// The kind of event that opens the span: the one place that says which event opens which
+    /// span.
+    pub const fn opening(self) -> EventKind {
+        match self {
+            Self::Session => EventKind::SessionStart,
+            Self::Task => EventKind::TaskStart,
+            Self::Turn => EventKind::PromptSubmit,
+        }
+    }
+
+    /// Whether the span is inside `outer`: the one place that says how the spans nest. A task and
+    /// a turn are inside a session; a span is not inside itself, and a task and a turn are not
+    /// inside each other.
+    pub const fn inside(self, outer: Self) -> bool {
+        matches!((self, outer), (Self::Task | Self::Turn, Self::Session))
+    }
+}
+
+/// The period a temporal operator counts within, and that an exemption may last for. Each starts
+/// again at its own boundary: a [`Scope::Span`] at the start of its span, or of a span it is
+/// inside, [`Scope::Mode`] at a mode switch, [`Scope::Since`] at an event it looks for and
+/// [`Scope::Every`] by time.
 ///
 /// A scope bounded by events has two boundaries, both read from the event being folded: the
 /// event before which it starts again, and the event on which it closes (the closing event
@@ -288,14 +330,24 @@ pub struct Selector {
 /// # Who may start a scope again
 ///
 /// A scope starts again at an act, and an act takes effect whoever it comes from. So the one a
-/// limit is about can start its count over by its own acts, unless the scope says who may. `Task`
-/// and `Turn` say whose start event starts them again, and `Since` whose events close it, each
-/// with a [`By`] that cannot be left out: `By::Anyone` keeps every actor's events,
-/// `By::Under(p)` only those of `p` and the actors below it, and `By::Only(p)` only those of `p`
-/// itself. The one a limit is about sits below the one who set it, so a limit that only its
-/// author may start again is written with `Only`. `Session` starts again at
-/// [`EventKind::SessionStart`], an act of the platform, and has no `By`. A claim, such as a
-/// mode switch or a record that closes a `Since`, is judged as a transaction ([`super::tx`]).
+/// limit is about can start its count over by its own acts, unless the scope says who may. A
+/// [`Scope::Span`] says whose start event starts it again, and `Since` whose events close it,
+/// each with a [`By`] that cannot be left out, whichever span it is of: `By::Anyone` keeps every
+/// actor's events, `By::Under(p)` only those of `p` and the actors below it, and `By::Only(p)`
+/// only those of `p` itself. The one a limit is about sits below the one who set it, so a limit
+/// that only its author may start again is written with `Only`. A claim, such as a mode switch
+/// or a record that closes a `Since`, is judged as a transaction ([`super::tx`]).
+///
+/// # Spans
+///
+/// The start of a span starts again that span and the spans inside it ([`Span::inside`]), each
+/// only when its own `By` chooses the actor of the start event, and never a scope outside it, a
+/// `Since` or a `Mode`. So a session's start starts a task again when the task's `By` chooses
+/// the one who started the session: `Span { Task, Only(user) }` starts again at a session the
+/// user started, and does not at one the agent started, so the agent cannot start its own limit
+/// over by starting a session. A task's start starts no turn again, and a turn's no task: they
+/// are siblings. Whether a start starts a scope again is answered in one place, `Scope::starts_at`
+/// of [`super::state`].
 ///
 /// An actor whose place in the hierarchy is not known (one placed after a lost spawn) leaves it
 /// unknown whether it starts or closes a scope that chooses by `Under`, and that is handled as
@@ -306,17 +358,23 @@ pub struct Selector {
 /// start or close the scope, so a spawn that does is asked of the rule's author ([`super::tx`]).
 /// An `Only` reads no hierarchy: no actor's place leaves it unknown, and no spawn moves it.
 ///
-/// `Session`, `Task` and `Turn` assume their start events are not lost to an unreadable record
-/// (a known gap: a lost start leaves the scope looking as if it had not started again).
-/// [`Scope::Mode`] and [`Scope::Since`] do not: when a lost record may have been a mode switch,
-/// or the event a `Since` looks for, the scope's slots become unknown.
+/// A record that could not be read leaves a scope unknown when it may have been an event that
+/// starts the scope again or closes it: the start of a span (whatever its actor, since the actor
+/// of a lost record is not known, `Only` included) for a [`Scope::Span`] of that span and of the
+/// spans inside it, a mode switch for [`Scope::Mode`], and the event a `Since` looks for for that
+/// `Since`. Its slots become unknown until the scope starts again, so the record that may have
+/// been a task's start makes a count within the task unknown, and a stopping rule on it stops.
+/// A lost line of a transcript may have been any of the starts, so one lost line leaves the
+/// counts of every span unknown until their next start (a known cost of reading a lost record
+/// this way: more stops).
 ///
 /// # `Since`
 ///
-/// `Since(selector)` is the span after the last event the selector chooses. That event belongs
+/// `Since(selector)` is the period after the last event the selector chooses. That event belongs
 /// to the interval it closes, so an event is judged with the interval before it, and the
-/// interval starts again before the next event. It starts again too at
-/// [`EventKind::SessionStart`], and not at [`EventKind::TaskStart`]. A filter whose condition is
+/// interval starts again before the next event. The start of a span does not start it again,
+/// whichever span: a limit on the pushes since the last review goes on across a session, a task
+/// and a turn. A filter whose condition is
 /// unknown on an event (`ok` of a tool call whose result is not back), or an actor whose place is
 /// unknown, leaves it unknown whether the interval closed: the slots of the scope become unknown
 /// before the next event, and an adjustment that lasts within the scope is kept as possibly
@@ -363,31 +421,33 @@ pub struct Selector {
 ///   at the next boundary of the window, as the carry to the first act past it finds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
-    /// From [`EventKind::SessionStart`].
-    Session,
+    /// From the last start of the span, or of a span it is inside, whose actor the `By` chooses.
+    /// The `By` cannot be left out, whichever the span is.
+    Span {
+        /// The span.
+        span: Span,
+        /// Whose start event starts it again.
+        by: By,
+    },
     /// From the last mode switch that took effect, a switch to the mode already in effect
-    /// included.
+    /// included. It has no `By`: a mode switch is a claim, and who may make one is decided by its
+    /// transaction ([`super::tx`]), not by the scope. A session's start does not start it again.
     Mode,
-    /// From the last [`EventKind::TaskStart`] whose actor the `By` chooses, or the start of the
-    /// session.
-    Task(By),
-    /// From the last [`EventKind::PromptSubmit`] whose actor the `By` chooses, or the start of
-    /// the session.
-    Turn(By),
-    /// After the last event the selector chooses.
+    /// After the last event the selector chooses. A span's start does not start it again.
     Since(Selector),
     /// The window of the clock the state is in, started again when the clock crosses a boundary.
-    /// A session does not start it again.
+    /// No event starts it again, a span's start included.
     Every(Window),
 }
 
 impl Scope {
-    /// Who may start the scope again or close it, when the scope says.
+    /// Who may start the scope again or close it, when the scope says: that of a `Span` and of a
+    /// `Since`. A `Mode` has none (see [`Scope::Mode`]) and an `Every` is started by time alone.
     pub(super) fn by(&self) -> Option<&By> {
         match self {
-            Self::Task(by) | Self::Turn(by) => Some(by),
+            Self::Span { by, .. } => Some(by),
             Self::Since(selector) => Some(&selector.by),
-            Self::Session | Self::Mode | Self::Every(_) => None,
+            Self::Mode | Self::Every(_) => None,
         }
     }
 }
@@ -597,7 +657,7 @@ pub enum Pred {
     /// The last event within the scope that the selector chooses meets the condition. False
     /// when there was no such event. The condition is read from that event as a condition of
     /// [`Pred::Now`] is from the judged one, so it may compare a number
-    /// (`Last { Measured where oracle == "bench", Session, score >= 0.8 }`) and an event whose
+    /// (`Last { Measured where oracle == "bench", Span(Session, Anyone), score >= 0.8 }`) and an event whose
     /// value is not known gives unknown.
     ///
     /// `Last { select: Selector { filter: EventFilter { kind, cond: None }, by: By::Anyone },
@@ -619,7 +679,7 @@ pub enum Pred {
     /// place ([`Whose`]), so what is delegated counts toward the one who delegates. A `Used`
     /// whose amount could not be read makes the sum unknown until the scope starts again.
     ///
-    /// `Spent { meter: tokens, by: Whose::Under(agent), scope: Task(Only(user)), order: Lt, n }`
+    /// `Spent { meter: tokens, by: Whose::Under(agent), scope: Span(Task, Only(user)), order: Lt, n }`
     /// is "the agent and its sub agents have used fewer than `n` tokens since the user last
     /// started a task". The sum is of what was measured, after the use, so it can pass `n` by one event (see
     /// the module doc).
@@ -1412,19 +1472,47 @@ mod tests {
     }
 
     #[test]
+    fn spans_nest_as_a_partial_order_and_each_has_its_own_opening_event() {
+        use Span::{Session, Task, Turn};
+        assert_eq!(Session.opening(), EventKind::SessionStart);
+        assert_eq!(Task.opening(), EventKind::TaskStart);
+        assert_eq!(Turn.opening(), EventKind::PromptSubmit);
+        // A session holds tasks and turns; a span is not inside itself, nor is a session inside
+        // either; a task and a turn are siblings.
+        assert!(Task.inside(Session) && Turn.inside(Session));
+        for span in Span::ALL {
+            assert!(!span.inside(span), "{span:?}");
+        }
+        assert!(!Session.inside(Task) && !Session.inside(Turn));
+        assert!(!Task.inside(Turn) && !Turn.inside(Task));
+        // Each span is opened by a kind of its own.
+        for (at, span) in Span::ALL.iter().enumerate() {
+            for other in &Span::ALL[at + 1..] {
+                assert_ne!(span.opening(), other.opening());
+            }
+        }
+    }
+
+    #[test]
     fn a_temporal_condition_is_read_from_its_own_kind() {
         let ran_tests = Pred::Once {
             select: any(
                 EventKind::ToolUse,
                 Some(Cond::Eq(Field::Ok, Lit::Bool(true))),
             ),
-            scope: Scope::Task(By::Anyone),
+            scope: Scope::Span {
+                span: Span::Task,
+                by: By::Anyone,
+            },
         };
         // The subject is a stop; the condition inside `once` reads the tool use it looks for.
         assert!(ran_tests.check(EventKind::Stop).is_empty());
         let wrong = Pred::Once {
             select: any(EventKind::Stop, Some(Cond::Eq(Field::Ok, Lit::Bool(true)))),
-            scope: Scope::Task(By::Anyone),
+            scope: Scope::Span {
+                span: Span::Task,
+                by: By::Anyone,
+            },
         };
         assert_eq!(wrong.check(EventKind::Stop).len(), 1);
     }
@@ -1433,14 +1521,20 @@ mod tests {
     fn the_same_temporal_part_is_one_slot() {
         let once = Pred::Once {
             select: any(EventKind::Stop, None),
-            scope: Scope::Task(By::Anyone),
+            scope: Scope::Span {
+                span: Span::Task,
+                by: By::Anyone,
+            },
         };
         let pred = Pred::All(vec![
             once.clone(),
             Pred::Not(Box::new(once)),
             Pred::Count {
                 select: any(EventKind::Stop, None),
-                scope: Scope::Task(By::Anyone),
+                scope: Scope::Span {
+                    span: Span::Task,
+                    by: By::Anyone,
+                },
                 cmp: Cmp::Ge,
                 n: 2,
             },
@@ -1453,7 +1547,10 @@ mod tests {
                     },
                     by: By::Under(Principal::new("user")),
                 },
-                scope: Scope::Task(By::Anyone),
+                scope: Scope::Span {
+                    span: Span::Task,
+                    by: By::Anyone,
+                },
             },
         ]);
         assert_eq!(pred.temporals().len(), 3);
@@ -1471,7 +1568,10 @@ mod tests {
                 },
                 by: By::Under(reviewer.clone()),
             },
-            scope: Scope::Task(By::Under(user.clone())),
+            scope: Scope::Span {
+                span: Span::Task,
+                by: By::Under(user.clone()),
+            },
             cmp: Cmp::Le,
             n: 3,
         };
@@ -1485,7 +1585,10 @@ mod tests {
         );
         let anyone = Pred::Once {
             select: any(EventKind::Stop, None),
-            scope: Scope::Turn(By::Anyone),
+            scope: Scope::Span {
+                span: Span::Turn,
+                by: By::Anyone,
+            },
         };
         assert!(state_readings(&anyone, Site::GuardWhen).is_empty());
     }
@@ -1566,11 +1669,26 @@ mod tests {
     #[test]
     fn a_sum_and_a_count_of_the_same_events_are_two_slots() {
         let pred = Pred::All(vec![
-            spent(Whose::Anyone, Scope::Session),
-            spent(Whose::Anyone, Scope::Session),
+            spent(
+                Whose::Anyone,
+                Scope::Span {
+                    span: Span::Session,
+                    by: By::Anyone,
+                },
+            ),
+            spent(
+                Whose::Anyone,
+                Scope::Span {
+                    span: Span::Session,
+                    by: By::Anyone,
+                },
+            ),
             Pred::Count {
                 select: Pred::spent_selector(&"tokens".parse().unwrap(), &Whose::Anyone),
-                scope: Scope::Session,
+                scope: Scope::Span {
+                    span: Span::Session,
+                    by: By::Anyone,
+                },
                 cmp: Cmp::Le,
                 n: 3,
             },
@@ -1578,7 +1696,10 @@ mod tests {
             Pred::Spent {
                 meter: "cost".parse().unwrap(),
                 by: Whose::Anyone,
-                scope: Scope::Session,
+                scope: Scope::Span {
+                    span: Span::Session,
+                    by: By::Anyone,
+                },
                 order: Order::Lt,
                 n: Amount::ZERO,
             },
@@ -1592,7 +1713,10 @@ mod tests {
         let user = Principal::new("user");
         let pred = spent(
             Whose::Under(agent.clone()),
-            Scope::Task(By::Only(user.clone())),
+            Scope::Span {
+                span: Span::Task,
+                by: By::Only(user.clone()),
+            },
         );
         // A sum by place reads its principal as a selector's `By::Under` does.
         assert_eq!(
@@ -1615,7 +1739,10 @@ mod tests {
         let mode: Mode = "strict".parse().unwrap();
         let once = Pred::Once {
             select: any(EventKind::Stop, None),
-            scope: Scope::Task(By::Anyone),
+            scope: Scope::Span {
+                span: Span::Task,
+                by: By::Anyone,
+            },
         };
         let pred = Pred::All(vec![once, Pred::ModeIs(mode.clone())]);
         assert_eq!(

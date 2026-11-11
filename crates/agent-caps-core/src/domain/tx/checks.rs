@@ -546,7 +546,7 @@ impl AdjustmentCheck for RuleCheck {
                 .iter()
                 .map(|h| (h.adjustment.id, h.holding)));
         if was.mode() == is.mode()
-            && was.adjustments_lost() == is.adjustments_lost()
+            && was.may_hold_unseen() == is.may_hold_unseen()
             && same_adjustments
         {
             return Vec::new();

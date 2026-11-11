@@ -7,17 +7,18 @@ use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Level, Rule};
-use agent_caps_core::domain::predicate::{By, Scope};
+use agent_caps_core::domain::predicate::{By, Scope, Span};
 use agent_caps_core::domain::schema::{EventKind, KindSet};
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 
 use super::common::{
     GUARD, agent, bash, catalog, edit, exemption, id, lost_line, mode_switch, src_edit_guard,
-    test_guard, tested_in, unreadable, verdict,
+    test_guard, tested_in, the_user, unreadable, user, verdict, violated,
 };
+use super::limits::{push, push_limit, pushes_since_review, unknown};
 
 /// FR20, UC3: a lost line makes an unseen fact unknown and a stopping guard denies; a seen fact
-/// stays seen.
+/// stays seen when the lost line cannot have started the interval again.
 #[test]
 fn an_unreadable_record_makes_an_unseen_once_unknown_but_not_a_seen_one() {
     let catalog = catalog(vec![test_guard(Level::Force)], vec![]);
@@ -29,14 +30,16 @@ fn an_unreadable_record_makes_an_unseen_once_unknown_but_not_a_seen_one() {
         verdict(&catalog, &[start.clone(), lost.clone(), stop.clone()]),
         Verdict::Deny(vec![Cause::Unknown(id(GUARD))])
     );
-    // The run was seen; a later lost line cannot unsee it.
+    // The run was seen; a later lost line that cannot have been the start of the task cannot
+    // unsee it.
+    let not_a_start = unreadable(&[EventKind::ToolUse, EventKind::Stop]);
     assert_eq!(
         verdict(
             &catalog,
             &[
                 start.clone(),
                 bash("cargo test", Some(true)),
-                lost.clone(),
+                not_a_start,
                 stop.clone()
             ]
         ),
@@ -100,7 +103,7 @@ fn a_record_that_may_have_been_a_mode_switch_makes_the_mode_and_its_scope_unknow
         bash("cargo test", Some(true)),
     ];
     let lost = unreadable(&[EventKind::ModeSwitch]);
-    let state = catalog.fold(tested.iter().chain([&lost]));
+    let state = catalog.fold(Origin::Genesis, tested.iter().chain([&lost]));
     assert_eq!(state.mode(), &Known::Unknown);
     let mut events = tested.to_vec();
     events.extend([lost, agent(Body::Stop)]);
@@ -139,11 +142,73 @@ fn a_record_that_may_have_been_a_judgment_ends_an_exemption_for_the_next_judgmen
             &catalog,
             &[
                 start,
-                exemption(None, Lifetime::Within(Scope::Task(By::Anyone))),
+                exemption(
+                    None,
+                    Lifetime::Within(Scope::Span {
+                        span: Span::Task,
+                        by: By::Anyone
+                    })
+                ),
                 lost,
                 edit("src/a.rs")
             ]
         ),
         Verdict::Allow
+    );
+}
+
+/// FR20, FR54, UC3: a record that may have been the start of a task leaves a count within the
+/// task unknown, whoever the task's `By` chooses (the actor of a lost record is not known, so
+/// `Only` is no exception), and a stopping guard stops. The count is known again at the next
+/// start the `By` chooses. A record that may have been the start of a session leaves it unknown
+/// too, since a task is inside a session; one that may have been the start of a turn does not,
+/// since a task and a turn are siblings.
+#[test]
+fn a_record_that_may_have_been_a_task_start_leaves_a_task_count_unknown() {
+    for by in [By::Anyone, By::Only(the_user())] {
+        let task = Scope::Span {
+            span: Span::Task,
+            by: by.clone(),
+        };
+        let catalog = catalog(vec![push_limit(task, 2)], vec![]);
+        // Two pushes are within the limit; the lost record may have started a new task, and
+        // the count is not known.
+        assert_eq!(verdict(&catalog, &[push(), push()]), Verdict::Allow);
+        for lost in [EventKind::TaskStart, EventKind::SessionStart] {
+            let lost = unreadable(&[lost]);
+            assert_eq!(
+                verdict(&catalog, &[push(), lost.clone(), push()]),
+                unknown(),
+                "{by:?}"
+            );
+            // A start the `By` chooses settles it.
+            assert_eq!(
+                verdict(
+                    &catalog,
+                    &[push(), lost, user(Body::TaskStart), push(), push()]
+                ),
+                Verdict::Allow,
+                "{by:?}"
+            );
+        }
+        let not_a_task_start = unreadable(&[EventKind::PromptSubmit, EventKind::Stop]);
+        assert_eq!(
+            verdict(&catalog, &[push(), not_a_task_start, push()]),
+            Verdict::Allow,
+            "{by:?}"
+        );
+    }
+}
+
+/// FR20, FR53, UC3: a record that may have been the start of a session leaves a limit since the
+/// last review as it was: a `Since` scope is closed by the event it looks for and by no span's
+/// start, lost or read.
+#[test]
+fn a_record_that_may_have_been_a_session_start_leaves_a_since_count_known() {
+    let catalog = pushes_since_review();
+    let lost = unreadable(&[EventKind::SessionStart, EventKind::TaskStart]);
+    assert_eq!(
+        verdict(&catalog, &[push(), push(), lost, push()]),
+        violated()
     );
 }
