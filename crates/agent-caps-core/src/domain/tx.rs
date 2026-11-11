@@ -230,7 +230,6 @@ pub enum Verdict {
 
 /// What a loosening finding is about.
 #[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
 pub enum FindingDetail {
     /// The rules take effect otherwise: how each policy moves (see [`checks::RuleCheck`]), and
     /// the policies loosened because they read the judgments of one that moves.

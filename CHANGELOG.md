@@ -204,6 +204,13 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: no core enum is `#[non_exhaustive]` any more
+  (`Body`, `EventKind`, `Field`, `Rule`, `FindingDetail`). The core is the
+  SDK's inside: a new variant stops every match that does not handle it from
+  compiling, so the code built on the core follows it instead of letting it
+  fall into a wildcard arm. A match outside the crate no longer needs a
+  wildcard arm.
+
 - The protection of the policy store and the approval records is stated in
   the terms of the domain, which has no agent (#18): what a principal keeps
   is written only by that principal or one above it, by an ordinary Meta

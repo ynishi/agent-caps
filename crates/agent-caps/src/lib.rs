@@ -168,10 +168,12 @@
 //!
 //! # Compatibility
 //!
-//! Before 1.0, any release may change the model. [`domain::event::Body`],
-//! [`domain::schema::EventKind`] and [`domain::schema::Field`] are non-exhaustive: new kinds of
-//! event and new fields are added without a major version. The items of [`_requirements`] are
-//! outside semver and may change in any release.
+//! Before 1.0, any release may change the model. The core is the SDK's inside, and none of its
+//! enums is `#[non_exhaustive]`, now or after 1.0: a new variant (a kind of event, a field, a
+//! rule) stops every match that does not handle it from compiling, so the code built on the core
+//! follows it rather than letting it fall silently into a wildcard arm. What may grow without
+//! breaking its users is the external format a user writes, not the core's types. The items of
+//! [`_requirements`] are outside semver and may change in any release.
 //!
 //! # Limitations
 //!
