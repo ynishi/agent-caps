@@ -10,9 +10,12 @@
 //! ```
 //!
 //! An adjustment has two axes and no list of grains: what it changes and how long it lasts
-//! ([`Lifetime`]). Every adjustment ends; one that should outlive the session is not an adjustment
-//! but a permanent binding in the catalog, so a lasting exception is always a visible change to
-//! the rules. A raise for a while is a Force binding added; a lowering for a while is a Force
+//! ([`Lifetime`]). Every adjustment has a lifetime that ends it: the next judgment, a time, or a
+//! scope starting again. A session's start is not such an end: it ends only an adjustment that
+//! lasts within a span its starter chooses, so an adjustment within a mode, a `since` scope, or a
+//! task only the user starts can outlast a session. Nothing yet bounds how far ahead its end may
+//! lie (a bound set by the root is to come); one meant to last is a permanent binding in the
+//! catalog, so a lasting exception is a visible change to the rules. A raise for a while is a Force binding added; a lowering for a while is a Force
 //! binding suspended with an Advise binding added, in one adjustment.
 //!
 //! An adjustment that lasts within a scope ends when the scope starts again or closes. When that

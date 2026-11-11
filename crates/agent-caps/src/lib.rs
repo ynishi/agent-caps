@@ -21,9 +21,10 @@
 //! use agent_caps::domain::policy::{
 //!     Binding, DefLayer, Expect, Fixture, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
 //! };
-//! use agent_caps::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector};
+//! use agent_caps::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector, Span};
 //! use agent_caps::domain::schema::{At, EventKind, Field};
 //! use agent_caps::domain::set::{Source, Sources};
+//! use agent_caps::domain::state::Origin;
 //!
 //! // Who is who is the caller's arrangement: here, the agent's work is below the user's.
 //! let (user, agent) = (Principal::new("user"), Principal::new("agent"));
@@ -50,7 +51,7 @@
 //!         },
 //!         by: By::Anyone,
 //!     },
-//!     scope: Scope::Task(By::Anyone),
+//!     scope: Scope::Span { span: Span::Task, by: By::Anyone },
 //! };
 //! let fixture = |name: &str, events, expect| Fixture {
 //!     name: name.to_owned(), events, expect, known_gap: false,
@@ -93,7 +94,9 @@
 //! let catalog = Catalog::accept(Sources::new(vec![set]).unwrap(), authority).unwrap();
 //!
 //! let history = [event(Body::TaskStart), test_run(false), event(Body::Stop)];
-//! let state = catalog.fold(&history);
+//! // A fold says what it knows of the past: this history is whole, from the catalog's first
+//! // acceptance. One that starts in the middle is folded from `Origin::Unknown`.
+//! let state = catalog.fold(Origin::Genesis, &history);
 //! // A platform that can enforce everything. One that cannot is described to `judge` the same way,
 //! // as data (see below).
 //! let outcome = judge(&catalog, &state, &history[2], &Capabilities::full());
@@ -181,6 +184,12 @@
 //! - After a record that may have been a spawn is lost, every leaf placed later has an
 //!   unknown place for the rest of the fold, so a stopping rule that reads the actor stops
 //!   those leaves.
+//! - A record that could not be read may have been the start of a session, a task or a turn, so
+//!   one lost line leaves the counts of those spans unknown until their next start, and a
+//!   stopping rule on them stops more ([`domain::predicate::Scope`]).
+//! - Which history a fold holds is the caller's to say ([`domain::state::Origin`]): a fold that
+//!   says it starts in the middle stops where a whole one would not, and one that says it is
+//!   whole when it is not counts from zero what was already counted.
 //! - An event does not say whether it is judged before a tool call runs or read back after it,
 //!   so capabilities cannot differ between the two: a filter on `ok` reads unknown before the
 //!   call and lowers the call too.

@@ -91,7 +91,7 @@ use super::name::{AdjustmentId, PolicyId};
 use super::policy::{Expect, Finding};
 use super::schema::Nature;
 use super::set::Sources;
-use super::state::{SlotId, State, StateChange};
+use super::state::{Origin, SlotId, State, StateChange};
 
 /// One point of view on the difference a claim makes. The domain's own checks and the ones a
 /// [`TxPolicy`] adds both implement it.
@@ -333,18 +333,21 @@ impl Catalog {
         transact(self, state, event, policy).0
     }
 
-    /// The state after `events`, from the start, with [`TxPolicy::standard`].
-    pub fn fold<'e>(&self, events: impl IntoIterator<Item = &'e Event>) -> State {
-        self.fold_with(events, &TxPolicy::standard())
+    /// The state after `events`, from the start as `origin` says the fold knows the past
+    /// ([`Catalog::start`]), with [`TxPolicy::standard`].
+    pub fn fold<'e>(&self, origin: Origin, events: impl IntoIterator<Item = &'e Event>) -> State {
+        self.fold_with(origin, events, &TxPolicy::standard())
     }
 
-    /// The state after `events`, from the start, each claim judged with `policy`.
+    /// The state after `events`, from the start as `origin` says the fold knows the past, each
+    /// claim judged with `policy`.
     pub fn fold_with<'e>(
         &self,
+        origin: Origin,
         events: impl IntoIterator<Item = &'e Event>,
         policy: &TxPolicy,
     ) -> State {
-        events.into_iter().fold(self.start(), |state, event| {
+        events.into_iter().fold(self.start(origin), |state, event| {
             self.apply_with(state, event, policy)
         })
     }
@@ -445,7 +448,8 @@ fn fixture_errors(catalog: &Catalog) -> Vec<AcceptError> {
                 });
                 continue;
             };
-            let state = catalog.fold(&fixture.events);
+            // A fixture holds the whole history it judges, from nothing.
+            let state = catalog.fold(Origin::Genesis, &fixture.events);
             let found = match policy.evaluate(catalog.slots(), catalog.authority(), &state, judged)
             {
                 Finding::Violated => Expect::Violated,

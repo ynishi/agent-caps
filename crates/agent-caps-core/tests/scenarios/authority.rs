@@ -11,9 +11,9 @@ use agent_caps_core::domain::judge::Verdict;
 use agent_caps_core::domain::policy::{
     Binding, DefLayer, Finding, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
 };
-use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Lit, Pred, Scope, Span};
 use agent_caps_core::domain::schema::{EventKind, Field, Judgment};
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy};
 
@@ -445,7 +445,10 @@ fn counting(cond: Option<Cond>) -> Written {
             kind: EventKind::Judged,
             cond,
         }),
-        scope: Scope::Session,
+        scope: Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        },
         cmp: Cmp::Lt,
         n: 1,
     });
@@ -460,7 +463,10 @@ fn last_judgment(cond: Option<Cond>) -> Pred {
             kind: EventKind::Judged,
             cond,
         }),
-        scope: Scope::Session,
+        scope: Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        },
         test: denied(),
     }
 }
@@ -594,7 +600,11 @@ fn an_unnamed_read_does_not_count_the_judgments_of_a_policy_below() {
         agent(Body::Stop),
     ];
     let record = denial(OTHER, the_agent());
-    let report = catalog.admit(&catalog.fold(&before), &record, &TxPolicy::standard());
+    let report = catalog.admit(
+        &catalog.fold(Origin::Genesis, &before),
+        &record,
+        &TxPolicy::standard(),
+    );
     assert_eq!(report.decision, TxDecision::Commit);
     assert!(report.uncovered.is_empty());
 
@@ -805,7 +815,10 @@ fn a_last_of_judgments_whose_test_names_a_policy_below_is_rejected() {
                 kind: EventKind::Judged,
                 cond: event,
             }),
-            scope: Scope::Session,
+            scope: Scope::Span {
+                span: Span::Session,
+                by: By::Anyone,
+            },
             test,
         });
         guard

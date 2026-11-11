@@ -9,6 +9,7 @@ use agent_caps_core::domain::judge::Verdict;
 use agent_caps_core::domain::policy::{Level, Rule};
 use agent_caps_core::domain::predicate::{Cmp, Cond, EventFilter, Lit, Pred, PredError, Scope};
 use agent_caps_core::domain::schema::{EventKind, Field};
+use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::TxPolicy;
 
 use super::common::{
@@ -16,7 +17,7 @@ use super::common::{
     test_guard, tested_in, verdict, violated,
 };
 
-/// FR33: a filter of a `Since` scope that reads a field from another kind of event is rejected by
+/// FR53: a filter of a `Since` scope that reads a field from another kind of event is rejected by
 /// accept, wherever the scope stands.
 #[test]
 fn an_ill_typed_since_filter_is_rejected() {
@@ -55,7 +56,7 @@ fn an_ill_typed_since_filter_is_rejected() {
     assert_eq!(rejected(vec![guard], vec![]), vec![error; 3]);
 }
 
-/// FR33, FR34, UC25: an exemption that arrives as an event takes effect only if it type-checks
+/// FR53, FR34, UC25: an exemption that arrives as an event takes effect only if it type-checks
 /// against the guard it names, its target and the filter of its `Within(Since(..))` alike.
 #[test]
 fn an_ill_typed_exemption_takes_no_effect() {
@@ -84,7 +85,7 @@ fn an_ill_typed_exemption_takes_no_effect() {
     let reason = |claim: &Event| {
         catalog
             .admit(
-                &catalog.fold([&agent(Body::TaskStart)]),
+                &catalog.fold(Origin::Genesis, [&agent(Body::TaskStart)]),
                 claim,
                 &TxPolicy::standard(),
             )

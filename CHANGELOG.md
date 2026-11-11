@@ -157,6 +157,54 @@ and this project adheres to
 
 ### Changed
 
+- A temporary adjustment no longer ends at every session start (#54): one
+  that lasts within a mode, a `since` scope, or a span whose starter does not
+  choose the session's starter outlasts the session, as a count does. Until a
+  bound on how far ahead an adjustment's end may lie is added (#56), such an
+  adjustment has no upper bound; #54 and #56 are meant to ship together.
+- Breaking, before 1.0: the periods that events open are nested spans with a
+  stated starter, and a fold says what it knows of the past (#54). The new
+  `Span` (`Session`, `Task`, `Turn`) has `Span::opening()`, the event that
+  opens it, and `Span::inside(outer)`, how spans nest: a session holds tasks
+  and turns, which are siblings. `Scope::Session`, `Scope::Task(By)` and
+  `Scope::Turn(By)` are replaced by `Scope::Span { span, by }`, so a span's
+  starter cannot be left out (a session had none). The start of a span starts
+  again that span and the spans inside it, each only when its own `By`
+  chooses the actor of the start event, and nothing outside it: a user's
+  session start starts `Span { Task, Only(user) }` again and an agent's does
+  not, so an agent cannot start its limit over by starting a session; a task's
+  start does not start a turn again. A record that could not be read and may
+  have been the start of a span leaves that span and the spans inside it
+  unknown, whoever its `By` chooses, which closes the known gap that a lost
+  start left a scope looking as if it had not started again. One lost line may
+  have been any of the starts, so it leaves the counts of every span unknown
+  until their next start and a stopping rule on them stops more (FR20).
+  `Scope::by()` is that of `Span` and `Since`; `Mode` and `Every` have none.
+  `Catalog::start`, `Catalog::fold` and `Catalog::fold_with` take an `Origin` as
+  their first argument, with no default: `Origin::Genesis` is the start there
+  was (the history is whole, counts start at zero), `Origin::Unknown` starts in
+  the middle of a history, with every slot, the mode and the clock as after a
+  record that could not be read, and an adjustment made before the fold may only
+  strengthen the rules. `State::origin()` and `State::may_hold_unseen()` (a lost
+  adjustment record, or an `Unknown` origin) are new, and the effect of the rules
+  reads the latter in place of `adjustments_lost()`. Until a bound on how long an
+  adjustment lasts is in, the strengthening holds for the whole of an `Unknown`
+  fold. P19 is withdrawn for P20, and FR44 is withdrawn for FR54, which names the
+  start events of every span.
+  To migrate, write `Scope::Span { span: Span::Task, by }` for `Task(by)`,
+  `Span::Turn` for `Turn(by)`, and `Span::Session` with the `By` that chooses
+  who may start the session again (`By::Anyone` for the old behaviour) for
+  `Session`, and pass `Origin::Genesis` where the history is whole. A
+  `Span::Task` or `Span::Turn` whose `By` is `Under` or `Only` no longer starts
+  again at every session's start, only at one whose starter it chooses.
+- A session's start no longer starts a `since` scope or the scope of a mode
+  again (FR33 is withdrawn for FR53, and P20 replaces P19). A `Span` is started again only by the
+  start of its span or of one it is inside, and only when its `By` chooses the
+  one who started it; a `Since` scope is closed only by the event it looks for,
+  and `Scope::Mode` by a mode switch. A test or a review that came before a new
+  session therefore still counts, which loosens a rule that relied on the
+  session to forget it; write the span the rule is about, or close the `Since`
+  with the event that should end it.
 - Breaking, before 1.0: the classifier adds variants and a field type.
   `Body::Classified`, `EventKind::Classified`, `Field::Classifier` and
   `Field::Answer`, `Degraded::Uncalibrated`, `Clash::Classifier`,

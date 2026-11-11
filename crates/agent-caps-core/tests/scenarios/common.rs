@@ -22,10 +22,10 @@ use agent_caps_core::domain::policy::{
     Binding, DefLayer, Expect, Fixture, Level, ModeScope, ModeSet, Polarity, PolicyDef,
     PolicyGraph, Rule,
 };
-use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector};
+use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Selector, Span};
 use agent_caps_core::domain::schema::{At, EventKind, Field, KindSet};
 use agent_caps_core::domain::set::{SetId, SetName, Source, Sources};
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 
 pub const GUARD: &str = "00000000-0000-7000-8000-000000000001";
 pub const REWARD: &str = "00000000-0000-7000-8000-000000000002";
@@ -245,7 +245,10 @@ pub fn tested_in(scope: Scope) -> Pred {
 
 /// `cargo test` passed within the task, which any actor's `TaskStart` starts again.
 pub fn tested() -> Pred {
-    tested_in(Scope::Task(By::Anyone))
+    tested_in(Scope::Span {
+        span: Span::Task,
+        by: By::Anyone,
+    })
 }
 
 /// A commit; with `ok_only`, one that succeeded.
@@ -407,7 +410,10 @@ pub fn push_after_allowed(read: &str) -> Written {
             kind: EventKind::Judged,
             cond: Some(Cond::Eq(Field::Policy, Lit::Text(read.to_owned()))),
         }),
-        scope: Scope::Session,
+        scope: Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        },
         test: Cond::Eq(Field::Judgment, Lit::Text("allowed".to_owned())),
     });
     guard.fixtures = vec![];
@@ -428,7 +434,10 @@ pub fn clippy_reward(level: Level) -> Written {
                     kind: EventKind::ToolUse,
                     cond: Some(Cond::Words(Field::Command, words("cargo clippy"))),
                 }),
-                scope: Scope::Task(By::Anyone),
+                scope: Scope::Span {
+                    span: Span::Task,
+                    by: By::Anyone,
+                },
             }),
             polarity: Polarity::Reward {
                 bound_by: id(GUARD),
@@ -571,14 +580,15 @@ pub fn violated() -> Verdict {
     Verdict::Deny(vec![Cause::Violated(id(GUARD))])
 }
 
-/// The verdict on the last event, with the state folded over all of them.
+/// The verdict on the last event, with the state folded over all of them, a history that is
+/// whole ([`Origin::Genesis`]).
 pub fn verdict(catalog: &Catalog, events: &[Event]) -> Verdict {
     outcome(catalog, events).verdict
 }
 
 /// The whole outcome on the last event, with the state folded over all of them.
 pub fn outcome(catalog: &Catalog, events: &[Event]) -> Outcome {
-    let state = catalog.fold(events);
+    let state = catalog.fold(Origin::Genesis, events);
     judge(
         catalog,
         &state,
@@ -590,7 +600,7 @@ pub fn outcome(catalog: &Catalog, events: &[Event]) -> Outcome {
 /// Judges `event` after the `log`, then appends the event and the evidence of its judgment to the
 /// log, as a caller does between turns.
 pub fn step(catalog: &Catalog, log: &mut Vec<Event>, event: Event) -> Outcome {
-    let state = catalog.fold(log.iter().chain([&event]));
+    let state = catalog.fold(Origin::Genesis, log.iter().chain([&event]));
     let outcome = judge(catalog, &state, &event, &Capabilities::full());
     log.push(event);
     log.extend(outcome.evidence(At::from_millis(0)));

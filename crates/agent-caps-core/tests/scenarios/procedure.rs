@@ -27,7 +27,7 @@ use agent_caps_core::domain::judge::{Cause, Recognition, Verdict};
 use agent_caps_core::domain::policy::{
     DefLayer, Expect, Finding, Level, Polarity, PolicyDef, Rule,
 };
-use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Span};
 use agent_caps_core::domain::schema::{EventKind, Field, Judgment};
 
 use super::common::{
@@ -67,7 +67,10 @@ fn stage_reached(policy: &str) -> Pred {
                 Cond::Eq(Field::Judgment, Lit::Text("hit".to_owned())),
             ])),
         }),
-        scope: Scope::Task(By::Anyone),
+        scope: Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        },
     }
 }
 

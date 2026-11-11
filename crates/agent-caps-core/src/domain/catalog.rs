@@ -201,7 +201,7 @@ use super::predicate::{
 };
 use super::schema::EventKind;
 use super::set::{JoinConflict, SetId, Sources};
-use super::state::{Known, SlotId, SlotTable, State, matched};
+use super::state::{Known, Origin, SlotId, SlotTable, State, matched};
 
 /// One item of a catalog: a policy, a binding of one, a classifier, or a set of them
 /// ([`super::set`]).
@@ -1185,9 +1185,12 @@ impl Catalog {
             .map(|at| &self.policies[at])
     }
 
-    /// The state before any event.
-    pub fn start(&self) -> State {
-        State::start(&self.slots)
+    /// The state before any event, as a fold knows the past ([`Origin`]): `Genesis` when the fold
+    /// holds the history from the catalog's first acceptance on, `Unknown` when it starts in the
+    /// middle. There is no default: the caller says which is true, and a `Genesis` for a history
+    /// that is not whole counts from zero what was already counted.
+    pub fn start(&self, origin: Origin) -> State {
+        State::start(&self.slots, origin)
     }
 
     pub(super) fn slots(&self) -> &SlotTable {
@@ -1206,13 +1209,14 @@ impl Catalog {
 
     /// The bindings in effect in `state`: those of the catalog but the ones a held adjustment
     /// suspends, then those the held adjustments add, each under every mode and by the one who
-    /// made it. When the state has lost a record that may have been an adjustment or a cancel,
-    /// no suspension is taken to hold, since one may have been cancelled. The one list both the
+    /// made it. When the state may hold adjustments it does not see ([`State::may_hold_unseen`]:
+    /// a record that may have been an adjustment or a cancel was lost, or the fold started in the
+    /// middle), no suspension is taken to hold, since one may have been cancelled. The one list both the
     /// effect ([`Catalog::effective_in`]) and the authors of a lowering read.
     pub(super) fn bindings_in<'a>(&'a self, state: &'a State) -> Vec<InEffect<'a>> {
         // Each held adjustment is read as `HeldAdjustment::effect` says: one that may have ended
         // still adds its bindings and suspends none.
-        let suspended: Vec<BindingId> = if state.adjustments_lost() {
+        let suspended: Vec<BindingId> = if state.may_hold_unseen() {
             Vec::new()
         } else {
             state
@@ -1260,8 +1264,9 @@ impl Catalog {
     /// This is the one place that adds the temporary adjustments to what takes effect, and what a
     /// judgment and the transaction of a claim read.
     ///
-    /// When a record that may have been an adjustment or a cancel was lost
-    /// ([`State::adjustments_lost`]), what is held is not all there is: no suspension is taken to
+    /// When the state may hold adjustments it does not see ([`State::may_hold_unseen`]: a record
+    /// that may have been an adjustment or a cancel was lost, or the fold started in the middle
+    /// of the history), what is held is not all there is: no suspension is taken to
     /// hold, and every policy outside the meta layer takes effect at least as strongly as a
     /// temporary binding could make it (a guard with the fixtures of a stopping guard at Force, any
     /// other guard and a reward at Advise), with rewards then held to their guards as always. That
@@ -1278,7 +1283,7 @@ impl Catalog {
         bindings: &[InEffect<'_>],
         state: &State,
     ) -> Effective<'_> {
-        if !state.adjustments_lost() {
+        if !state.may_hold_unseen() {
             return self.effective_with(bindings, state.mode());
         }
         // The strength under the mark: what a temporary binding could give each policy.

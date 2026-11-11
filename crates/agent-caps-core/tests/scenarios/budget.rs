@@ -6,7 +6,7 @@
 //! chooses, within a scope, and compares the sum with a bound by an `Order`. A sum chooses by
 //! place only (`Whose` has no `Only`): with `Whose::Under(agent)` the use of a sub agent spawned
 //! below the agent counts toward it, so the agent cannot escape its budget by delegating. With
-//! `Scope::Task(By::Only(user))` only the user's `TaskStart` starts the budget again.
+//! `Scope::Span { span: Span::Task, by: By::Only(user) }` only the user's `TaskStart` starts the budget again.
 //!
 //! An amount is known after the use, so a sum can pass its bound by one event: the act whose use
 //! passes it has already run, and the next act is the one stopped. An amount that was measured
@@ -19,7 +19,7 @@ use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::Meter;
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
 use agent_caps_core::domain::predicate::{
-    Amount, AmountError, By, Cmp, Cond, EventFilter, Lit, Order, Pred, Scope, Whose, Window,
+    Amount, AmountError, By, Cmp, Cond, EventFilter, Lit, Order, Pred, Scope, Span, Whose, Window,
 };
 use agent_caps_core::domain::schema::{EventKind, Field, KindSet};
 
@@ -104,7 +104,10 @@ fn token_budget(scope: Scope) -> Written {
 /// A budget of 100 tokens per task, which only the user's `TaskStart` starts again.
 fn per_task() -> Catalog {
     catalog(
-        vec![token_budget(Scope::Task(By::Only(the_user())))],
+        vec![token_budget(Scope::Span {
+            span: Span::Task,
+            by: By::Only(the_user()),
+        })],
         vec![],
     )
 }
@@ -214,7 +217,10 @@ fn an_amount_that_could_not_be_read_makes_the_sum_unknown() {
             kind: EventKind::Used,
             cond: Some(Cond::Eq(Field::Meter, Lit::Text("tokens".to_owned()))),
         }),
-        scope: Scope::Session,
+        scope: Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        },
         cmp: Cmp::Eq,
         n: 0,
     });
@@ -250,8 +256,8 @@ fn a_record_that_may_have_been_a_use_makes_the_sum_unknown() {
     );
 }
 
-/// UC26, FR47, FR44: the agent's own `TaskStart` does not start the budget again under
-/// `Task(Only(user))`; the user's does.
+/// UC26, FR47, FR54: the agent's own `TaskStart` does not start the budget again under
+/// `Span { Task, Only(user) }`; the user's does.
 #[test]
 fn only_the_users_task_start_starts_the_budget_again() {
     let catalog = per_task();

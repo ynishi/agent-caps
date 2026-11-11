@@ -4,7 +4,7 @@
 //! transcript ─ platform adapter ─▶ events ─┐
 //! evidence (appended by the caller) ───────┤
 //!                                          ▼
-//!                       State = fold(Catalog::apply, initial, events)
+//!               State = fold(Catalog::apply, start(origin), events)
 //! ```
 //!
 //! The same events always give the same state, so a judgment can be repeated. A cache of the
@@ -107,6 +107,8 @@
 //!
 //! # What the state holds
 //!
+//! - What the fold knew of the past when it started ([`Origin`]), kept for the whole fold and
+//!   apart from the marks of a record lost within it.
 //! - The clock: no time before the first act, then the latest time an act has carried
 //!   (see Time). Only the carry advances it.
 //! - The mode in effect: the mode of the last switch that took effect.
@@ -166,8 +168,12 @@
 //!   the next judgment, which it may have used up; an adjustment or a cancel sets the mark that
 //!   the temporary adjustments are not known, and a cancel also ends every exemption held, which
 //!   it may have cancelled. Losing a record never loosens a rule.
-//! - The start of a session, a task or a turn is assumed not to be lost (a known gap, see
-//!   [`Scope`]).
+//! - A record that could not be read, and may have been the start of a span, leaves the scope
+//!   of that span and of the spans inside it unknown, whoever its `By` chooses ([`Scope`]).
+//! - A fold that starts in the middle of the history ([`Origin::Unknown`]) starts as a record
+//!   that could not be read leaves the slots, the mode and the clock, and holds that an
+//!   adjustment made before it may be in effect ([`State::may_hold_unseen`]); it marks no
+//!   lost record of the fold.
 //! - An actor whose place in the hierarchy is not known makes a selector or a scope that chooses
 //!   by actor unknown on its event, never "not chosen": a slot becomes unknown, and a scope that
 //!   may have started again or closed is handled as one that may have.
@@ -179,7 +185,9 @@ use super::authority::{Authority, Principal};
 use super::event::{Body, Event};
 use super::name::{AdjustmentId, BindingId, Mode, PolicyId};
 use super::policy::ModeScope;
-use super::predicate::{Amount, By, Cond, EventFilter, Pred, Scope, Selector, Temporal, Truth};
+use super::predicate::{
+    Amount, By, Cond, EventFilter, Pred, Scope, Selector, Span, Temporal, Truth,
+};
 use super::schema::{At, EventKind, Judgment, Nature};
 
 /// A value that was seen, or could not be.
@@ -540,10 +548,42 @@ impl Clock {
     }
 }
 
+/// What a fold knows of the past when it starts: the caller says it, with every
+/// [`super::catalog::Catalog::start`] and [`super::catalog::Catalog::fold`], and nothing defaults
+/// it. The start of a fold is not the start of every period: every rule sees a history that has
+/// already begun, and this says whether the fold holds all of it.
+///
+/// The caller decides which one is true, and a wrong choice is a lie: `Genesis` for a history
+/// that is not whole loosens, since it counts from zero what was already counted, and `Unknown`
+/// for one that is whole only stops more.
+///
+/// It is its own value of the state ([`State::origin`]), apart from the marks a fold makes when
+/// it loses a record in the middle ([`State::adjustments_lost`] and the lost spawn): that the past
+/// before the fold is not known and that a record inside it was lost are two facts, and they are
+/// not folded into one mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Origin {
+    /// The fold holds the history from the catalog's first acceptance on: before it, there is
+    /// nothing. Every slot starts at its start value (a count at zero), the mode is none, the
+    /// clock has no time, and no adjustment is in effect.
+    Genesis,
+    /// The fold starts in the middle of the history, from a transcript of one session, say.
+    /// What has not been seen since is unknown until its period starts again, as it is after a
+    /// record that could not be read: every slot is unknown, the mode is unknown and the clock has
+    /// no time. An adjustment made before the fold may be in effect and is not seen
+    /// ([`State::may_hold_unseen`]), so every rule takes effect at least as strongly as such an
+    /// adjustment could make it. The hierarchy of actors is not marked lost: the name of a leaf is
+    /// new at every start, so a spawn before the fold cannot collide with a leaf of the fold, and
+    /// the place of a child spawned within it is known.
+    Unknown,
+}
+
 /// The state a judgment reads. Made by folding events from [`super::catalog::Catalog::start`]
 /// with [`super::catalog::Catalog::apply`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
+    /// What the fold knew of the past when it started. Kept for the whole fold.
+    origin: Origin,
     /// The time as the acts tell it.
     clock: Clock,
     mode: Known<Option<Mode>>,
@@ -559,18 +599,6 @@ pub struct State {
     /// The leaves spawns added to the hierarchy of actors. Kept for the whole fold.
     actors: Actors,
 }
-
-/// The start event of a task scope, of any actor: what `Task(by)` chooses with its `by`.
-const TASK_START: EventFilter = EventFilter {
-    kind: EventKind::TaskStart,
-    cond: None,
-};
-
-/// The start event of a turn scope, of any actor: what `Turn(by)` chooses with its `by`.
-const PROMPT_SUBMIT: EventFilter = EventFilter {
-    kind: EventKind::PromptSubmit,
-    cond: None,
-};
 
 impl Scope {
     /// Whether the scope starts again by time, as the clock moved from `before` to `after` in the
@@ -588,27 +616,32 @@ impl Scope {
     }
 
     /// Whether the scope starts again before `event`, with the hierarchy of actors a `By` reads
-    /// the actor in. Every scope bounded by events starts again at a session's start; `Every` is
-    /// bounded by time and never starts again here ([`Scope::rolls`]). `Task` and `Turn` start
-    /// again at their start event when their `By` chooses its actor (`chosen`, unknown when its
-    /// place is). Any mode switch starts the mode's scope again, and a record that may have been
-    /// one leaves it unknown. It reads the event, and nothing of time.
+    /// the actor in: the one place that answers it.
+    ///
+    /// - An event that opens a span `L` ([`Span::opening`]) starts again a `Span { M, by }` only
+    ///   when `M` is `L` or inside it ([`Span::inside`]) and `by` chooses the event's actor
+    ///   (`chosen`, unknown when the actor's place is). So a start never reaches a span outside
+    ///   its own, nor a sibling.
+    /// - A record that could not be read, and may have been the opening event of such an `L`,
+    ///   leaves the scope unknown, whatever its `by`: the actor of a lost record is not known, so
+    ///   `Only` is no exception.
+    /// - Any mode switch starts the mode's scope again, and a record that may have been one leaves
+    ///   it unknown.
+    /// - `Since` starts again when it closes ([`Scope::ends_at`]) and `Every` by time
+    ///   ([`Scope::rolls`]), never here: the start of a span starts neither.
+    ///
+    /// It reads the event, and nothing of time.
     pub(super) fn starts_at(&self, event: &Event, actors: &Actors, authority: &Authority) -> Truth {
-        let at_session = matches!(event.body, Body::SessionStart);
-        let started_by = |start: &EventFilter, by: &By| {
-            if at_session {
-                Truth::True
-            } else {
-                chosen(start, by, event, actors, authority)
-            }
-        };
         match self {
-            Self::Session | Self::Since(_) => Truth::of(at_session),
-            Self::Every(_) => Truth::False,
-            Self::Task(by) => started_by(&TASK_START, by),
-            Self::Turn(by) => started_by(&PROMPT_SUBMIT, by),
+            Self::Span { span, by } => Truth::any(
+                Span::ALL
+                    .into_iter()
+                    .filter(|opened| opened == span || span.inside(*opened))
+                    .map(|opened| opened_by(opened, by, event, actors, authority)),
+            ),
+            Self::Since(_) | Self::Every(_) => Truth::False,
             Self::Mode => match &event.body {
-                Body::SessionStart | Body::ModeSwitch { .. } => Truth::True,
+                Body::ModeSwitch { .. } => Truth::True,
                 Body::Unreadable { may_have_been }
                     if may_have_been.contains(EventKind::ModeSwitch) =>
                 {
@@ -670,16 +703,36 @@ impl Selector {
     /// Whether the selector chooses `event`, which is not an unreadable record: the event is of
     /// the filter's kind and meets it ([`matched`]), and its actor is one `by` chooses
     /// ([`Actors::is_under`] for `Under`, the event's `by` itself for `Only`). The one answer to
-    /// "is this event chosen", read by the slots, by a `Since` that closes and by a task or a
-    /// turn that starts again. Under `Under`, an actor whose place is not known gives unknown,
+    /// "is this event chosen", read by the slots, by a `Since` that closes and by a span that
+    /// starts again. Under `Under`, an actor whose place is not known gives unknown,
     /// unless the filter alone says no; `Only` reads no hierarchy and is never unknown.
     pub(super) fn selects(&self, event: &Event, actors: &Actors, authority: &Authority) -> Truth {
         chosen(&self.filter, &self.by, event, actors, authority)
     }
 }
 
-/// [`Selector::selects`], of a filter and a `By` held apart: the start event of a task or a turn
-/// scope is a filter with no condition, and its `By` is the scope's.
+/// Whether `event` is a start of the span `opened` whose actor `by` chooses: the opening event
+/// ([`Span::opening`]) is a filter with no condition, and its `By` is the scope's. A record that
+/// could not be read is unknown when it may have been that opening event, whatever `by` is.
+fn opened_by(
+    opened: Span,
+    by: &By,
+    event: &Event,
+    actors: &Actors,
+    authority: &Authority,
+) -> Truth {
+    let filter = EventFilter {
+        kind: opened.opening(),
+        cond: None,
+    };
+    match &event.body {
+        Body::Unreadable { may_have_been } if may_have_been.contains(filter.kind) => Truth::Unknown,
+        _ => chosen(&filter, by, event, actors, authority),
+    }
+}
+
+/// [`Selector::selects`], of a filter and a `By` held apart: the opening event of a span is a
+/// filter with no condition, and its `By` is the scope's.
 fn chosen(
     filter: &EventFilter,
     by: &By,
@@ -704,18 +757,31 @@ fn chosen(
 }
 
 impl State {
-    /// The state before any event: no time, no mode, every slot at its start value, no
-    /// adjustment.
-    pub(super) fn start(table: &SlotTable) -> Self {
+    /// The state before any event, as the fold knows the past ([`Origin`]). From `Genesis`: no
+    /// time, no mode, every slot at its start value, no adjustment. From `Unknown`: no time,
+    /// as there, and the mode and every slot unknown, as after a record that could not be read
+    /// (`Slot::lost`); neither `adjustments_lost` nor the mark of a lost spawn is set (see
+    /// [`Origin::Unknown`] and [`State::may_hold_unseen`]).
+    pub(super) fn start(table: &SlotTable, origin: Origin) -> Self {
+        let (mode, slot): (_, fn(&Temporal) -> Slot) = match origin {
+            Origin::Genesis => (Known::Known(None), Slot::start),
+            Origin::Unknown => (Known::Unknown, |temporal| Slot::start(temporal).lost()),
+        };
         Self {
+            origin,
             clock: Clock(None),
-            mode: Known::Known(None),
-            slots: table.0.iter().map(Slot::start).collect(),
+            mode,
+            slots: table.0.iter().map(slot).collect(),
             adjustments: Vec::new(),
             adjustments_lost: false,
             closing: Vec::new(),
             actors: Actors::default(),
         }
+    }
+
+    /// What the fold knew of the past when it started.
+    pub fn origin(&self) -> Origin {
+        self.origin
     }
 
     /// The mode in effect.
@@ -735,6 +801,25 @@ impl State {
     /// temporary binding could make it ([`super::catalog::Catalog::effective_in`]).
     pub fn adjustments_lost(&self) -> bool {
         self.adjustments_lost
+    }
+
+    /// Whether the adjustments in effect may be more than the state holds, so that a rule may be
+    /// weaker than it takes effect: a record that may have been an adjustment or a cancel was
+    /// lost in the fold ([`State::adjustments_lost`]), or the fold started in the middle of the
+    /// history ([`Origin::Unknown`]) and an adjustment made before it may still be in effect.
+    /// The one predicate the effect of the rules reads for this
+    /// ([`super::catalog::Catalog::effective_in`] and the bindings it is computed from), so that
+    /// the two causes are never read apart. While it holds, no suspension is taken to hold, and
+    /// every rule takes effect at least as strongly as a temporary binding could make it: what an
+    /// adjustment made before the fold may only do is to strengthen, so the effect never goes
+    /// down. A suspension, a cancel or a binding made within the fold is held as [`Holding`] says
+    /// all the same, and is seen in [`State::adjustments`].
+    ///
+    /// It holds for the whole fold: the state has no bound on how long an adjustment lasts, which
+    /// is what would say that one made before the fold has ended. Such a bound is read here and
+    /// nowhere else.
+    pub fn may_hold_unseen(&self) -> bool {
+        self.adjustments_lost || self.origin == Origin::Unknown
     }
 
     /// Whether an adjustment in effect has the id: the one answer, read by the fold, by whether
@@ -843,7 +928,7 @@ impl State {
             Body::Unreadable { may_have_been } => {
                 // What an event of each kind it may have been may have changed. Whether it may
                 // have closed a scope is answered by `ends_at`, and whether it may have started
-                // the mode's scope again by `starts_at`.
+                // a scope again (a span's, the mode's) by `starts_at`.
                 self.slots = self
                     .slots
                     .into_iter()

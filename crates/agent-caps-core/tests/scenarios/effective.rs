@@ -6,7 +6,7 @@ use agent_caps_core::domain::catalog::{Capabilities, Catalog, Degraded, Effect};
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::judge;
 use agent_caps_core::domain::policy::Level;
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 
 use super::common::{
     GUARD, REWARD, Written, agent, bind, catalog, clippy_reward, id, inside, listed, mode, outside,
@@ -75,7 +75,7 @@ fn the_effective_policies_are_listed_per_mode() {
     assert!(catalog.effective(&Known::Unknown).degraded.is_empty());
     // The judgment of an event both policies apply to reads the same list, as written.
     let events = [agent(Body::TaskStart), agent(Body::Stop)];
-    let state = catalog.fold(&events);
+    let state = catalog.fold(Origin::Genesis, &events);
     let effective = catalog.effective(state.mode());
     let in_effect: Vec<_> = effective
         .on()

@@ -7,8 +7,9 @@ use agent_caps_core::domain::catalog::Capabilities;
 use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict, judge};
 use agent_caps_core::domain::policy::{DefLayer, Level};
-use agent_caps_core::domain::predicate::{By, Cond, Lit, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, Lit, Scope, Span};
 use agent_caps_core::domain::schema::{At, EventKind, Field};
+use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
@@ -18,7 +19,15 @@ use super::common::{
 
 /// An exemption of `guard` with no cover, for the task; its id is the `n`th.
 fn exempt_for_the_task(n: u8, guard: &str) -> Body {
-    exempt_n(n, guard, None, Lifetime::Within(Scope::Task(By::Anyone)))
+    exempt_n(
+        n,
+        guard,
+        None,
+        Lifetime::Within(Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        }),
+    )
 }
 
 /// FR34, UC6: an exemption from the root covers its target for its lifetime. UC25: one from the
@@ -69,7 +78,7 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
     ));
 
     // `Next` is used up by the judgment it covered.
-    let state = catalog.fold(&next);
+    let state = catalog.fold(Origin::Genesis, &next);
     let outcome = judge(&catalog, &state, &next[2], &Capabilities::full());
     let mut events = next.to_vec();
     events.extend(outcome.evidence(At::from_millis(1)));
@@ -77,7 +86,10 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
     assert!(matches!(verdict(&catalog, &events), Verdict::Deny(_)));
 
     // `Within(Task)` lasts until the task starts again.
-    let within = user(exempt(Lifetime::Within(Scope::Task(By::Anyone))));
+    let within = user(exempt(Lifetime::Within(Scope::Span {
+        span: Span::Task,
+        by: By::Anyone,
+    })));
     assert_eq!(
         verdict(
             &catalog,
@@ -135,8 +147,14 @@ fn an_exemption_from_the_agent_covers_nothing_whatever_its_lifetime() {
     let start = agent(Body::TaskStart);
     let lifetimes = [
         Lifetime::Next,
-        Lifetime::Within(Scope::Task(By::Anyone)),
-        Lifetime::Within(Scope::Session),
+        Lifetime::Within(Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        }),
+        Lifetime::Within(Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        }),
         Lifetime::Until(At::from_millis(1_000)),
     ];
     for lifetime in lifetimes {
@@ -167,8 +185,20 @@ fn an_exemption_from_the_agent_covers_nothing_whatever_its_lifetime() {
             &catalog,
             &[
                 start,
-                agent(exempt(None, Lifetime::Within(Scope::Task(By::Anyone)))),
-                user(exempt(None, Lifetime::Within(Scope::Task(By::Anyone)))),
+                agent(exempt(
+                    None,
+                    Lifetime::Within(Scope::Span {
+                        span: Span::Task,
+                        by: By::Anyone
+                    })
+                )),
+                user(exempt(
+                    None,
+                    Lifetime::Within(Scope::Span {
+                        span: Span::Task,
+                        by: By::Anyone
+                    })
+                )),
                 edit("src/a.rs")
             ]
         ),
@@ -229,11 +259,18 @@ fn an_exemption_claimed_after_its_until_adds_nothing() {
         200,
         exempt_n(1, GUARD, None, Lifetime::Until(At::from_millis(100))),
     );
-    let report = catalog.admit(&catalog.fold([&start]), &late, &TxPolicy::standard());
+    let report = catalog.admit(
+        &catalog.fold(Origin::Genesis, [&start]),
+        &late,
+        &TxPolicy::standard(),
+    );
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(report.inadmissible, Some(Inadmissible::Expired));
     assert!(report.findings.is_empty(), "{:?}", report.findings);
-    assert_eq!(catalog.fold([&start, &late]), catalog.fold([&start]));
+    assert_eq!(
+        catalog.fold(Origin::Genesis, [&start, &late]),
+        catalog.fold(Origin::Genesis, [&start])
+    );
 }
 
 /// FR14, UC10: no exemption covers a Meta guard.
@@ -242,9 +279,21 @@ fn no_exemption_covers_a_meta_guard() {
     let mut guard = test_guard(Level::Force);
     guard.layer = DefLayer::Meta;
     let catalog = catalog(vec![guard], vec![]);
-    let exempt = user(exempt_n(1, GUARD, None, Lifetime::Within(Scope::Session)));
+    let exempt = user(exempt_n(
+        1,
+        GUARD,
+        None,
+        Lifetime::Within(Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        }),
+    ));
     let start = agent(Body::TaskStart);
-    let report = catalog.admit(&catalog.fold([&start]), &exempt, &TxPolicy::standard());
+    let report = catalog.admit(
+        &catalog.fold(Origin::Genesis, [&start]),
+        &exempt,
+        &TxPolicy::standard(),
+    );
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(report.inadmissible, Some(Inadmissible::Meta(id(GUARD))));
     assert!(matches!(

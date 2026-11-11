@@ -18,9 +18,10 @@ use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
 use agent_caps_core::domain::predicate::{
-    Cmp, Cond, EventFilter, Pred, Scope, Window, WindowError,
+    By, Cmp, Cond, EventFilter, Pred, Scope, Span, Window, WindowError,
 };
 use agent_caps_core::domain::schema::{At, EventKind, Field, KindSet};
+use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
@@ -62,7 +63,7 @@ fn advised() -> Catalog {
 /// The effect of the test guard after `events`.
 fn effect_after(catalog: &Catalog, events: &[Event]) -> Effect {
     catalog
-        .effective_in(&catalog.fold(events))
+        .effective_in(&catalog.fold(Origin::Genesis, events))
         .policies
         .iter()
         .find(|p| p.policy.id() == id(GUARD))
@@ -100,14 +101,22 @@ fn a_claim_dated_in_the_future_does_not_end_a_raise() {
         switch_at(500),
     ];
     assert_eq!(effect_after(&catalog, &raised), Effect::On(Level::Force));
-    assert_eq!(catalog.fold(&raised).adjustments().len(), 1);
+    assert_eq!(
+        catalog.fold(Origin::Genesis, &raised).adjustments().len(),
+        1
+    );
 
     let mut events = raised.to_vec();
     events.push(stop_at(50));
     assert_eq!(verdict(&catalog, &events), violated());
     events.push(stop_at(100));
     assert_eq!(verdict(&catalog, &events), warned());
-    assert!(catalog.fold(&events).adjustments().is_empty());
+    assert!(
+        catalog
+            .fold(Origin::Genesis, &events)
+            .adjustments()
+            .is_empty()
+    );
 }
 
 /// FR45, FR46: a raise claimed at a time after its `Until`, while the clock is still before it,
@@ -121,7 +130,11 @@ fn a_raise_claimed_after_its_until_by_its_own_time_is_admitted_by_the_clock() {
         200,
         raise(1, Lifetime::Until(At::from_millis(100))),
     );
-    let report = catalog.admit(&catalog.fold([&start]), &late, &TxPolicy::standard());
+    let report = catalog.admit(
+        &catalog.fold(Origin::Genesis, [&start]),
+        &late,
+        &TxPolicy::standard(),
+    );
     assert_eq!(report.decision, TxDecision::Commit);
     assert_eq!(report.inadmissible, None);
 
@@ -131,7 +144,12 @@ fn a_raise_claimed_after_its_until_by_its_own_time_is_admitted_by_the_clock() {
     );
     let ended = [start, late, stop_at(50), stop_at(150)];
     assert_eq!(verdict(&catalog, &ended), warned());
-    assert!(catalog.fold(&ended).adjustments().is_empty());
+    assert!(
+        catalog
+            .fold(Origin::Genesis, &ended)
+            .adjustments()
+            .is_empty()
+    );
 }
 
 /// FR45, FR34: before any act there is no time yet, and a raise with `Until` holds, however late
@@ -157,7 +175,10 @@ fn before_any_act_a_raise_with_until_holds() {
 fn switch_guard() -> Written {
     let mut guard = test_guard(Level::Force);
     guard.subject = EventKind::ModeSwitch;
-    guard.rule = Rule::Structural(tested_in(Scope::Session));
+    guard.rule = Rule::Structural(tested_in(Scope::Span {
+        span: Span::Session,
+        by: By::Anyone,
+    }));
     guard.fixtures = vec![
         fixture("untested", vec![switch_at(0)], Expect::Violated),
         fixture(
@@ -204,7 +225,10 @@ fn an_exemption_past_its_until_by_the_claims_time_does_not_cover_the_claim() {
     assert_eq!(judged(switch_at(50)), Verdict::Allow);
     assert_eq!(judged(switch_at(150)), violated());
     // The exemption is still held: no act has carried the clock past its `Until`.
-    assert_eq!(catalog.fold(&exempted).adjustments().len(), 1);
+    assert_eq!(
+        catalog.fold(Origin::Genesis, &exempted).adjustments().len(),
+        1
+    );
 }
 
 /// FR45, FR34: an exemption that lasts `Within(Every(1h))` does not cover a claim dated past
@@ -228,7 +252,10 @@ fn an_exemption_within_a_window_does_not_cover_a_claim_dated_past_it() {
     };
     assert_eq!(judged(switch_at(HOUR - 1)), Verdict::Allow);
     assert_eq!(judged(switch_at(HOUR)), violated());
-    assert_eq!(catalog.fold(&exempted).adjustments().len(), 1);
+    assert_eq!(
+        catalog.fold(Origin::Genesis, &exempted).adjustments().len(),
+        1
+    );
 }
 
 /// The user's guard on a push: at most `n` pushes, of anyone, within each hour.
@@ -319,7 +346,12 @@ fn an_adjustment_within_a_window_ends_at_the_boundary() {
     assert_eq!(verdict(&catalog, &events), violated());
     events.push(stop_at(HOUR));
     assert_eq!(verdict(&catalog, &events), warned());
-    assert!(catalog.fold(&events).adjustments().is_empty());
+    assert!(
+        catalog
+            .fold(Origin::Genesis, &events)
+            .adjustments()
+            .is_empty()
+    );
 }
 
 /// The user's switch to a mode recorded unreadably, at the instant: a record that may only

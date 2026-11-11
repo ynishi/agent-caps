@@ -11,10 +11,10 @@ use agent_caps_core::domain::catalog::{AcceptError, Catalog, Effect, Target};
 use agent_caps_core::domain::change::{ChangeRejected, Loosening};
 use agent_caps_core::domain::event::{Body, Event};
 use agent_caps_core::domain::policy::{DefLayer, Level, ModeScope, PolicyGraph};
-use agent_caps_core::domain::predicate::{By, Cond, Lit, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, Lit, Scope, Span};
 use agent_caps_core::domain::schema::Field;
 use agent_caps_core::domain::set::Sources;
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 use agent_caps_core::domain::tx::checks::RuleMove;
 use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy, TxReport, Verdict};
 
@@ -49,7 +49,11 @@ fn users_set() -> Target {
 
 /// The transaction of `event` after `before`.
 fn admit(catalog: &Catalog, before: &[Event], event: &Event) -> TxReport {
-    catalog.admit(&catalog.fold(before), event, &TxPolicy::standard())
+    catalog.admit(
+        &catalog.fold(Origin::Genesis, before),
+        event,
+        &TxPolicy::standard(),
+    )
 }
 
 /// The verdict of the rule check in the report, which must have one.
@@ -74,7 +78,10 @@ fn exempt(n: u8, path: Option<&str>) -> Body {
         n,
         GUARD,
         path.map(|path| Cond::Eq(Field::Path, Lit::Text(path.to_owned()))),
-        Lifetime::Within(Scope::Task(By::Anyone)),
+        Lifetime::Within(Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        }),
     )
 }
 

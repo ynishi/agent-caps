@@ -10,7 +10,7 @@ use agent_caps_core::domain::event::Body;
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::GlobPattern;
 use agent_caps_core::domain::policy::{DefLayer, Level, Polarity, PolicyDef, Rule};
-use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope};
+use agent_caps_core::domain::predicate::{By, Cond, EventFilter, Lit, Pred, Scope, Span};
 use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 
 use super::common::{
@@ -40,7 +40,10 @@ fn read_before_edit() -> Written {
                     Cond::Eq(Field::Path, Lit::Text(DESIGN.to_owned())),
                 ])),
             }),
-            scope: Scope::Task(By::Anyone),
+            scope: Scope::Span {
+                span: Span::Task,
+                by: By::Anyone,
+            },
         }),
         polarity: Polarity::Guard,
         fixtures: vec![],

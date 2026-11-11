@@ -27,7 +27,7 @@ use agent_caps_core::domain::name::PolicyId;
 use agent_caps_core::domain::policy::{DefLayer, Level, ModeScope, Polarity, PolicyDef, Rule};
 use agent_caps_core::domain::predicate::{Cond, Lit, Pred};
 use agent_caps_core::domain::schema::{EventKind, Field};
-use agent_caps_core::domain::state::Known;
+use agent_caps_core::domain::state::{Known, Origin};
 
 use super::common::{
     GUARD, OTHER, Written, agent, at, bash, bind, catalog, id, inside, listed, mode, mode_switch,
@@ -102,7 +102,10 @@ fn a_mode_changes_the_level_and_a_lowering_switch_needs_the_guards_author() {
         Verdict::Deny(_)
     ));
     // A lost record may have been a switch: the strongest binding applies.
-    let state = catalog.fold(&[switch(the_user()), unreadable(&[EventKind::ModeSwitch])]);
+    let state = catalog.fold(
+        Origin::Genesis,
+        &[switch(the_user()), unreadable(&[EventKind::ModeSwitch])],
+    );
     assert_eq!(state.mode(), &Known::Unknown);
     assert!(matches!(
         judge(&catalog, &state, &stop, &Capabilities::full()).verdict,

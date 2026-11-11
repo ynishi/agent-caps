@@ -14,9 +14,10 @@ use agent_caps_core::domain::policy::{
     DefLayer, Expect, Finding, Level, Polarity, PolicyDef, Rule,
 };
 use agent_caps_core::domain::predicate::{
-    By, Cmp, Cond, EventFilter, Lit, Number, NumberError, Pred, PredError, Scope,
+    By, Cmp, Cond, EventFilter, Lit, Number, NumberError, Pred, PredError, Scope, Span,
 };
 use agent_caps_core::domain::schema::{EventKind, Field, FieldType};
+use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
@@ -63,7 +64,10 @@ fn bench_scores() -> EventFilter {
 fn latest_bench_score() -> Pred {
     Pred::Last {
         select: anyone(bench_scores()),
-        scope: Scope::Session,
+        scope: Scope::Span {
+            span: Span::Session,
+            by: By::Anyone,
+        },
         test: at_least(0.8),
     }
 }
@@ -193,7 +197,7 @@ fn a_score_from_below_the_guards_author_does_not_count() {
 #[test]
 fn a_score_that_is_not_a_number_is_not_a_change_when_it_is_left_alone() {
     let catalog = catalog(vec![bench_guard()], vec![]);
-    let state = catalog.fold(&[bench(f64::NAN)]);
+    let state = catalog.fold(Origin::Genesis, &[bench(f64::NAN)]);
     let report = catalog.admit(
         &state,
         &measured_by(the_agent(), "lint", 0.1),
@@ -220,7 +224,10 @@ fn a_last_whose_test_does_not_fit_its_events_is_rejected() {
         guard.fixtures = vec![];
         guard.rule = Rule::Structural(Pred::Last {
             select: anyone(event),
-            scope: Scope::Session,
+            scope: Scope::Span {
+                span: Span::Session,
+                by: By::Anyone,
+            },
             test,
         });
         rejected(vec![guard], vec![])
@@ -274,7 +281,10 @@ fn a_last_value_is_false_when_unseen_and_unknown_when_lost() {
             kind: EventKind::ToolUse,
             cond: None,
         }),
-        scope: Scope::Task(By::Anyone),
+        scope: Scope::Span {
+            span: Span::Task,
+            by: By::Anyone,
+        },
         test: Cond::Eq(Field::Ok, Lit::Bool(true)),
     });
     guard.fixtures = vec![];
