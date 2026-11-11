@@ -10,6 +10,18 @@ and this project adheres to
 
 ### Added
 
+- A `serde` feature of the core, off by default, that encodes the records of a
+  catalog (`Sources`, `Authority`) and the events behind a state (#65). A value
+  with a checking constructor (a name, an id, `Authority`, `Sources`,
+  `PolicyGraph`, a window, an amount and the rest) is decoded only through that
+  constructor, so a stored form that the constructor would refuse is refused
+  with its error; a field no type has is refused too. The score of a
+  measurement and the answer of a classifier are stored as a JSON number, or
+  as the text `"NaN"`, `"inf"` or `"-inf"`. The form is versioned:
+  `domain::stored::VERSION` is raised when it changes, and a golden form per
+  version (`tests/stored/v1.json`) with its hash fails the test of a change
+  that does not raise it (FR61).
+
 - A `**` in a path pattern (#51): a whole segment `**/` matches zero or more
   directories (`a/**/b` matches `a/b` and `a/x/y/b`), a `**` that ends the
   pattern matches the rest of the path (`a/**` matches everything under `a/`,

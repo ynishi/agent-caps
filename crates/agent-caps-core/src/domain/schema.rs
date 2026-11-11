@@ -11,7 +11,25 @@
 /// clock, which every end by time reads; the time of a claim does not (see
 /// [`super::state`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "i64", into = "i64"))]
 pub struct At(i64);
+
+/// The stored form of an instant is its milliseconds. Any number makes an instant, so reading it
+/// back cannot fail.
+#[cfg(feature = "serde")]
+impl From<i64> for At {
+    fn from(millis: i64) -> Self {
+        Self::from_millis(millis)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<At> for i64 {
+    fn from(at: At) -> Self {
+        at.millis()
+    }
+}
 
 impl At {
     /// The instant `millis` milliseconds after the Unix epoch.
@@ -27,6 +45,8 @@ impl At {
 
 /// What a judgment of one policy came to, as it is recorded in the evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Judgment {
     /// A guard let the event through.
     Allowed,
@@ -47,6 +67,8 @@ pub enum Judgment {
 ///
 /// It lives here so that an event can carry it; it is read as [`super::policy::Level`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Level {
     /// Only tells.
     Inform,
@@ -85,6 +107,8 @@ macro_rules! event_kinds {
         /// operator looks for. New kinds are added as the model grows; a match on it outside this
         /// crate lists every kind, so a new one stops it compiling until it is handled.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+        #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
         pub enum EventKind {
             $($(#[$doc])* $kind,)+
         }
@@ -179,7 +203,33 @@ impl EventKind {
 /// of that kind, which loosens the rules that read it. An adapter that cannot tell what a record
 /// may have been gives [`KindSet::any`].
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "KindSetRaw", into = "KindSetRaw"))]
 pub struct KindSet(Vec<EventKind>);
+
+/// The stored form of [`KindSet`]: the kinds [`KindSet::new`] takes, so that decoding always goes
+/// through it. Private, and without `transparent`, `flatten` or `default`, each of which would be
+/// a way to a value that did not go through the constructor.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KindSetRaw {
+    kinds: Vec<EventKind>,
+}
+
+#[cfg(feature = "serde")]
+impl From<KindSetRaw> for KindSet {
+    fn from(raw: KindSetRaw) -> Self {
+        Self::new(raw.kinds)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<KindSet> for KindSetRaw {
+    fn from(set: KindSet) -> Self {
+        Self { kinds: set.0 }
+    }
+}
 
 impl KindSet {
     /// Every kind: what a record may have been when nothing is known of it.
@@ -217,6 +267,8 @@ impl FromIterator<EventKind> for KindSet {
 
 /// A value a predicate can read from an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Field {
     /// The tool of a [`EventKind::ToolUse`] (text).
     Tool,

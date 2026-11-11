@@ -55,6 +55,16 @@ deny = [
 message = "authority is the lowest layer of the domain: it knows nothing of policies, sets, catalogs, changes, events, adjustments, judgments, state, predicates or transactions, so who may loosen whose work can change without them."
 
 [[scopes]]
+name = "stored"
+paths = ["crates/agent-caps-core/src/domain/stored.rs"]
+
+[[restrict-use]]
+name = "stored-is-a-leaf"
+scope = "stored"
+deny = ["crate::domain::**", "super::**"]
+message = "stored is a leaf of the domain, below every module: it holds the version of the stored form, the error of a value of several parts and the form of a number that is not finite, so every module can use it and it needs none of them."
+
+[[scopes]]
 name = "policy"
 paths = ["crates/agent-caps-core/src/domain/policy.rs"]
 

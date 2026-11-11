@@ -69,6 +69,8 @@ use super::name::{BindingId, ClassifierName, Mode, PolicyId, PolicyName};
 use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Selector, Truth, reads_unnarrowed};
 use super::schema::{EventKind, Field};
 use super::state::{Known, SlotTable, State};
+#[cfg(feature = "serde")]
+use super::stored::Errors;
 
 // `Level` is defined in `schema` so that a record of a judgment (`event`), which carries the
 // levels it was written and enforced at, does not depend on this module; it is read from here.
@@ -76,6 +78,8 @@ pub use super::schema::Level;
 
 /// Whether a policy forbids or recommends. How strongly is its bindings' to say.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Polarity {
     /// What must hold. Failing it gives a warning or a denial.
     Guard,
@@ -108,7 +112,35 @@ impl std::error::Error for ModeSetError {}
 
 /// Modes, at least one, none twice, kept in their order. Made only by [`ModeSet::new`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "ModeSetRaw", into = "ModeSetRaw"))]
 pub struct ModeSet(Vec<Mode>);
+
+/// The stored form of [`ModeSet`]: the modes [`ModeSet::new`] takes, so that decoding always goes
+/// through it. Private, and without `transparent`, `flatten` or `default`, each of which would be
+/// a way to a value that did not go through the constructor.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModeSetRaw {
+    modes: Vec<Mode>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<ModeSetRaw> for ModeSet {
+    type Error = ModeSetError;
+
+    fn try_from(raw: ModeSetRaw) -> Result<Self, Self::Error> {
+        Self::new(raw.modes)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<ModeSet> for ModeSetRaw {
+    fn from(set: ModeSet) -> Self {
+        Self { modes: set.0 }
+    }
+}
 
 impl ModeSet {
     /// The set of `modes`, when there is at least one and none is given twice.
@@ -132,6 +164,8 @@ impl ModeSet {
 
 /// Where a binding takes effect, as to the mode.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum ModeScope {
     /// Under every mode, and under none.
     Any,
@@ -169,6 +203,8 @@ impl ModeScope {
 /// One author's statement that a policy takes effect at a level, where its scope holds. A policy
 /// takes effect at the strongest level of its bindings that hold.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Binding {
     /// Its id, unique in the graph.
     pub id: BindingId,
@@ -187,9 +223,44 @@ pub struct Binding {
 /// suffices is [`Calibration::admit`]'s to say. Made only by [`Calibration::new`], which refuses
 /// a bound that asks for no evidence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "CalibrationRaw", into = "CalibrationRaw")
+)]
 pub struct Calibration {
     min_cases: u32,
     max_false_stops: u32,
+}
+
+/// The stored form of [`Calibration`]: the numbers [`Calibration::new`] takes, so that decoding
+/// always goes through it. Private, and without `transparent`, `flatten` or `default`, each of
+/// which would be a way to a value that did not go through the constructor.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CalibrationRaw {
+    min_cases: u32,
+    max_false_stops: u32,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<CalibrationRaw> for Calibration {
+    type Error = CalibrationError;
+
+    fn try_from(raw: CalibrationRaw) -> Result<Self, Self::Error> {
+        Self::new(raw.min_cases, raw.max_false_stops)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Calibration> for CalibrationRaw {
+    fn from(bound: Calibration) -> Self {
+        Self {
+            min_cases: bound.min_cases,
+            max_false_stops: bound.max_false_stops,
+        }
+    }
 }
 
 /// The result of the last calibration of a classifier, as the loop that calibrates it counts it:
@@ -198,9 +269,44 @@ pub struct Calibration {
 /// which gives the domain the counts. Made only by [`CalibrationRecord::new`], which refuses
 /// counts that cannot be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "CalibrationRecordRaw", into = "CalibrationRecordRaw")
+)]
 pub struct CalibrationRecord {
     cases: u32,
     false_stops: u32,
+}
+
+/// The stored form of [`CalibrationRecord`]: the counts [`CalibrationRecord::new`] takes, so that
+/// decoding always goes through it. Private, and without `transparent`, `flatten` or `default`,
+/// each of which would be a way to a value that did not go through the constructor.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CalibrationRecordRaw {
+    cases: u32,
+    false_stops: u32,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<CalibrationRecordRaw> for CalibrationRecord {
+    type Error = CalibrationError;
+
+    fn try_from(raw: CalibrationRecordRaw) -> Result<Self, Self::Error> {
+        Self::new(raw.cases, raw.false_stops)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<CalibrationRecord> for CalibrationRecordRaw {
+    fn from(record: CalibrationRecord) -> Self {
+        Self {
+            cases: record.cases,
+            false_stops: record.false_stops,
+        }
+    }
 }
 
 /// Why a [`Calibration`] or a [`CalibrationRecord`] could not be made.
@@ -323,6 +429,8 @@ impl Calibration {
 /// A classifier is declared in one set and read by name from the others, since two sets that
 /// declare one hold the same item only while the record is the same.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Classifier {
     /// Its name, with the version in it (`commit-why@3`).
     pub name: ClassifierName,
@@ -331,11 +439,14 @@ pub struct Classifier {
     /// The bound its calibration must meet.
     pub bound: Calibration,
     /// The last calibration of it; `None` when it has not been calibrated.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
     pub record: Option<CalibrationRecord>,
 }
 
 /// How a policy judges. New ways are added as the model grows.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Rule {
     /// A predicate, judged the same way every time from the same events.
     Structural(Pred),
@@ -343,6 +454,8 @@ pub enum Rule {
 
 /// The layer a policy is defined in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum DefLayer {
     /// Fixed: it has exactly one binding, by its author, under every mode, and no exemption
     /// covers it.
@@ -353,6 +466,8 @@ pub enum DefLayer {
 
 /// What a fixture expects a policy to find on its last event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Expect {
     /// The guard fails, or the reward is not followed.
     Violated,
@@ -367,6 +482,8 @@ pub enum Expect {
 /// One example of a policy at work: events, and what the policy should find on the last one.
 /// Fixtures live in the policy, so a change of the policy and of its examples is one change.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Fixture {
     /// What the example shows, for the people who read a failure.
     pub name: String,
@@ -382,6 +499,8 @@ pub struct Fixture {
 /// A policy as written in a policy graph: plain data, checked when a catalog accepts it. Its
 /// equality is total: a policy equals itself, whatever its conditions and examples hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct PolicyDef {
     /// Its id.
     pub id: PolicyId,
@@ -392,6 +511,7 @@ pub struct PolicyDef {
     /// The kind of event it judges.
     pub subject: EventKind,
     /// When it applies; `None` applies to every event of its subject.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
     pub when: Option<Pred>,
     /// What it says.
     pub rule: Rule,
@@ -429,6 +549,11 @@ pub struct PolicyDef {
 /// rule a classifier) is checked when a catalog accepts the graph, with everything else that needs
 /// the hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "PolicyGraphRaw", into = "PolicyGraphRaw")
+)]
 pub struct PolicyGraph {
     policies: BTreeMap<PolicyId, PolicyDef>,
     bindings: BTreeMap<BindingId, Binding>,
@@ -438,6 +563,43 @@ pub struct PolicyGraph {
     names: BTreeMap<PolicyName, PolicyId>,
     /// The longest period of a temporary adjustment the graph declares, if it does.
     bound: Option<TemporaryBound>,
+}
+
+/// The stored form of [`PolicyGraph`]: what [`PolicyGraph::parse_with`] takes, not the maps the
+/// graph keeps (nor the names it derives), so that decoding always goes through the one insert
+/// that refuses an id or a name twice. Private, and without `transparent`, `flatten` or
+/// `default`, each of which would be a way to a value that did not go through the constructor.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyGraphRaw {
+    policies: Vec<PolicyDef>,
+    bindings: Vec<Binding>,
+    classifiers: Vec<Classifier>,
+    #[serde(deserialize_with = "Option::deserialize")]
+    bound: Option<TemporaryBound>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<PolicyGraphRaw> for PolicyGraph {
+    type Error = Errors<GraphError>;
+
+    fn try_from(raw: PolicyGraphRaw) -> Result<Self, Self::Error> {
+        Self::parse_with(raw.policies, raw.bindings, raw.classifiers, raw.bound).map_err(Errors)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<PolicyGraph> for PolicyGraphRaw {
+    fn from(graph: PolicyGraph) -> Self {
+        let (policies, bindings, classifiers, bound) = graph.into_parts();
+        Self {
+            policies,
+            bindings,
+            classifiers,
+            bound,
+        }
+    }
 }
 
 /// One item that may enter a graph, given to the one insert.

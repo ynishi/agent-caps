@@ -29,6 +29,8 @@ name = "agent-caps-core"
 version = "0.1.0"
 dependencies = [
  "arch-lint",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

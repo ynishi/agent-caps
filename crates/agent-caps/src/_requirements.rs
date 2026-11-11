@@ -174,6 +174,7 @@
 //! | FR58 | Write a path pattern that reaches any depth: a `**` that is a whole segment matches zero or more directories (`a/**/b` matches `a/b` and `a/x/y/b`), a `**` that ends the pattern matches the rest of the path whatever it holds (`a/**` matches everything under `a/` but not `a` itself), and `**` alone every path. A `**` inside a segment cannot be written: the pattern is refused when it is made, so it never means silently less than it reads. A pattern is compiled once when it is made; matching does not fail and stays linear, with no backtracking. | supported | Domain | #51 |
 //! | FR59 | Keep a record of a judgment only in the name of the judged policy's author: a record in another's name, or of a policy the catalog does not hold, is no judgment any of its rules made, and is not admitted, whether or not a rule reads it, so nothing that keeps or counts the records takes it in. | supported | Domain | #63 |
 //! | FR60 | Leave the state as it was when a claim is aborted: a history folded without its aborted claims gives the same state as one folded with them, to the last event, so a store may keep only the claims that took effect. | supported | Domain | #64 |
+//! | FR61 | Encode the catalog's records and the events behind a `serde` feature so that decoding a value with a checking constructor goes only through that constructor, and the stored form is versioned: a change of its shape changes the golden form and its version. | supported | Domain | #65 |
 
 use std::fmt;
 use std::str::FromStr;

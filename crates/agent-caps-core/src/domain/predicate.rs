@@ -124,6 +124,8 @@ impl std::ops::Not for Truth {
 
 /// A literal a field is compared with.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Lit {
     /// Text, for a text field.
     Text(String),
@@ -133,6 +135,8 @@ pub enum Lit {
 
 /// A comparison of numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Cmp {
     /// `<`
     Lt,
@@ -162,6 +166,8 @@ impl Cmp {
 
 /// A condition on one event, with no reference to the past.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Cond {
     /// The field equals the literal.
     Eq(Field, Lit),
@@ -186,10 +192,13 @@ pub enum Cond {
 /// acted with a [`Selector`]; the capabilities of a platform and the cover of an exemption read
 /// the filter alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct EventFilter {
     /// The kind of event.
     pub kind: EventKind,
     /// The condition the event must meet; `None` takes every event of the kind.
+    #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
     pub cond: Option<Cond>,
 }
 
@@ -215,6 +224,8 @@ pub struct EventFilter {
 /// The principal of `Under` and `Only` must be one of the authority's, in a rule and in the
 /// lifetime of a temporary adjustment alike.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum By {
     /// The events of every actor.
     Anyone,
@@ -244,6 +255,8 @@ impl By {
 /// budget by handing the work to a sub agent, which no spawn check would catch, so `Only` is not
 /// offered here. It becomes a `By` in one place, where the events a sum reads are chosen.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Whose {
     /// The use of every actor.
     Anyone,
@@ -267,6 +280,8 @@ impl Whose {
 /// the filter and whose actor `by` chooses. Whether an event is chosen is answered in one place,
 /// for every reader.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Selector {
     /// What the event is.
     pub filter: EventFilter,
@@ -283,6 +298,8 @@ pub struct Selector {
 /// it, and none outside ([`Scope`]). Which event opens a span ([`Span::opening`]) and which span
 /// is inside which ([`Span::inside`]) are stated here and nowhere else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Span {
     /// A session, opened by [`EventKind::SessionStart`].
     Session,
@@ -420,6 +437,8 @@ impl Span {
 /// - `Lifetime::Within(Every(w))` (see [`super::adjust::Lifetime`]) ends a temporary adjustment
 ///   at the next boundary of the window, as the carry to the first act past it finds.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Scope {
     /// From the last start of the span, or of a span it is inside, whose actor the `By` chooses.
     /// The `By` cannot be left out, whichever the span is.
@@ -454,7 +473,26 @@ impl Scope {
 
 /// The length of a time window ([`Scope::Every`]), in milliseconds, more than zero.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "i64", into = "i64"))]
 pub struct Window(i64);
+
+/// The stored form of a window is its milliseconds, read back through [`Window::from_millis`].
+#[cfg(feature = "serde")]
+impl TryFrom<i64> for Window {
+    type Error = WindowError;
+
+    fn try_from(millis: i64) -> Result<Self, Self::Error> {
+        Self::from_millis(millis)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Window> for i64 {
+    fn from(window: Window) -> Self {
+        window.millis()
+    }
+}
 
 impl Window {
     /// The window `millis` milliseconds long; zero and negative lengths are refused.
@@ -498,7 +536,26 @@ impl std::error::Error for WindowError {}
 /// [`Pred::Spent`]: a finite number, zero or more. The constructor refuses NaN, the infinities
 /// and negative numbers, so a sum of amounts is always ordered and only grows.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
 pub struct Amount(f64);
+
+/// The stored form of an amount is its number, read back through [`Amount::new`].
+#[cfg(feature = "serde")]
+impl TryFrom<f64> for Amount {
+    type Error = AmountError;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Amount> for f64 {
+    fn from(amount: Amount) -> Self {
+        amount.get()
+    }
+}
 
 /// `value` when it is finite, a negative zero made zero; `None` for NaN and the infinities. The
 /// one check an [`Amount`] and a [`Number`] are made through.
@@ -561,7 +618,26 @@ impl Eq for Amount {}
 /// either sign. The constructor refuses NaN and the infinities, so a condition always equals
 /// itself and a comparison with it is known whenever the field's value is a number.
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "f64", into = "f64"))]
 pub struct Number(f64);
+
+/// The stored form of a number is the number, read back through [`Number::new`].
+#[cfg(feature = "serde")]
+impl TryFrom<f64> for Number {
+    type Error = NumberError;
+
+    fn try_from(value: f64) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Number> for f64 {
+    fn from(number: Number) -> Self {
+        number.get()
+    }
+}
 
 // A finite `f64`, which a number always is, is equal to itself, so `==` is an equivalence.
 impl Eq for Number {}
@@ -598,6 +674,8 @@ impl std::error::Error for NumberError {}
 /// How a sum of amounts compares with its bound. There is no equality: a sum of amounts measured
 /// in fractions rarely meets a bound exactly, so a rule says on which side of it the sum is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Order {
     /// `<`
     Lt,
@@ -625,6 +703,8 @@ impl Order {
 
 /// A predicate on the judged event and the events before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Pred {
     /// The condition holds of the judged event.
     Now(Cond),

@@ -23,6 +23,8 @@ use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
 
 /// One event: when, from whom, and what.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Event {
     /// When it happened.
     pub at: At,
@@ -42,6 +44,8 @@ pub struct Event {
 /// So the equality is total ([`Eq`]): a slot of the state that holds an event is not taken for
 /// changed when it was not touched, and a fixture, and the policy that holds it, equals itself.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Body {
     /// A session started.
     SessionStart,
@@ -66,10 +70,13 @@ pub enum Body {
         /// The tool, as the platform names it.
         tool: String,
         /// The command; `None` when the tool runs none (absent: a comparison with it is false).
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
         command: Option<CommandWords>,
         /// The path; `None` when the tool touches none (absent: a comparison with it is false).
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
         path: Option<String>,
         /// Whether the call succeeded; `None` until that is known (unknown).
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
         ok: Option<bool>,
     },
     /// A turn is about to end.
@@ -90,6 +97,7 @@ pub enum Body {
         /// makes only a sum of the meter unknown, as `ok: None` makes a read of a tool call's
         /// success unknown: a count of `Used` events, and a `Since` that a `Used` closes, still
         /// read the event.
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
         amount: Option<Amount>,
     },
     /// The mode is switched.
@@ -102,6 +110,7 @@ pub enum Body {
         /// The oracle, by name.
         oracle: String,
         /// The score.
+        #[cfg_attr(feature = "serde", serde(with = "super::stored::float"))]
         score: f64,
     },
     /// A classifier answered: a claim, read by the rules that name the classifier (a filter of
@@ -114,6 +123,7 @@ pub enum Body {
         /// The classifier, by name and version.
         classifier: ClassifierName,
         /// The answer.
+        #[cfg_attr(feature = "serde", serde(with = "super::stored::float"))]
         answer: f64,
     },
     /// A temporary adjustment is made: an exemption, or bindings added and suspended, for its

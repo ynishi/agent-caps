@@ -108,6 +108,8 @@ use super::state::Clock;
 /// adjustment's own ([`Adjustment::ends_by`]), the only end by time, so every lifetime ends by it
 /// at the latest.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Lifetime {
     /// The next judgment it covers, and no more: the record of the
     /// [`super::schema::Judgment::Exempted`] judgment uses it up. An exemption only.
@@ -141,7 +143,27 @@ impl Lifetime {
 /// ([`super::policy::PolicyGraph::parse_with`]), and the catalog decides it once
 /// ([`super::catalog::Catalog::temporary_bound`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "i64", into = "i64"))]
 pub struct TemporaryBound(i64);
+
+/// The stored form of a bound is its milliseconds, read back through
+/// [`TemporaryBound::from_millis`].
+#[cfg(feature = "serde")]
+impl TryFrom<i64> for TemporaryBound {
+    type Error = BoundError;
+
+    fn try_from(millis: i64) -> Result<Self, Self::Error> {
+        Self::from_millis(millis)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<TemporaryBound> for i64 {
+    fn from(bound: TemporaryBound) -> Self {
+        bound.millis()
+    }
+}
 
 impl TemporaryBound {
     /// The bound of `millis` milliseconds; zero and negative lengths are refused.
@@ -185,6 +207,8 @@ impl std::error::Error for BoundError {}
 /// A binding added for a while: the policy takes effect at least at the level, under every mode,
 /// by the one who made the adjustment.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct TemporaryBinding {
     /// The policy it puts into effect.
     pub policy: PolicyId,
@@ -194,6 +218,8 @@ pub struct TemporaryBinding {
 
 /// What a temporary adjustment changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Temporary {
     /// The guard does not judge the events the cover covers. It does not change the strength the
     /// guard takes effect at.
@@ -202,6 +228,7 @@ pub enum Temporary {
         guard: PolicyId,
         /// The events it covers, read on the judged event; `None` covers every event the guard
         /// judges. A cover that reads as unknown does not cover the event.
+        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
         cover: Option<Cond>,
     },
     /// Bindings added and bindings of the catalog suspended, on every event (there is no cover).
@@ -215,6 +242,8 @@ pub enum Temporary {
 
 /// One temporary adjustment, as a claim states it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Adjustment {
     /// Its id, which a cancel names.
     pub id: AdjustmentId,

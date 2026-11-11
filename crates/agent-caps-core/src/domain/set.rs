@@ -116,13 +116,19 @@ use std::fmt;
 use std::str::FromStr;
 
 use super::authority::Principal;
+#[cfg(feature = "serde")]
+use super::name::stored_as_text;
 use super::name::{NameError, is_name, parse_uuid, write_uuid};
 use super::policy::{Clash, Origin, PolicyGraph};
+#[cfg(feature = "serde")]
+use super::stored::Errors;
 
 /// The surrogate key of a set of policies: unique among the sources of a catalog, the order they
 /// are composed in, and what a set keeps through its versions and renames. The application that
 /// stores a set gives it, as a policy graph gives the id of a policy; the domain never makes one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct SetId(u128);
 
 impl FromStr for SetId {
@@ -146,6 +152,8 @@ impl fmt::Display for SetId {
 /// a catalog never share one; the id, not the name, is what other values refer to, so a set may be
 /// renamed and stay the same set.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct SetName(String);
 
 impl FromStr for SetName {
@@ -166,9 +174,14 @@ impl fmt::Display for SetName {
     }
 }
 
+#[cfg(feature = "serde")]
+stored_as_text!(SetId, SetName);
+
 /// One set of policies: its id, its name, the principal it belongs to, and its graph. Every item
 /// of the graph is by the owner or one below it, which [`super::catalog::Catalog::accept`] checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub struct Source {
     /// Its id among the sources, kept by every version of the set.
     pub id: SetId,
@@ -236,8 +249,39 @@ impl std::error::Error for JoinConflict {}
 /// and changed only into another value by [`Sources::with`], [`Sources::without`] and
 /// [`Sources::replaced`], which make it through [`Sources::new`] again.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "SourcesRaw", into = "SourcesRaw"))]
 pub struct Sources {
     sets: BTreeMap<SetId, Source>,
+}
+
+/// The stored form of [`Sources`]: the input of [`Sources::new`], not the map the sources keep,
+/// so that decoding always goes through the one place that decides that no id and no name is
+/// given twice. Private, and without `transparent`, `flatten` or `default`, each of which would be
+/// a way to a value that did not go through the constructor.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SourcesRaw {
+    sets: Vec<Source>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<SourcesRaw> for Sources {
+    type Error = Errors<SourcesError>;
+
+    fn try_from(raw: SourcesRaw) -> Result<Self, Self::Error> {
+        Self::new(raw.sets).map_err(Errors)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Sources> for SourcesRaw {
+    fn from(sources: Sources) -> Self {
+        Self {
+            sets: sources.sets.into_values().collect(),
+        }
+    }
 }
 
 impl Sources {

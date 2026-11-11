@@ -40,7 +40,25 @@ use std::fmt;
 /// An opaque key of one who writes policies. The key carries no meaning: whether it stands for
 /// a person, an agent or a team is the arrangement of the [`Authority`] that holds it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(from = "String", into = "String"))]
 pub struct Principal(String);
+
+/// The stored form of a principal is its key. Any key makes a principal, so reading it back
+/// cannot fail.
+#[cfg(feature = "serde")]
+impl From<String> for Principal {
+    fn from(key: String) -> Self {
+        Self::new(key)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Principal> for String {
+    fn from(principal: Principal) -> Self {
+        principal.0
+    }
+}
 
 impl Principal {
     /// The principal with the key.
@@ -146,8 +164,42 @@ impl std::error::Error for NotWithin {}
 /// A hierarchy of principals: each has at most one parent, the principal above it, and a
 /// principal without one is a root.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "AuthorityRaw", into = "AuthorityRaw")
+)]
 pub struct Authority {
     parents: BTreeMap<Principal, Option<Principal>>,
+}
+
+/// The stored form of [`Authority`]: the links [`Authority::new`] takes, not the map the hierarchy
+/// keeps, so that decoding always goes through the one place that checks the root, the parents
+/// and the loops. Private, and without `transparent`, `flatten` or `default`, each of which would
+/// be a way to a value that did not go through the constructor.
+#[cfg(feature = "serde")]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityRaw {
+    links: Vec<(Principal, Option<Principal>)>,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<AuthorityRaw> for Authority {
+    type Error = AuthorityError;
+
+    fn try_from(raw: AuthorityRaw) -> Result<Self, Self::Error> {
+        Self::new(raw.links)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Authority> for AuthorityRaw {
+    fn from(authority: Authority) -> Self {
+        Self {
+            links: authority.parents.into_iter().collect(),
+        }
+    }
 }
 
 impl Authority {

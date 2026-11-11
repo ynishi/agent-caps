@@ -15,3 +15,5 @@ readme = "README.md"
 [workspace.dependencies]
 agent-caps-core = { path = "crates/agent-caps-core", version = "0.1.0" }
 arch-lint = "0.11"
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }
