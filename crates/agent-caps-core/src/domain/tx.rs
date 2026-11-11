@@ -233,6 +233,8 @@ pub enum Verdict {
 
 /// What a loosening finding is about.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum FindingDetail {
     /// The rules take effect otherwise: how each policy moves (see [`checks::RuleCheck`]), and
     /// the policies loosened because they read the judgments of one that moves.
@@ -278,6 +280,8 @@ pub enum FindingDetail {
 /// adjustment in effect whose lifetime lasts within a scope that chooses by actor. A loosening of
 /// a policy asks its author, and one of an adjustment asks the one who made it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Reader {
     /// The policy.
     Policy(PolicyId),

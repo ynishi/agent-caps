@@ -43,6 +43,14 @@ and this project adheres to
   version (`tests/stored/v1.json`) with its hash fails the test of a change
   that does not raise it (FR61).
 
+- The `serde` feature of the core also encodes how a change loosens (#78):
+  `Loosening` and the types it holds (`Target`, `FindingDetail`, `RuleMove`,
+  `Reader` and `SlotId`), by the same rules as the records of a catalog, so a
+  store can keep a proposed change with the answer it was given. A slot's id is
+  stored as its number, read back as a fact of the record that names it.
+  `domain::stored::VERSION` is raised to 2, and `tests/stored/v2.json` is the
+  golden form (the one of version 1 is kept) (FR66).
+
 - A `**` in a path pattern (#51): a whole segment `**/` matches zero or more
   directories (`a/**/b` matches `a/b` and `a/x/y/b`), a `**` that ends the
   pattern matches the rest of the path (`a/**` matches everything under `a/`,

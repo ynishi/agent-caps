@@ -326,7 +326,15 @@ pub enum Known<T> {
 
 /// One slot of a state: what one temporal operator of the catalog remembers. The id is
 /// meaningful only within the catalog whose state it is.
+///
+/// The stored form of a slot's id is its number, as it is (`transparent`, so the `serde` feature
+/// adds no public way to make one). A slot's id has meaning only in the catalog that the record
+/// naming it speaks of. No rule can check it, and the only thing that reads one is the comparison
+/// of `Catalog::reads_slot`, which does not use it as an index, so a number read back is taken as
+/// a fact of that record and read only as such.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(transparent))]
 pub struct SlotId(usize);
 
 /// The temporal operators of a catalog, in a fixed order: slot `i` of a state holds what

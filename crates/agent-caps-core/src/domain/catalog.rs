@@ -233,6 +233,8 @@ use super::state::{Generation, Known, Origin, SlotId, SlotTable, State, matched}
 /// One item of a catalog: a policy, a binding of one, a classifier, or a set of them
 /// ([`super::set`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Target {
     /// The policy.
     Policy(PolicyId),
