@@ -1,0 +1,1193 @@
+{
+  "sources": {
+    "sets": [
+      {
+        "id": "5e700000-0000-7000-8000-000000000001",
+        "name": "shared",
+        "owner": "user",
+        "graph": {
+          "policies": [
+            {
+              "id": "00000000-0000-7000-8000-000000000001",
+              "name": "test-before-stop",
+              "layer": "Base",
+              "subject": "Stop",
+              "when": null,
+              "rule": {
+                "Structural": {
+                  "Once": {
+                    "select": {
+                      "filter": {
+                        "kind": "ToolUse",
+                        "cond": {
+                          "All": [
+                            {
+                              "Words": [
+                                "Command",
+                                [
+                                  "cargo",
+                                  "test"
+                                ]
+                              ]
+                            },
+                            {
+                              "Eq": [
+                                "Ok",
+                                {
+                                  "Bool": true
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      },
+                      "by": "Anyone"
+                    },
+                    "scope": {
+                      "Span": {
+                        "span": "Task",
+                        "by": "Anyone"
+                      }
+                    }
+                  }
+                }
+              },
+              "polarity": "Guard",
+              "fixtures": [
+                {
+                  "name": "untested",
+                  "events": [
+                    {
+                      "at": 1,
+                      "by": "agent",
+                      "body": "TaskStart"
+                    },
+                    {
+                      "at": 2,
+                      "by": "agent",
+                      "body": "Stop"
+                    }
+                  ],
+                  "expect": "Violated",
+                  "known_gap": false
+                },
+                {
+                  "name": "tested",
+                  "events": [
+                    {
+                      "at": 1,
+                      "by": "agent",
+                      "body": "TaskStart"
+                    },
+                    {
+                      "at": 2,
+                      "by": "agent",
+                      "body": {
+                        "ToolUse": {
+                          "tool": "Bash",
+                          "command": [
+                            "cargo",
+                            "test"
+                          ],
+                          "path": null,
+                          "ok": true
+                        }
+                      }
+                    },
+                    {
+                      "at": 3,
+                      "by": "agent",
+                      "body": "Stop"
+                    }
+                  ],
+                  "expect": "Satisfied",
+                  "known_gap": false
+                },
+                {
+                  "name": "an edit is not judged",
+                  "events": [
+                    {
+                      "at": 1,
+                      "by": "agent",
+                      "body": "TaskStart"
+                    },
+                    {
+                      "at": 2,
+                      "by": "agent",
+                      "body": {
+                        "ToolUse": {
+                          "tool": "Bash",
+                          "command": null,
+                          "path": "src/a.rs",
+                          "ok": null
+                        }
+                      }
+                    }
+                  ],
+                  "expect": "NotApplicable",
+                  "known_gap": false
+                },
+                {
+                  "name": "after a lost line",
+                  "events": [
+                    {
+                      "at": 1,
+                      "by": "agent",
+                      "body": "TaskStart"
+                    },
+                    {
+                      "at": 2,
+                      "by": "agent",
+                      "body": {
+                        "Unreadable": {
+                          "may_have_been": {
+                            "kinds": [
+                              "SessionStart",
+                              "Spawn",
+                              "TaskStart",
+                              "PromptSubmit",
+                              "ToolUse",
+                              "Stop",
+                              "Used",
+                              "ModeSwitch",
+                              "Measured",
+                              "Classified",
+                              "Adjust",
+                              "Cancel",
+                              "Judged",
+                              "Unreadable"
+                            ]
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "at": 3,
+                      "by": "agent",
+                      "body": "Stop"
+                    }
+                  ],
+                  "expect": "Unknown",
+                  "known_gap": false
+                },
+                {
+                  "name": "a gap kept to show",
+                  "events": [
+                    {
+                      "at": 1,
+                      "by": "agent",
+                      "body": "TaskStart"
+                    },
+                    {
+                      "at": 2,
+                      "by": "agent",
+                      "body": "Stop"
+                    }
+                  ],
+                  "expect": "Satisfied",
+                  "known_gap": true
+                }
+              ],
+              "author": "user"
+            },
+            {
+              "id": "00000000-0000-7000-8000-000000000002",
+              "name": "few-edits",
+              "layer": "Base",
+              "subject": "ToolUse",
+              "when": {
+                "All": [
+                  {
+                    "Now": {
+                      "Glob": [
+                        "Path",
+                        "src/**/*.rs"
+                      ]
+                    }
+                  },
+                  {
+                    "ModeIs": "bug-fix"
+                  },
+                  {
+                    "ActorUnder": "agent"
+                  }
+                ]
+              },
+              "rule": {
+                "Structural": {
+                  "Not": {
+                    "Any": [
+                      {
+                        "Not": {
+                          "Count": {
+                            "select": {
+                              "filter": {
+                                "kind": "ToolUse",
+                                "cond": {
+                                  "In": [
+                                    "Tool",
+                                    [
+                                      {
+                                        "Text": "Edit"
+                                      },
+                                      {
+                                        "Text": "Write"
+                                      }
+                                    ]
+                                  ]
+                                }
+                              },
+                              "by": "Anyone"
+                            },
+                            "scope": {
+                              "Span": {
+                                "span": "Session",
+                                "by": {
+                                  "Under": "user"
+                                }
+                              }
+                            },
+                            "cmp": "Lt",
+                            "n": 50
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "polarity": "Guard",
+              "fixtures": [],
+              "author": "user"
+            },
+            {
+              "id": "00000000-0000-7000-8000-000000000003",
+              "name": "measured",
+              "layer": "Base",
+              "subject": "Stop",
+              "when": {
+                "All": []
+              },
+              "rule": {
+                "Structural": {
+                  "All": [
+                    {
+                      "Last": {
+                        "select": {
+                          "filter": {
+                            "kind": "Measured",
+                            "cond": {
+                              "All": [
+                                {
+                                  "Eq": [
+                                    "Oracle",
+                                    {
+                                      "Text": "bench"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "Not": {
+                                    "Num": [
+                                      "Score",
+                                      "Lt",
+                                      0.1
+                                    ]
+                                  }
+                                },
+                                {
+                                  "Any": [
+                                    {
+                                      "Num": [
+                                        "Score",
+                                        "Le",
+                                        1.0
+                                      ]
+                                    },
+                                    {
+                                      "Num": [
+                                        "Score",
+                                        "Eq",
+                                        0.30000000000000004
+                                      ]
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          "by": {
+                            "Only": "agent"
+                          }
+                        },
+                        "scope": "Mode",
+                        "test": {
+                          "Num": [
+                            "Score",
+                            "Ge",
+                            0.8
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "Last": {
+                        "select": {
+                          "filter": {
+                            "kind": "Classified",
+                            "cond": {
+                              "Eq": [
+                                "Classifier",
+                                {
+                                  "Text": "commit-why@3"
+                                }
+                              ]
+                            }
+                          },
+                          "by": "Anyone"
+                        },
+                        "scope": {
+                          "Since": {
+                            "filter": {
+                              "kind": "ModeSwitch",
+                              "cond": {
+                                "Eq": [
+                                  "ModeTo",
+                                  {
+                                    "Text": "bug-fix"
+                                  }
+                                ]
+                              }
+                            },
+                            "by": {
+                              "Under": "user"
+                            }
+                          }
+                        },
+                        "test": {
+                          "Num": [
+                            "Answer",
+                            "Gt",
+                            0.5
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "Spent": {
+                        "meter": "tokens",
+                        "by": {
+                          "Under": "agent"
+                        },
+                        "scope": {
+                          "Every": 3600000
+                        },
+                        "order": "Lt",
+                        "n": 1000000.0
+                      }
+                    },
+                    {
+                      "Spent": {
+                        "meter": "cost-usd",
+                        "by": "Anyone",
+                        "scope": {
+                          "Span": {
+                            "span": "Turn",
+                            "by": {
+                              "Only": "user"
+                            }
+                          }
+                        },
+                        "order": "Le",
+                        "n": 1e-7
+                      }
+                    },
+                    {
+                      "Spent": {
+                        "meter": "tokens",
+                        "by": "Anyone",
+                        "scope": "Mode",
+                        "order": "Ge",
+                        "n": 0.0
+                      }
+                    },
+                    {
+                      "Spent": {
+                        "meter": "tokens",
+                        "by": "Anyone",
+                        "scope": "Mode",
+                        "order": "Gt",
+                        "n": 1.7976931348623157e+308
+                      }
+                    },
+                    {
+                      "Count": {
+                        "select": {
+                          "filter": {
+                            "kind": "Used",
+                            "cond": {
+                              "Eq": [
+                                "Meter",
+                                {
+                                  "Text": "tokens"
+                                }
+                              ]
+                            }
+                          },
+                          "by": "Anyone"
+                        },
+                        "scope": {
+                          "Span": {
+                            "span": "Task",
+                            "by": {
+                              "Only": "user"
+                            }
+                          }
+                        },
+                        "cmp": "Eq",
+                        "n": 3
+                      }
+                    },
+                    {
+                      "Count": {
+                        "select": {
+                          "filter": {
+                            "kind": "Judged",
+                            "cond": {
+                              "All": [
+                                {
+                                  "Eq": [
+                                    "Policy",
+                                    {
+                                      "Text": "00000000-0000-7000-8000-000000000001"
+                                    }
+                                  ]
+                                },
+                                {
+                                  "In": [
+                                    "Judgment",
+                                    [
+                                      {
+                                        "Text": "denied"
+                                      },
+                                      {
+                                        "Text": "warned"
+                                      }
+                                    ]
+                                  ]
+                                }
+                              ]
+                            }
+                          },
+                          "by": "Anyone"
+                        },
+                        "scope": "Mode",
+                        "cmp": "Le",
+                        "n": 2
+                      }
+                    },
+                    {
+                      "Count": {
+                        "select": {
+                          "filter": {
+                            "kind": "Cancel",
+                            "cond": null
+                          },
+                          "by": "Anyone"
+                        },
+                        "scope": "Mode",
+                        "cmp": "Ge",
+                        "n": 0
+                      }
+                    },
+                    {
+                      "Count": {
+                        "select": {
+                          "filter": {
+                            "kind": "Spawn",
+                            "cond": null
+                          },
+                          "by": "Anyone"
+                        },
+                        "scope": "Mode",
+                        "cmp": "Gt",
+                        "n": 0
+                      }
+                    }
+                  ]
+                }
+              },
+              "polarity": "Guard",
+              "fixtures": [],
+              "author": "user"
+            },
+            {
+              "id": "00000000-0000-7000-8000-000000000004",
+              "name": "fixed",
+              "layer": "Meta",
+              "subject": "Stop",
+              "when": null,
+              "rule": {
+                "Structural": {
+                  "All": []
+                }
+              },
+              "polarity": "Guard",
+              "fixtures": [],
+              "author": "user"
+            }
+          ],
+          "bindings": [
+            {
+              "id": "b0000000-0000-7000-8000-000000000001",
+              "policy": "00000000-0000-7000-8000-000000000001",
+              "level": "Force",
+              "mode": "Any",
+              "author": "user"
+            },
+            {
+              "id": "b0000000-0000-7000-8000-000000000002",
+              "policy": "00000000-0000-7000-8000-000000000002",
+              "level": "Advise",
+              "mode": {
+                "In": "bug-fix"
+              },
+              "author": "user"
+            },
+            {
+              "id": "b0000000-0000-7000-8000-000000000003",
+              "policy": "00000000-0000-7000-8000-000000000003",
+              "level": "Inform",
+              "mode": "Any",
+              "author": "user"
+            },
+            {
+              "id": "b0000000-0000-7000-8000-000000000004",
+              "policy": "00000000-0000-7000-8000-000000000004",
+              "level": "Advise",
+              "mode": "Any",
+              "author": "user"
+            }
+          ],
+          "classifiers": [
+            {
+              "name": "commit-why@3",
+              "author": "user",
+              "bound": {
+                "min_cases": 20,
+                "max_false_stops": 2
+              },
+              "record": {
+                "cases": 25,
+                "false_stops": 1
+              }
+            }
+          ],
+          "bound": 2592000000
+        }
+      },
+      {
+        "id": "5e700000-0000-7000-8000-000000000002",
+        "name": "project",
+        "owner": "agent",
+        "graph": {
+          "policies": [
+            {
+              "id": "00000000-0000-7000-8000-000000000005",
+              "name": "clippy-before-stop",
+              "layer": "Base",
+              "subject": "Stop",
+              "when": null,
+              "rule": {
+                "Structural": {
+                  "Once": {
+                    "select": {
+                      "filter": {
+                        "kind": "ToolUse",
+                        "cond": {
+                          "Words": [
+                            "Command",
+                            [
+                              "cargo",
+                              "clippy"
+                            ]
+                          ]
+                        }
+                      },
+                      "by": "Anyone"
+                    },
+                    "scope": {
+                      "Span": {
+                        "span": "Task",
+                        "by": "Anyone"
+                      }
+                    }
+                  }
+                }
+              },
+              "polarity": {
+                "Reward": {
+                  "bound_by": "00000000-0000-7000-8000-000000000001"
+                }
+              },
+              "fixtures": [],
+              "author": "agent"
+            }
+          ],
+          "bindings": [
+            {
+              "id": "b0000000-0000-7000-8000-000000000005",
+              "policy": "00000000-0000-7000-8000-000000000005",
+              "level": "Advise",
+              "mode": "Any",
+              "author": "agent"
+            },
+            {
+              "id": "b0000000-0000-7000-8000-000000000006",
+              "policy": "00000000-0000-7000-8000-000000000003",
+              "level": "Inform",
+              "mode": {
+                "Outside": {
+                  "modes": [
+                    "explore",
+                    "modeling"
+                  ]
+                }
+              },
+              "author": "agent"
+            }
+          ],
+          "classifiers": [
+            {
+              "name": "triage@1",
+              "author": "agent",
+              "bound": {
+                "min_cases": 5,
+                "max_false_stops": 0
+              },
+              "record": null
+            }
+          ],
+          "bound": null
+        }
+      }
+    ]
+  },
+  "authority": {
+    "links": [
+      [
+        "agent",
+        "user"
+      ],
+      [
+        "helper",
+        "agent"
+      ],
+      [
+        "user",
+        null
+      ]
+    ]
+  },
+  "events": [
+    {
+      "at": 0,
+      "by": "user",
+      "body": "SessionStart"
+    },
+    {
+      "at": 1,
+      "by": "agent",
+      "body": {
+        "Spawn": {
+          "child": "worker-1",
+          "under": "helper"
+        }
+      }
+    },
+    {
+      "at": 2,
+      "by": "agent",
+      "body": "TaskStart"
+    },
+    {
+      "at": 3,
+      "by": "user",
+      "body": "PromptSubmit"
+    },
+    {
+      "at": 4,
+      "by": "agent",
+      "body": {
+        "ToolUse": {
+          "tool": "Bash",
+          "command": [
+            "cargo",
+            "test",
+            "-p",
+            "a"
+          ],
+          "path": null,
+          "ok": true
+        }
+      }
+    },
+    {
+      "at": 5,
+      "by": "agent",
+      "body": {
+        "ToolUse": {
+          "tool": "Bash",
+          "command": null,
+          "path": "src/a b.rs",
+          "ok": false
+        }
+      }
+    },
+    {
+      "at": 6,
+      "by": "agent",
+      "body": {
+        "ToolUse": {
+          "tool": "Bash",
+          "command": null,
+          "path": null,
+          "ok": null
+        }
+      }
+    },
+    {
+      "at": 7,
+      "by": "agent",
+      "body": "Stop"
+    },
+    {
+      "at": 8,
+      "by": "agent",
+      "body": {
+        "Used": {
+          "meter": "tokens",
+          "amount": 0.30000000000000004
+        }
+      }
+    },
+    {
+      "at": 9,
+      "by": "agent",
+      "body": {
+        "Used": {
+          "meter": "cost-usd",
+          "amount": null
+        }
+      }
+    },
+    {
+      "at": 10,
+      "by": "user",
+      "body": {
+        "ModeSwitch": {
+          "to": "bug-fix"
+        }
+      }
+    },
+    {
+      "at": 11,
+      "by": "agent",
+      "body": {
+        "Cancel": {
+          "id": "a0000000-0000-7000-8000-000000000001"
+        }
+      }
+    },
+    {
+      "at": 12,
+      "by": "agent",
+      "body": {
+        "Unreadable": {
+          "may_have_been": {
+            "kinds": [
+              "SessionStart",
+              "Spawn",
+              "TaskStart",
+              "PromptSubmit",
+              "ToolUse",
+              "Stop",
+              "Used",
+              "ModeSwitch",
+              "Measured",
+              "Classified",
+              "Adjust",
+              "Cancel",
+              "Judged",
+              "Unreadable"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "at": 13,
+      "by": "agent",
+      "body": {
+        "Unreadable": {
+          "may_have_been": {
+            "kinds": [
+              "ToolUse",
+              "Stop"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "at": 100,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": 0.30000000000000004
+        }
+      }
+    },
+    {
+      "at": 100,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": 0.30000000000000004
+        }
+      }
+    },
+    {
+      "at": 101,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": 1.7976931348623157e+308
+        }
+      }
+    },
+    {
+      "at": 101,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": 1.7976931348623157e+308
+        }
+      }
+    },
+    {
+      "at": 102,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": -1.7976931348623157e+308
+        }
+      }
+    },
+    {
+      "at": 102,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": -1.7976931348623157e+308
+        }
+      }
+    },
+    {
+      "at": 103,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": 5e-324
+        }
+      }
+    },
+    {
+      "at": 103,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": 5e-324
+        }
+      }
+    },
+    {
+      "at": 104,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": -5e-324
+        }
+      }
+    },
+    {
+      "at": 104,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": -5e-324
+        }
+      }
+    },
+    {
+      "at": 105,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": 2.2250738585072014e-308
+        }
+      }
+    },
+    {
+      "at": 105,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": 2.2250738585072014e-308
+        }
+      }
+    },
+    {
+      "at": 106,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": 0.0
+        }
+      }
+    },
+    {
+      "at": 106,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": 0.0
+        }
+      }
+    },
+    {
+      "at": 107,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": -0.0
+        }
+      }
+    },
+    {
+      "at": 107,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": -0.0
+        }
+      }
+    },
+    {
+      "at": 108,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": "NaN"
+        }
+      }
+    },
+    {
+      "at": 108,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": "NaN"
+        }
+      }
+    },
+    {
+      "at": 109,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": "inf"
+        }
+      }
+    },
+    {
+      "at": 109,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": "inf"
+        }
+      }
+    },
+    {
+      "at": 110,
+      "by": "agent",
+      "body": {
+        "Measured": {
+          "oracle": "bench",
+          "score": "-inf"
+        }
+      }
+    },
+    {
+      "at": 110,
+      "by": "agent",
+      "body": {
+        "Classified": {
+          "classifier": "commit-why@3",
+          "answer": "-inf"
+        }
+      }
+    },
+    {
+      "at": 200,
+      "by": "user",
+      "body": {
+        "Judged": {
+          "policy": "00000000-0000-7000-8000-000000000001",
+          "judgment": "Allowed",
+          "written": "Inform",
+          "enforced": "Force"
+        }
+      }
+    },
+    {
+      "at": 201,
+      "by": "user",
+      "body": {
+        "Judged": {
+          "policy": "00000000-0000-7000-8000-000000000001",
+          "judgment": "Warned",
+          "written": "Advise",
+          "enforced": "Advise"
+        }
+      }
+    },
+    {
+      "at": 202,
+      "by": "user",
+      "body": {
+        "Judged": {
+          "policy": "00000000-0000-7000-8000-000000000001",
+          "judgment": "Denied",
+          "written": "Force",
+          "enforced": "Inform"
+        }
+      }
+    },
+    {
+      "at": 203,
+      "by": "user",
+      "body": {
+        "Judged": {
+          "policy": "00000000-0000-7000-8000-000000000001",
+          "judgment": "Exempted",
+          "written": "Inform",
+          "enforced": "Force"
+        }
+      }
+    },
+    {
+      "at": 204,
+      "by": "user",
+      "body": {
+        "Judged": {
+          "policy": "00000000-0000-7000-8000-000000000001",
+          "judgment": "Hit",
+          "written": "Advise",
+          "enforced": "Advise"
+        }
+      }
+    },
+    {
+      "at": 300,
+      "by": "user",
+      "body": {
+        "Adjust": {
+          "id": "a0000000-0000-7000-8000-000000000001",
+          "change": {
+            "Exempt": {
+              "guard": "00000000-0000-7000-8000-000000000001",
+              "cover": {
+                "Glob": [
+                  "Path",
+                  "docs/**"
+                ]
+              }
+            }
+          },
+          "lifetime": "Next",
+          "ends_by": 86400000,
+          "reason": "docs only"
+        }
+      }
+    },
+    {
+      "at": 301,
+      "by": "user",
+      "body": {
+        "Adjust": {
+          "id": "a0000000-0000-7000-8000-000000000002",
+          "change": {
+            "Exempt": {
+              "guard": "00000000-0000-7000-8000-000000000001",
+              "cover": null
+            }
+          },
+          "lifetime": "Timed",
+          "ends_by": 86400000,
+          "reason": "docs only"
+        }
+      }
+    },
+    {
+      "at": 302,
+      "by": "user",
+      "body": {
+        "Adjust": {
+          "id": "a0000000-0000-7000-8000-000000000003",
+          "change": {
+            "Rebind": {
+              "add": [
+                {
+                  "policy": "00000000-0000-7000-8000-000000000002",
+                  "level": "Force"
+                }
+              ],
+              "suspend": [
+                "b0000000-0000-7000-8000-000000000003"
+              ]
+            }
+          },
+          "lifetime": {
+            "Within": {
+              "Every": 60000
+            }
+          },
+          "ends_by": 86400000,
+          "reason": "docs only"
+        }
+      }
+    }
+  ]
+}

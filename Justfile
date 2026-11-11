@@ -13,15 +13,22 @@ check: rust-fmt-check rust-clippy rust-test rust-doc deny
 rust-fmt-check:
     cargo fmt --all -- --check
 
+# Clippy and the tests run with the features off and with all on: code behind a
+# feature is not built without it, and a test with `required-features` is
+# skipped without it.
 rust-clippy:
     cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 rust-test:
     cargo test --workspace
+    cargo test --workspace --all-features
 
-# The rustdoc is the documentation, so a warning in it (a broken link) fails.
+# The rustdoc is the documentation, so a warning in it (a broken link) fails. It
+# is built with all features, so the documentation of what is behind one is
+# checked too.
 rust-doc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
 
 deny:
     cargo deny check

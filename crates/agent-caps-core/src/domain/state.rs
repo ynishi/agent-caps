@@ -216,7 +216,26 @@ use super::schema::{At, EventKind, Judgment, Nature};
 /// catalog keeps the name ([`super::catalog::Catalog::change`]). Shared, so that each state a
 /// catalog starts or a transaction copies carries it without copying the text.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct Lineage(Arc<str>);
+
+/// The stored form of a lineage is its text, read back through [`Lineage::new`].
+#[cfg(feature = "serde")]
+impl TryFrom<String> for Lineage {
+    type Error = EmptyLineage;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::new(&text)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<Lineage> for String {
+    fn from(lineage: Lineage) -> Self {
+        lineage.as_str().to_owned()
+    }
+}
 
 /// A lineage that is empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

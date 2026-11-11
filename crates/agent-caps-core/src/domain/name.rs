@@ -68,6 +68,8 @@ impl std::error::Error for NameError {}
 /// The surrogate key of a policy. The policy graph that defines a policy gives it; the domain
 /// never makes one, so it holds no source of randomness or time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct PolicyId(u128);
 
 impl FromStr for PolicyId {
@@ -93,6 +95,8 @@ impl fmt::Display for PolicyId {
 /// binding or conflict ([`super::set`]), and a binding of one set is changed only by a new version
 /// of that set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct BindingId(u128);
 
 impl FromStr for BindingId {
@@ -115,6 +119,8 @@ impl fmt::Display for BindingId {
 /// The surrogate key of a temporary adjustment, unique among the adjustments in effect. The one who
 /// makes the adjustment gives it, so a later claim can cancel that adjustment and no other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct AdjustmentId(u128);
 
 impl FromStr for AdjustmentId {
@@ -178,6 +184,8 @@ fn is_name_char(c: char) -> bool {
 /// The name of a policy, for the people who read a verdict. Two policies of a catalog never
 /// share one; the id, not the name, is what other values refer to.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct PolicyName(String);
 
 impl FromStr for PolicyName {
@@ -202,6 +210,8 @@ impl fmt::Display for PolicyName {
 /// binding may hold only inside a mode, or only outside some, so the mode decides which bindings
 /// take effect.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct Mode(String);
 
 impl FromStr for Mode {
@@ -228,6 +238,8 @@ impl fmt::Display for Mode {
 /// ([`Field::Meter`](super::schema::Field::Meter)), the same text it holds, so whether two meters
 /// are the same is one comparison of that text.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct Meter(String);
 
 impl Meter {
@@ -264,6 +276,8 @@ impl fmt::Display for Meter {
 /// It is a name (ASCII letters, digits, `-` and `_`) that may also hold `@`, which sets the version
 /// apart by convention and carries no meaning of its own.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct ClassifierName(String);
 
 impl ClassifierName {
@@ -294,6 +308,11 @@ impl fmt::Display for ClassifierName {
 /// A command as its words, the program first. A command is compared word by word, never as one
 /// string, so quoting and spacing cannot make one command look like another.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    serde(try_from = "Vec<String>", into = "Vec<String>")
+)]
 pub struct CommandWords(Vec<String>);
 
 impl CommandWords {
@@ -332,6 +351,8 @@ impl CommandWords {
 /// compiled form are shared behind one pointer, so a pattern is no larger than a pointer in the
 /// conditions and events that hold it.
 #[derive(Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct GlobPattern(std::sync::Arc<Glob>);
 
 /// The text of a pattern and what it compiles to.
@@ -392,6 +413,8 @@ impl fmt::Debug for GlobPattern {
 /// Why someone made an exemption. It is required, so the exemptions of a guard can be counted
 /// by their reason and a guard that is too strong can be told from one that was overlooked.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 pub struct Reason(String);
 
 impl FromStr for Reason {
@@ -409,6 +432,79 @@ impl FromStr for Reason {
 impl fmt::Display for Reason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// The stored form of the values that are made from a text: that text. Decoding goes through the
+/// type's `FromStr`, so the rule of the type is checked once, where it is written; encoding writes
+/// what `Display` shows. `serde` takes both as `TryFrom<String>` and `From<T> for String`
+/// (`transparent` is not used: it would fill the private field without the rule).
+#[cfg(feature = "serde")]
+macro_rules! stored_as_text {
+    ($($ty:ty),+ $(,)?) => {$(
+        impl TryFrom<String> for $ty {
+            type Error = NameError;
+
+            fn try_from(text: String) -> Result<Self, Self::Error> {
+                text.parse()
+            }
+        }
+
+        impl From<$ty> for String {
+            fn from(value: $ty) -> Self {
+                value.to_string()
+            }
+        }
+    )+};
+}
+
+#[cfg(feature = "serde")]
+pub(super) use stored_as_text;
+
+#[cfg(feature = "serde")]
+stored_as_text!(
+    PolicyId,
+    BindingId,
+    AdjustmentId,
+    PolicyName,
+    Mode,
+    Meter,
+    ClassifierName,
+    Reason,
+);
+
+/// The stored form of a pattern is its text, read back through [`GlobPattern::new`].
+#[cfg(feature = "serde")]
+impl TryFrom<String> for GlobPattern {
+    type Error = NameError;
+
+    fn try_from(text: String) -> Result<Self, Self::Error> {
+        Self::new(&text)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<GlobPattern> for String {
+    fn from(pattern: GlobPattern) -> Self {
+        pattern.as_str().to_owned()
+    }
+}
+
+/// The stored form of command words is the words, not one text, so a word with a space in it
+/// comes back as it was; they are read back through [`CommandWords::new`].
+#[cfg(feature = "serde")]
+impl TryFrom<Vec<String>> for CommandWords {
+    type Error = NameError;
+
+    fn try_from(words: Vec<String>) -> Result<Self, Self::Error> {
+        Self::new(words)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl From<CommandWords> for Vec<String> {
+    fn from(words: CommandWords) -> Self {
+        words.words().to_vec()
     }
 }
 

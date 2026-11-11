@@ -41,7 +41,10 @@
 //! are kept so by `arch-lint.toml`. `event`
 //! reads `authority` for the principal an event is by, and `adjust` reads it for whether the maker
 //! of a temporary binding is within its policy's author's work. `authority` knows nothing of the others,
-//! and `arch-lint.toml` keeps it so. `catalog` does not use `tx`: the transaction is built on the
+//! and `arch-lint.toml` keeps it so. Behind the `serde` feature, `stored` is as low as `authority`
+//! (the version of the stored form, the error of a value of several parts, the form of a number
+//! that is not finite), kept so the same way, and each module that holds a type with a private
+//! field keeps the stored form of that type beside it. `catalog` does not use `tx`: the transaction is built on the
 //! catalog, and [`catalog::Catalog::accept`], which folds the fixtures with it, lives in `tx`.
 //! `change` reads `tx` too: a change of the catalog and a claim are judged by the one function of
 //! how the rules move (`tx::checks`).
@@ -111,4 +114,6 @@ pub mod predicate;
 pub mod schema;
 pub mod set;
 pub mod state;
+#[cfg(feature = "serde")]
+pub mod stored;
 pub mod tx;
