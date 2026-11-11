@@ -89,6 +89,7 @@ fn an_ill_typed_exemption_takes_no_effect() {
                 claim,
                 &TxPolicy::standard(),
             )
+            .unwrap()
             .inadmissible
     };
     assert!(matches!(

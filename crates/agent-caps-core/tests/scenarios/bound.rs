@@ -26,7 +26,8 @@ use agent_caps_core::domain::tx::{TxDecision, TxPolicy, TxReport};
 
 use super::common::{
     DAY, GUARD, adjustment_by, anyone, at, catalog, commit_filter, declaring, default_bound,
-    exempt_n_by, graph_of, id, set, set_id, test_guard, the_agent, the_user, verdict, violated,
+    exempt_n_by, graph_of, id, lineage, set, set_id, test_guard, the_agent, the_user, verdict,
+    violated,
 };
 
 /// The scenarios' bound, in milliseconds.
@@ -70,17 +71,20 @@ fn raise_until(n: u8, ends_by: i64) -> Body {
 
 /// The transaction of `event` after `before`, folded from a whole history.
 fn admit(catalog: &Catalog, before: &[Event], event: &Event) -> TxReport {
-    catalog.admit(
-        &catalog.fold(Origin::Genesis, before),
-        event,
-        &TxPolicy::standard(),
-    )
+    catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, before),
+            event,
+            &TxPolicy::standard(),
+        )
+        .unwrap()
 }
 
 /// The effect of the test guard in the state.
 fn effect_in(catalog: &Catalog, state: &State) -> Effect {
     catalog
         .effective_in(state)
+        .unwrap()
         .policies
         .iter()
         .find(|p| p.policy.id() == id(GUARD))
@@ -145,7 +149,9 @@ fn a_window_longer_than_the_bound_is_refused_with_or_without_a_clock() {
     ];
     for state in &states {
         let refused = at(the_agent(), 0, raise_by(1, in_window(long), BOUND));
-        let report = catalog.admit(state, &refused, &TxPolicy::standard());
+        let report = catalog
+            .admit(state, &refused, &TxPolicy::standard())
+            .unwrap();
         assert_eq!(report.decision, TxDecision::Abort);
         assert_eq!(
             report.inadmissible,
@@ -156,7 +162,9 @@ fn a_window_longer_than_the_bound_is_refused_with_or_without_a_clock() {
         );
 
         let admitted = at(the_agent(), 0, raise_by(1, in_window(just_within), BOUND));
-        let report = catalog.admit(state, &admitted, &TxPolicy::standard());
+        let report = catalog
+            .admit(state, &admitted, &TxPolicy::standard())
+            .unwrap();
         assert_eq!(report.decision, TxDecision::Commit);
     }
 }
@@ -344,7 +352,8 @@ fn declared(
 }
 
 fn accept(sets: Vec<Source>, authority: Authority) -> Result<Catalog, Vec<AcceptError>> {
-    Catalog::accept(Sources::new(sets).unwrap(), authority).map_err(|rejected| rejected.0)
+    Catalog::accept(Sources::new(sets).unwrap(), authority, lineage())
+        .map_err(|rejected| rejected.0)
 }
 
 /// The bound is a positive length.

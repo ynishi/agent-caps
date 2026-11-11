@@ -19,8 +19,9 @@ use agent_caps_core::domain::tx::{FindingDetail, TxDecision, TxPolicy};
 
 use super::common::{
     GUARD, OTHER, REWARD, Written, accept, agent, anyone, at, authority, bind, binding_id,
-    by_author, by_author_declaring, catalog, clippy_reward, graph_of, id, inside, mode, outcome,
-    outside, rejected, set_id, test_guard, tested, the_agent, the_helper, the_user, verdict,
+    by_author, by_author_declaring, catalog, clippy_reward, graph_of, id, inside, lineage, mode,
+    outcome, outside, rejected, set_id, test_guard, tested, the_agent, the_helper, the_user,
+    verdict,
 };
 
 const AGENT_REWARD: &str = "00000000-0000-7000-8000-000000000004";
@@ -600,11 +601,13 @@ fn an_unnamed_read_does_not_count_the_judgments_of_a_policy_below() {
         agent(Body::Stop),
     ];
     let record = denial(OTHER, the_agent());
-    let report = catalog.admit(
-        &catalog.fold(Origin::Genesis, &before),
-        &record,
-        &TxPolicy::standard(),
-    );
+    let report = catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, &before),
+            &record,
+            &TxPolicy::standard(),
+        )
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Commit);
     assert!(report.uncovered.is_empty());
 
@@ -1117,6 +1120,7 @@ fn two_roots_do_not_cover_each_other() {
             &roots,
         ),
         two_roots,
+        lineage(),
     )
     .unwrap();
 
@@ -1206,6 +1210,7 @@ fn a_catalog_accepted_again_with_a_new_hierarchy_uses_it() {
     let beside = Catalog::accept(
         by_author_declaring(graph.clone(), &roots),
         two_roots.clone(),
+        lineage(),
     )
     .unwrap();
     assert_eq!(beside.authority(), &two_roots);
@@ -1220,7 +1225,8 @@ fn a_catalog_accepted_again_with_a_new_hierarchy_uses_it() {
     );
 
     // The agent's set is owned by one the hierarchy does not have, and so are its items.
-    let errors = Catalog::accept(by_author(graph), Authority::single(the_user())).unwrap_err();
+    let errors =
+        Catalog::accept(by_author(graph), Authority::single(the_user()), lineage()).unwrap_err();
     assert_eq!(
         errors.0,
         vec![

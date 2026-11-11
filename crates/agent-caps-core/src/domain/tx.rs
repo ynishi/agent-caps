@@ -8,6 +8,8 @@
 //!
 //! ```text
 //! Catalog::apply_with(state, event, &TxPolicy)
+//!   Catalog::owns(&state)                        a state of another generation is refused
+//!                                                  (apply gives it back); fold starts its own
 //!   carried = state.carry(event, index)          what the past and the time bring; an act
 //!                                                  advances the clock, a claim does not; kept
 //!   act   → carried.step(event)                  not judged
@@ -72,6 +74,11 @@
 //! - One function decides every claim: [`Catalog::apply`], [`Catalog::apply_with`],
 //!   [`Catalog::fold`], [`Catalog::fold_with`], [`Catalog::admit`] and the check of the fixtures
 //!   in [`Catalog::accept`] all go through it, so an example is folded as a run is.
+//! - A check is handed only a state of the catalog it judges by. The transaction makes the
+//!   [`TxInput`], and only after [`Catalog::owns`] has found the state to be the catalog's
+//!   ([`Catalog::apply`], [`Catalog::apply_with`] and [`Catalog::admit`] ask it; a fold starts
+//!   its own state), and a check reads the input by getters; so what a check reads of the rules
+//!   in effect ([`TxInput::effective_before`], [`TxInput::effective_after`]) is of that catalog.
 //! - Within one catalog, the hierarchy and the authors do not change, so a claim comes to the
 //!   same wherever in a fold it is seen, under the same [`TxPolicy`]. After
 //!   [`Catalog::change`], folding the same events again may give a past claim another result:
@@ -79,19 +86,20 @@
 
 pub mod checks;
 
+use std::borrow::Cow;
 use std::fmt;
 
 use checks::RuleMove;
 
 use super::adjust::Inadmissible;
 use super::authority::{Authority, NotCovered, Principal};
-use super::catalog::{AcceptError, Catalog, Rejected};
+use super::catalog::{AcceptError, Catalog, Effective, Rejected, StaleState};
 use super::event::Event;
 use super::name::{AdjustmentId, PolicyId};
 use super::policy::{Expect, Finding};
 use super::schema::Nature;
 use super::set::Sources;
-use super::state::{Origin, SlotId, State, StateChange};
+use super::state::{Generation, Lineage, Origin, SlotId, State, StateChange};
 
 /// One point of view on the difference a claim makes. The domain's own checks and the ones a
 /// [`TxPolicy`] adds both implement it.
@@ -102,18 +110,64 @@ pub trait AdjustmentCheck {
 }
 
 /// What a check is given: the claim, and the state before and after it.
+///
+/// Only the transaction makes one, after the catalog has found the state to be its own
+/// ([`Catalog::owns`]), so a check is never handed a state of another catalog or generation.
 #[derive(Debug, Clone, Copy)]
 pub struct TxInput<'a> {
+    catalog: &'a Catalog,
+    event: &'a Event,
+    before: &'a State,
+    after: &'a State,
+    changes: &'a [StateChange],
+}
+
+impl<'a> TxInput<'a> {
     /// The catalog the claim is judged by.
-    pub catalog: &'a Catalog,
+    pub fn catalog(&self) -> &'a Catalog {
+        self.catalog
+    }
+
     /// The claim.
-    pub event: &'a Event,
+    pub fn event(&self) -> &'a Event {
+        self.event
+    }
+
     /// The state carried to the claim, before it.
-    pub before: &'a State,
-    /// The state with the claim applied, on a copy.
-    pub after: &'a State,
+    pub fn before(&self) -> &'a State {
+        self.before
+    }
+
+    /// The state with the claim applied, on a copy. Its adjustments are those of the claim's own
+    /// moment; what the next event finds is [`TxInput::effective_after`].
+    pub fn after(&self) -> &'a State {
+        self.after
+    }
+
     /// The differences between the two.
-    pub changes: &'a [StateChange],
+    pub fn changes(&self) -> &'a [StateChange] {
+        self.changes
+    }
+
+    /// What takes effect before the claim: [`Catalog::effective_in`] of the state carried to it,
+    /// as it is.
+    pub fn effective_before(&self) -> Effective<'a> {
+        self.catalog.effective_in_owned(self.before)
+    }
+
+    /// What takes effect after the claim, as the next event finds it: an adjustment that lasts
+    /// within a scope the claim closed is gone, since it ends with the claim. The same reading
+    /// that [`checks::RuleCheck`] compares the rules with.
+    pub fn effective_after(&self) -> Effective<'a> {
+        self.catalog.effective_in_owned(&self.after_as_found())
+    }
+
+    /// The state after the claim as the next event finds it ([`State::with_closed_scopes_ended`]):
+    /// the one place the state after a claim is read, for [`TxInput::effective_after`] and for
+    /// [`checks::RuleCheck`].
+    fn after_as_found(&self) -> Cow<'a, State> {
+        self.after.with_closed_scopes_ended()
+    }
 }
 
 /// The name of a check, as it appears in its findings.
@@ -309,8 +363,29 @@ impl Catalog {
     /// A single graph is accepted as one set:
     /// `Sources::new(vec![Source { id, name, owner, graph }])`, with an owner every author of the graph
     /// is below or is.
-    pub fn accept(sources: Sources, authority: Authority) -> Result<Self, Rejected> {
-        let catalog = Self::accept_structure(sources, authority)?;
+    ///
+    /// A catalog accepted from nothing starts the lineage `lineage`, which the caller names, at
+    /// generation 0 ([`Catalog::generation`]). The domain makes no name of its own: it has no
+    /// source of randomness. Accepting two catalogs under one lineage makes two of generation 0
+    /// that cannot tell each other's states apart, so a lineage is named once; that is the
+    /// application's to keep.
+    pub fn accept(
+        sources: Sources,
+        authority: Authority,
+        lineage: Lineage,
+    ) -> Result<Self, Rejected> {
+        Self::accept_as(sources, authority, Generation::first(lineage))
+    }
+
+    /// [`Catalog::accept`] at `generation`: the one constructor, so the generation is fixed before
+    /// the fixtures are folded, and the states they fold carry it. A change keeps its parent's
+    /// lineage and goes one on ([`Catalog::change`]).
+    pub(super) fn accept_as(
+        sources: Sources,
+        authority: Authority,
+        generation: Generation,
+    ) -> Result<Self, Rejected> {
+        let catalog = Self::accept_structure(sources, authority, generation)?;
         let errors = fixture_errors(&catalog);
         if errors.is_empty() {
             Ok(catalog)
@@ -325,13 +400,27 @@ impl Catalog {
     /// binding stronger than its policy may be bound or by one not within its author's work, a
     /// rebinding for the next judgment or one that changes nothing, a cancel of an id not held)
     /// is aborted, and [`Catalog::admit`] reports why.
-    pub fn apply(&self, state: State, event: &Event) -> State {
+    ///
+    /// A state of another generation is refused ([`Catalog::owns`]), and comes back in the error.
+    pub fn apply(&self, state: State, event: &Event) -> Result<State, StaleApply> {
         self.apply_with(state, event, &TxPolicy::standard())
     }
 
-    /// The state after `event`, a claim judged with `policy`.
-    pub fn apply_with(&self, state: State, event: &Event, policy: &TxPolicy) -> State {
-        transact(self, state, event, policy).0
+    /// The state after `event`, a claim judged with `policy`. A state of another generation is
+    /// refused ([`Catalog::owns`]), and comes back in the error.
+    pub fn apply_with(
+        &self,
+        state: State,
+        event: &Event,
+        policy: &TxPolicy,
+    ) -> Result<State, StaleApply> {
+        if let Err(stale) = self.owns(&state) {
+            return Err(StaleApply {
+                stale,
+                state: Box::new(state),
+            });
+        }
+        Ok(transact(self, state, event, policy).0)
     }
 
     /// The state after `events`, from the start as `origin` says the fold knows the past
@@ -348,21 +437,50 @@ impl Catalog {
         events: impl IntoIterator<Item = &'e Event>,
         policy: &TxPolicy,
     ) -> State {
+        // The fold starts the state itself, so it is the catalog's and needs no check.
         events.into_iter().fold(self.start(origin), |state, event| {
-            self.apply_with(state, event, policy)
+            transact(self, state, event, policy).0
         })
     }
 
     /// The transaction of `event` after `state`, as a decision and every finding, by the same
     /// function that [`Catalog::apply_with`] folds with: what an adapter shows when a claim did
-    /// not take effect.
-    pub fn admit(&self, state: &State, event: &Event, policy: &TxPolicy) -> TxReport {
-        transact(self, state.clone(), event, policy).1
+    /// not take effect. A state of another generation is refused ([`Catalog::owns`]).
+    pub fn admit(
+        &self,
+        state: &State,
+        event: &Event,
+        policy: &TxPolicy,
+    ) -> Result<TxReport, StaleState> {
+        self.owns(state)?;
+        Ok(transact(self, state.clone(), event, policy).1)
     }
 }
 
+/// A state that an event could not be applied to because it is not the catalog's
+/// ([`Catalog::owns`]), with the state given back: [`Catalog::apply`] takes the state by value,
+/// and a caller that has no other copy must not lose it to a refusal.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaleApply {
+    /// Why the state is not the catalog's.
+    pub stale: StaleState,
+    /// The state that was given, unchanged. Boxed so that the error stays small beside the
+    /// state the success carries.
+    pub state: Box<State>,
+}
+
+impl fmt::Display for StaleApply {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.stale.fmt(f)
+    }
+}
+
+impl std::error::Error for StaleApply {}
+
 /// The one function that decides whether an event takes effect: the state after it, and the
-/// report of its transaction. See the module doc for the steps.
+/// report of its transaction. See the module doc for the steps. It does not check that the state
+/// is the catalog's: it is reached only from an entry that has ([`Catalog::owns`]) or from a
+/// fold, which starts the state itself, and it is the only place a [`TxInput`] is made.
 fn transact(
     catalog: &Catalog,
     state: State,

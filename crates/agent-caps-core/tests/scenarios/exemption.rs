@@ -79,7 +79,7 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
 
     // `Next` is used up by the judgment it covered.
     let state = catalog.fold(Origin::Genesis, &next);
-    let outcome = judge(&catalog, &state, &next[2], &Capabilities::full());
+    let outcome = judge(&catalog, &state, &next[2], &Capabilities::full()).unwrap();
     let mut events = next.to_vec();
     events.extend(outcome.evidence(At::from_millis(1)));
     events.push(edit("src/a.rs"));
@@ -269,11 +269,13 @@ fn an_exemption_claimed_after_its_end_by_adds_nothing() {
         200,
         exempt_n_by(1, GUARD, None, Lifetime::Timed, At::from_millis(100)),
     );
-    let report = catalog.admit(
-        &catalog.fold(Origin::Genesis, [&start]),
-        &late,
-        &TxPolicy::standard(),
-    );
+    let report = catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, [&start]),
+            &late,
+            &TxPolicy::standard(),
+        )
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(report.inadmissible, Some(Inadmissible::Expired));
     assert!(report.findings.is_empty(), "{:?}", report.findings);
@@ -299,11 +301,13 @@ fn no_exemption_covers_a_meta_guard() {
         }),
     ));
     let start = agent(Body::TaskStart);
-    let report = catalog.admit(
-        &catalog.fold(Origin::Genesis, [&start]),
-        &exempt,
-        &TxPolicy::standard(),
-    );
+    let report = catalog
+        .admit(
+            &catalog.fold(Origin::Genesis, [&start]),
+            &exempt,
+            &TxPolicy::standard(),
+        )
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
     assert_eq!(report.inadmissible, Some(Inadmissible::Meta(id(GUARD))));
     assert!(matches!(

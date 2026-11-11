@@ -63,7 +63,7 @@ fn cannot_stop_ahead() -> Capabilities {
 /// The outcome on the last event, with the state folded over all of them, on a platform.
 fn judged_on(catalog: &Catalog, events: &[Event], caps: &Capabilities) -> Outcome {
     let state = catalog.fold(Origin::Genesis, events);
-    judge(catalog, &state, events.last().unwrap(), caps)
+    judge(catalog, &state, events.last().unwrap(), caps).unwrap()
 }
 
 fn commit() -> [Event; 2] {

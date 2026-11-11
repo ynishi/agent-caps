@@ -96,7 +96,7 @@ fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     let mut events = vec![agent(Body::SessionStart), agent(Body::TaskStart)];
     let stop = agent(Body::Stop);
     let state = catalog.fold(Origin::Genesis, events.iter().chain([&stop]));
-    let first = judge(&catalog, &state, &stop, &Capabilities::full());
+    let first = judge(&catalog, &state, &stop, &Capabilities::full()).unwrap();
     assert!(matches!(first.verdict, Verdict::Deny(_)));
     let evidence = first.evidence(At::from_millis(1));
     assert!(evidence.iter().all(|e| e.by == the_user()));

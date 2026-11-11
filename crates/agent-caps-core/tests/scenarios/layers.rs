@@ -108,7 +108,9 @@ fn a_mode_changes_the_level_and_a_lowering_switch_needs_the_guards_author() {
     );
     assert_eq!(state.mode(), &Known::Unknown);
     assert!(matches!(
-        judge(&catalog, &state, &stop, &Capabilities::full()).verdict,
+        judge(&catalog, &state, &stop, &Capabilities::full())
+            .unwrap()
+            .verdict,
         Verdict::Deny(_)
     ));
 }

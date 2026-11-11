@@ -28,6 +28,7 @@ fn verdict_from(catalog: &Catalog, origin: Origin, events: &[Event]) -> Verdict 
         events.last().unwrap(),
         &Capabilities::full(),
     )
+    .unwrap()
     .verdict
 }
 
@@ -37,6 +38,7 @@ fn guard_from(catalog: &Catalog, origin: Origin, events: &[Event]) -> (Effect, V
     let state = catalog.fold(origin, events);
     let effect = catalog
         .effective_in(&state)
+        .unwrap()
         .policies
         .iter()
         .find(|p| p.policy.id() == id(GUARD))

@@ -23,8 +23,8 @@ use agent_caps_core::domain::set::{JoinConflict, SetId, Source, Sources, Sources
 
 use super::common::{
     GUARD, OTHER, REWARD, Written, agent, authority, bash, bind, binding_id, clippy_reward,
-    declaring, default_bound, graph_of, id, outcome, push_after_allowed, set, set_id, set_name,
-    set_pair, test_guard, the_agent, the_user, violated, written,
+    declaring, default_bound, graph_of, id, lineage, outcome, push_after_allowed, set, set_id,
+    set_name, set_pair, test_guard, the_agent, the_user, violated, written,
 };
 
 const PROJECT_GUARD: &str = "00000000-0000-7000-8000-000000000004";
@@ -83,7 +83,7 @@ fn sources(sets: Vec<Source>) -> Sources {
 }
 
 fn accept(sets: Vec<Source>) -> Result<Catalog, Vec<AcceptError>> {
-    Catalog::accept(sources(sets), authority()).map_err(|rejected| rejected.0)
+    Catalog::accept(sources(sets), authority(), lineage()).map_err(|rejected| rejected.0)
 }
 
 /// The conflicts of sets that do not compose, as each clash with its pair of sets.
@@ -293,7 +293,7 @@ fn two_sets_with_the_same_item_hold_it_once_and_removing_one_keeps_it() {
     let both = sources(vec![shared(Level::Force), copy]);
     assert_eq!(both.compose().unwrap(), shared_graph(Level::Force));
 
-    let catalog = Catalog::accept(both, authority()).unwrap();
+    let catalog = Catalog::accept(both, authority(), lineage()).unwrap();
     let without_copy = catalog.sources().without(&set_id("copy")).unwrap();
     let after = catalog.change(without_copy, &the_user()).unwrap();
     assert_eq!(after.graph(), catalog.graph());
@@ -460,7 +460,7 @@ fn a_set_with_a_meta_policy_cannot_be_added_by_a_change() {
             .unwrap_err(),
         ChangeRejected::Meta(vec![id(OTHER)])
     );
-    let three = Catalog::accept(with_copy, authority()).unwrap();
+    let three = Catalog::accept(with_copy, authority(), lineage()).unwrap();
     assert_eq!(
         three
             .change(three.sources().without(&copy.id).unwrap(), &the_user())

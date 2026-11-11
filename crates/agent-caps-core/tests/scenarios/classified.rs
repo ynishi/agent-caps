@@ -31,8 +31,8 @@ use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
     GUARD, Written, anyone, at, authority, base_of, bash, commit_filter, declaring, default_bound,
-    fixture, id, listed, outcome, set, set_pair, the_agent, the_user, verdict, violated, words,
-    written,
+    fixture, id, lineage, listed, outcome, set, set_pair, the_agent, the_user, verdict, violated,
+    words, written,
 };
 
 /// The classifier of the commit message, by name and version.
@@ -151,7 +151,7 @@ fn users(name: &str, policies: Vec<Written>, classifiers: Vec<Classifier>) -> So
 }
 
 fn accept(sets: Vec<Source>) -> Result<Catalog, Rejected> {
-    Catalog::accept(Sources::new(sets).unwrap(), authority())
+    Catalog::accept(Sources::new(sets).unwrap(), authority(), lineage())
 }
 
 /// The catalog of the user's guard at `level` and the user's declaration with `record`, in one set.
@@ -230,11 +230,13 @@ fn an_answer_the_agent_writes_is_not_counted() {
     let catalog = catalog_with(Level::Force, Some(enough()));
     let forged = answer_by(the_agent(), 0.9);
     assert_eq!(verdict(&catalog, &[forged.clone(), commit()]), violated());
-    let report = catalog.admit(
-        &catalog.start(Origin::Genesis),
-        &forged,
-        &TxPolicy::standard(),
-    );
+    let report = catalog
+        .admit(
+            &catalog.start(Origin::Genesis),
+            &forged,
+            &TxPolicy::standard(),
+        )
+        .unwrap();
     assert_eq!(report.decision, TxDecision::Abort);
     assert!(!report.uncovered.is_empty());
     // A low answer by the agent does not take away the user's high one either.
@@ -258,6 +260,7 @@ fn without_a_record_the_force_guard_is_enforced_at_advise_and_reported() {
     assert_eq!(
         catalog
             .effective_in(&catalog.start(Origin::Genesis))
+            .unwrap()
             .degraded,
         expected
     );
@@ -346,6 +349,7 @@ fn a_sufficient_record_leaves_the_guard_at_force() {
     assert!(
         catalog
             .effective_in(&catalog.start(Origin::Genesis))
+            .unwrap()
             .degraded
             .is_empty()
     );
@@ -499,7 +503,9 @@ fn declarations_with_different_content_clash_on_composition() {
     assert_eq!(conflicts[0].sets(), &set_pair("a", "b"));
 
     // The catalog refuses the sets for it.
-    let errors = Catalog::accept(different, authority()).unwrap_err().0;
+    let errors = Catalog::accept(different, authority(), lineage())
+        .unwrap_err()
+        .0;
     assert!(matches!(errors.as_slice(), [AcceptError::Conflict(_)]));
 }
 
@@ -598,6 +604,7 @@ fn a_policy_that_judges_answers_is_lowered_while_its_classifier_is_uncalibrated(
     assert_eq!(
         catalog
             .effective_in(&catalog.start(Origin::Genesis))
+            .unwrap()
             .degraded,
         vec![uncalibrated(Shortfall::Missing)]
     );
