@@ -82,10 +82,9 @@ impl Judgment {
 macro_rules! event_kinds {
     ($($(#[$doc:meta])* $kind:ident,)+) => {
         /// The kinds of event, without their values: what a policy judges, and what a temporal
-        /// operator looks for. New kinds are added as the model grows, so a match on it outside
-        /// this crate needs a wildcard arm.
+        /// operator looks for. New kinds are added as the model grows; a match on it outside this
+        /// crate lists every kind, so a new one stops it compiling until it is handled.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        #[non_exhaustive]
         pub enum EventKind {
             $($(#[$doc])* $kind,)+
         }
@@ -218,7 +217,6 @@ impl FromIterator<EventKind> for KindSet {
 
 /// A value a predicate can read from an event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum Field {
     /// The tool of a [`EventKind::ToolUse`] (text).
     Tool,

@@ -336,7 +336,6 @@ pub struct Classifier {
 
 /// How a policy judges. New ways are added as the model grows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Rule {
     /// A predicate, judged the same way every time from the same events.
     Structural(Pred),

@@ -33,8 +33,8 @@ pub struct Event {
     pub body: Body,
 }
 
-/// What happened. New kinds are added as the model grows, so a match on it outside this crate
-/// needs a wildcard arm.
+/// What happened. New kinds are added as the model grows; a match on it outside this crate lists
+/// every kind, so a new one stops it compiling until it is handled.
 ///
 /// Two bodies are equal when they are the same event, the score of a measurement and the answer of
 /// a classifier compared as a number with every NaN equal to every NaN: a NaN score is the same as
@@ -42,7 +42,6 @@ pub struct Event {
 /// So the equality is total ([`Eq`]): a slot of the state that holds an event is not taken for
 /// changed when it was not touched, and a fixture, and the policy that holds it, equals itself.
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum Body {
     /// A session started.
     SessionStart,
