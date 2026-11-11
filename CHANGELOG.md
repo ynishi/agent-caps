@@ -10,6 +10,27 @@ and this project adheres to
 
 ### Added
 
+- The core's `application` (#66): the use cases around the model, as pure as
+  the domain, over one port, `Log`, of streams that are only appended to and
+  written only when as long as when read (compare and swap). `Service` keeps
+  the catalog as a line of records (a genesis, a change, a proposal, its
+  approval or rejection) and replays it from the last genesis; a catalog the
+  running version cannot replay stops what is judged ahead and opens a new
+  lineage to a root of the last genesis (FR62). It judges and writes an
+  observation by its watch (judged ahead, gated, read back), each record of a
+  worktree's stream an act or a claim with whether it took effect, and takes
+  in a racing writer without waiting; a retry of an act or a request is not
+  written twice, and a request's result is answered again from its record
+  (FR63). An operation that writes (init, rebase, change, import, approve,
+  reject, task) is taken from a tool call, a prompt or an attested prompt by
+  one table, a prompt the platform cannot show the user typed judged as the
+  platform's agent (FR64). A tool use whose path is not in the one form is
+  judged as a record that could not be read (FR65). The answers for a hook
+  (`Response`) keep why, and decide whether a failure stops. `arch-lint.toml`
+  keeps the application free of I/O, a clock, randomness, a runtime and shared
+  mutable state, and the domain free of the application. No dependency is
+  added.
+
 - A `serde` feature of the core, off by default, that encodes the records of a
   catalog (`Sources`, `Authority`) and the events behind a state (#65). A value
   with a checking constructor (a name, an id, `Authority`, `Sources`,

@@ -33,6 +33,37 @@ deny = [
 ]
 message = "domain is pure: take I/O, time and randomness as values; the umbrella crate's adapters read them."
 
+[[restrict-use]]
+name = "domain-knows-no-application"
+scope = "domain"
+deny = ["crate::application", "crate::application::**"]
+message = "the domain is the top of the dependencies: the application uses it, never the other way."
+
+[[scopes]]
+name = "application"
+paths = ["crates/agent-caps-core/src/application/**"]
+
+[[restrict-use]]
+name = "application-is-pure"
+scope = "application"
+deny = [
+    # The I/O, time and randomness the domain refuses.
+    "std::fs", "std::fs::**",
+    "std::process", "std::process::**",
+    "std::env", "std::env::**",
+    "std::net", "std::net::**",
+    "std::time::SystemTime", "std::time::Instant",
+    "rand", "rand::**", "git2", "git2::**", "reqwest", "reqwest::**",
+    "chrono::Utc::now", "chrono::Local::now",
+    # No runtime of its own, and no shared mutable state.
+    "tokio", "tokio::**", "async_std", "async_std::**", "smol", "smol::**",
+    "futures::executor", "futures::executor::**",
+    "std::thread", "std::thread::**", "std::sync::Mutex", "std::sync::RwLock",
+    "std::sync::OnceLock", "std::sync::LazyLock", "std::sync::atomic", "std::sync::atomic::**",
+    "parking_lot", "parking_lot::**",
+]
+message = "application is pure: it holds the port and the use cases. I/O, time, randomness, a runtime and shared mutable state live behind the Log port or with the caller."
+
 [[scopes]]
 name = "authority"
 paths = ["crates/agent-caps-core/src/domain/authority.rs"]
