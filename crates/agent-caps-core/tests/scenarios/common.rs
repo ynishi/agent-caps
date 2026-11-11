@@ -7,10 +7,14 @@
 //! A scenario writes a policy with the level its own author puts it into effect at under every
 //! mode ([`Written`]); the graph is that policy and that one binding ([`base_of`]), plus the
 //! bindings the scenario gives.
+//!
+//! The root's set declares a bound of 365 days on a temporary adjustment ([`default_bound`]), and an
+//! adjustment a helper makes ends by that long after time zero ([`ends_by`]), so a scenario that
+//! does not care for the period is within it.
 
 use std::ops::{Deref, DerefMut};
 
-use agent_caps_core::domain::adjust::{Adjustment, Lifetime, Temporary};
+use agent_caps_core::domain::adjust::{Adjustment, Lifetime, Temporary, TemporaryBound};
 use agent_caps_core::domain::authority::{Authority, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Catalog, Effect, Rejected};
 use agent_caps_core::domain::event::{Body, Event};
@@ -271,25 +275,56 @@ pub fn adjustment_id(n: u8) -> AdjustmentId {
         .unwrap()
 }
 
-/// The `n`th temporary adjustment, changing `change` for the lifetime.
+/// One day, in milliseconds.
+pub const DAY: i64 = 86_400_000;
+
+/// The bound the root's set declares in the scenarios: 365 days.
+pub fn default_bound() -> TemporaryBound {
+    TemporaryBound::from_millis(365 * DAY).unwrap()
+}
+
+/// Time zero and the bound: what the helpers make an adjustment end by.
+pub fn ends_by() -> At {
+    At::from_millis(default_bound().millis())
+}
+
+/// The `n`th temporary adjustment, changing `change` for the lifetime, ending by [`ends_by`].
 pub fn adjustment(n: u8, change: Temporary, lifetime: Lifetime) -> Body {
+    adjustment_by(n, change, lifetime, ends_by())
+}
+
+/// The `n`th temporary adjustment, changing `change` for the lifetime, ending by `ends_by`.
+pub fn adjustment_by(n: u8, change: Temporary, lifetime: Lifetime, ends_by: At) -> Body {
     Body::Adjust(Adjustment {
         id: adjustment_id(n),
         change,
         lifetime,
+        ends_by,
         reason: "for now".parse().unwrap(),
     })
 }
 
 /// The `n`th temporary adjustment, an exemption of `guard` with the cover, for the lifetime.
 pub fn exempt_n(n: u8, guard: &str, cover: Option<Cond>, lifetime: Lifetime) -> Body {
-    adjustment(
+    exempt_n_by(n, guard, cover, lifetime, ends_by())
+}
+
+/// [`exempt_n`], ending by `ends_by`.
+pub fn exempt_n_by(
+    n: u8,
+    guard: &str,
+    cover: Option<Cond>,
+    lifetime: Lifetime,
+    ends_by: At,
+) -> Body {
+    adjustment_by(
         n,
         Temporary::Exempt {
             guard: id(guard),
             cover,
         },
         lifetime,
+        ends_by,
     )
 }
 
@@ -466,10 +501,16 @@ pub fn rebuilt(
     keep: impl Fn(&Binding) -> bool,
     edit: impl Fn(&mut Binding),
 ) -> PolicyGraph {
-    let (policies, mut bindings, classifiers) = graph.clone().into_parts();
+    let (policies, mut bindings, classifiers, bound) = graph.clone().into_parts();
     bindings.retain(|b| keep(b));
     bindings.iter_mut().for_each(edit);
-    PolicyGraph::parse_with(policies, bindings, classifiers).unwrap()
+    PolicyGraph::parse_with(policies, bindings, classifiers, bound).unwrap()
+}
+
+/// The graph with the bound it declares set to `bound` (none: it declares none).
+pub fn declaring(graph: PolicyGraph, bound: Option<TemporaryBound>) -> PolicyGraph {
+    let (policies, bindings, classifiers, _) = graph.into_parts();
+    PolicyGraph::parse_with(policies, bindings, classifiers, bound).unwrap()
 }
 
 /// The fixed id the scenarios give the set first named `name`: a stable hash of the name (64-bit
@@ -512,14 +553,22 @@ pub fn set(name: &str, owner: Principal, graph: PolicyGraph) -> Source {
 /// principal keeps its own file. A scenario
 /// that gives everything to the user has a catalog of one set; one where the agent adds to the
 /// user's rules has the user's set and the agent's beside it, so a change of the agent's own work
-/// leaves the user's set as it is.
+/// leaves the user's set as it is. The user's set is always there, and declares the
+/// [`default_bound`]: the root owns a set, which declares the bound, even when it holds nothing.
 pub fn by_author(graph: PolicyGraph) -> Sources {
-    let (policies, bindings, classifiers) = graph.into_parts();
+    by_author_declaring(graph, &[the_user()])
+}
+
+/// [`by_author`] for a hierarchy whose roots are `roots`: the set of each is there, even when it
+/// holds nothing, and declares the [`default_bound`].
+pub fn by_author_declaring(graph: PolicyGraph, roots: &[Principal]) -> Sources {
+    let (policies, bindings, classifiers, _) = graph.into_parts();
     let mut owners: Vec<Principal> = policies
         .iter()
         .map(|p| p.author.clone())
         .chain(bindings.iter().map(|b| b.author.clone()))
         .chain(classifiers.iter().map(|c| c.author.clone()))
+        .chain(roots.iter().cloned())
         .collect();
     owners.sort();
     owners.dedup();
@@ -542,6 +591,7 @@ pub fn by_author(graph: PolicyGraph) -> Sources {
                     .filter(|c| c.author == owner)
                     .cloned()
                     .collect(),
+                roots.contains(&owner).then(default_bound),
             )
             .unwrap();
             let id = owner.key().to_owned();

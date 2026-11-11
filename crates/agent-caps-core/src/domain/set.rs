@@ -44,6 +44,11 @@
 //! record is the same: when either updates it, they conflict. The set that declares it is the one
 //! that changes it.
 //!
+//! The longest period of a temporary adjustment is declared by the graph of a set a root owns and
+//! is not joined: the composed graph declares none, and [`super::catalog::Catalog::accept`]
+//! gathers the declarations of the sets ([`super::policy::PolicyGraph`]). Changing it is a change
+//! of that set's graph, so it is judged as any change of a set below.
+//!
 //! # Refused
 //!
 //! - Last wins: a later set does not override an earlier one; two different items under one id

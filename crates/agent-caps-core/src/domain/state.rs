@@ -40,14 +40,17 @@
 //!   1b. an act advances the clock to max(clock, at); a claim leaves it. `Scope::rolls(before,
 //!      after)`, for the scopes of the slots and of the adjustments in effect: a window of
 //!      `Every` whose boundary the clock crossed starts again, as in 1
-//!   2. the adjustments whose lifetime ran out by the clock end
+//!   1c. the clock's first time (an act with none before): the adjustments admitted before it are
+//!      checked against the bound at that time and end if they exceed it, and the fold's past
+//!      before it, if unseen, is unseen through the bound from that time (see Time)
+//!   2. the adjustments that run out by the clock end (`Adjustment::lasts_at`)
 //! step(event)    what the event itself does
 //!   3. `starts_at(event, actors)`, for the scopes of the slots and of the adjustments in effect:
 //!      true starts it again, unknown is handled as in 1
 //!   4. the event steps every slot (`Selector::selects`), and updates the mode and the
 //!      adjustments; what a record that could not be read may have changed is settled here (see
-//!      the invariants); an adjustment whose lifetime has run out by the clock as carried is
-//!      not added (`State::admits`)
+//!      the invariants); an adjustment that has run out by the clock as carried, or exceeds the
+//!      bound, is not added (`State::admits`)
 //!   5. `ends_at(event, actors)`, for the scopes of the slots and of the adjustments in effect: a
 //!      scope that is not false is kept in `closing` with its truth
 //! ```
@@ -55,20 +58,25 @@
 //! Steps 3 to 5 read the event and the hierarchy of actors, and nothing of time: whether an
 //! event is chosen, starts a scope or closes one is `Selector::selects`, which reads the actor
 //! with `Actors::is_under`. Everything that happens by time happens in the carry and reads the
-//! clock alone: a window that starts again (1b), a lifetime that ends (2), and an adjustment
-//! refused as expired (`State::admits`, on the state as carried).
+//! clock alone: a window that starts again (1b), an adjustment checked against the bound at the
+//! first time (1c), an adjustment that ends (2), and an adjustment refused as expired or too far
+//! ahead (`State::admits`, on the state as carried).
 //!
 //! # Time
 //!
 //! The clock is advanced by acts alone, to the latest time an act has carried; before the first
-//! act it has no time, and nothing has ended by time: an `Until` lasts, nothing is expired, and
-//! no window starts again. A claim's time never ends what loosens when it ends; it may end an
+//! act it has no time, and nothing has ended by time: an adjustment lasts whatever time it ends
+//! by, nothing is expired, and no window starts again. An adjustment admitted then cannot be
+//! checked against the bound, so it is held, and every adjustment held then is checked
+//! in the carry to the first act, at that act's time, where it ends if it exceeds the bound; this
+//! is the one moment the clock goes from none to some. A claim's time never ends what loosens
+//! when it ends; it may end an
 //! exemption's cover. So a raise or a suspension ends by time, a window starts again and an
 //! adjustment is refused as expired only by the clock, while whether an exemption covers the
 //! judged event is read at the later of the clock and that event's time
 //! (`Clock::no_earlier_than`, read and never kept): an exemption that ends sooner only tightens.
 //! A claim dated in the future ends no raise, and a guard that judges a claim is not exempted by
-//! an exemption whose `Until` the claim's own time has passed. The time of an act is the
+//! an exemption whose time to end by the claim's own time has passed. The time of an act is the
 //! adapter's to give, as its origin is; an act dated earlier than the clock does not move it
 //! back. A record that could not be read advances the clock only when it may have been an act
 //! (a kind of [`super::schema::Nature::Act`] among what it may have been); one that may have
@@ -80,8 +88,14 @@
 //!   does not end between acts: the carry of the next act does it. A judgment happens only at an
 //!   event, and every read of time that loosens waits for an act, so this is never read wrongly
 //!   in the loosening direction.
-//! - A suspension (or a raise) past its `Until` lasts until the next act's time, as it does when
-//!   only claims come, a record that may have been only claims included.
+//! - A suspension (or a raise) past the time it ends by lasts until the next act's time, as it
+//!   does when only claims come, a record that may have been only claims included.
+//! - The fold before its start, when unseen (`Past`), is held unseen through the bound from the
+//!   first act's time: an adjustment made before the fold ends by the time of its claim and the
+//!   bound at the latest, so none is in effect after that. This takes the acts before the fold to
+//!   be dated no later than the first act of the fold, as an adapter that writes times in order
+//!   does; where they are not, an adjustment made before the fold may last longer than this
+//!   holds it for.
 //!
 //! An adjustment ([`Body::Adjust`]) is held when the catalog's index admits it
 //! ([`super::adjust`]), with the principal of its event; a cancel ([`Body::Cancel`]) ends the
@@ -90,10 +104,11 @@
 //! Whether one may take effect, and why not, is one entry point the transaction reads too
 //! (`State::admits`).
 //!
-//! An adjustment that runs out by time (`Lifetime::Until`, or `Within` a window of `Every`) ends
-//! in the carry, and no transaction judges that end: the lifetime is what the one who made the
-//! adjustment chose, and the time is the clock, which only the acts advance, whose time is the
-//! adapter's to give, as the origin of an act is. The domain takes both as given. An
+//! An adjustment that runs out by time (the time it ends by, or `Within` a window of `Every`) ends
+//! in the carry, and no transaction judges that end: the lifetime and the time it ends by are what
+//! the one who made the adjustment chose, within the bound, and the time is the clock, which only
+//! the acts advance, whose time is the adapter's to give, as the origin of an act is. The domain
+//! takes both as given. An
 //! end that a claim brings about, a cancel or a claim that closes the scope an adjustment lasts
 //! within, is judged by its result.
 //!
@@ -107,8 +122,8 @@
 //!
 //! # What the state holds
 //!
-//! - What the fold knew of the past when it started ([`Origin`]), kept for the whole fold and
-//!   apart from the marks of a record lost within it.
+//! - What the fold knew of the past when it started ([`Origin`], kept as the `Past` it comes
+//!   to: advanced once, at the first act), apart from the marks of a record lost within it.
 //! - The clock: no time before the first act, then the latest time an act has carried
 //!   (see Time). Only the carry advances it.
 //! - The mode in effect: the mode of the last switch that took effect.
@@ -118,8 +133,8 @@
 //!   `Used` it chooses whose amount could not be read makes it unknown until its scope starts
 //!   again.
 //! - The temporary adjustments in effect, each with who made it and whether it is known to be
-//!   held ([`State::adjustments`], [`Holding`]). Each lasts only for its lifetime or until it is
-//!   cancelled, and only one the catalog's index admits is kept. When it cannot be told whether
+//!   held ([`State::adjustments`], [`Holding`]). Each lasts only for its lifetime, until the time
+//!   it ends by, or until it is cancelled, and only one the catalog's index admits is kept. When it cannot be told whether
 //!   the scope an adjustment lasts within started again or closed, the adjustment is kept as
 //!   possibly ended, and what it may have ended is read in the direction that tightens, part by
 //!   part (`HeldAdjustment::effect`, the one place that reads it): an exemption covers nothing,
@@ -172,8 +187,8 @@
 //!   of that span and of the spans inside it unknown, whoever its `By` chooses ([`Scope`]).
 //! - A fold that starts in the middle of the history ([`Origin::Unknown`]) starts as a record
 //!   that could not be read leaves the slots, the mode and the clock, and holds that an
-//!   adjustment made before it may be in effect ([`State::may_hold_unseen`]); it marks no
-//!   lost record of the fold.
+//!   adjustment made before it may be in effect ([`State::may_hold_unseen`]), until the bound has
+//!   passed since the fold's first act; it marks no lost record of the fold.
 //! - An actor whose place in the hierarchy is not known makes a selector or a scope that chooses
 //!   by actor unknown on its event, never "not chosen": a slot becomes unknown, and a scope that
 //!   may have started again or closed is handled as one that may have.
@@ -271,6 +286,12 @@ pub(super) struct HeldEffect<'a> {
 }
 
 impl HeldAdjustment {
+    /// Whether the adjustment has not run out by time as of `clock`: `Adjustment::lasts_at`, the
+    /// one place that reads it.
+    pub(super) fn lasts_at(&self, clock: &Clock) -> bool {
+        self.adjustment.lasts_at(clock)
+    }
+
     /// What the adjustment does: all of it while it is held. One that may have ended is read in
     /// the direction that tightens, part by part, since what cannot be told never loosens: an
     /// exemption covers nothing (read as ended), a binding it adds still holds (read as held),
@@ -578,12 +599,35 @@ pub enum Origin {
     Unknown,
 }
 
+/// What the fold knows of the past before it, as [`Origin`] says at its start and the first act
+/// advances: the one value [`State::origin`] and [`State::may_hold_unseen`] are both derived from,
+/// so the two never hold the same fact apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Past {
+    /// The fold holds the whole history ([`Origin::Genesis`]).
+    Whole,
+    /// The fold starts in the middle ([`Origin::Unknown`]), and what was before it is not seen.
+    Unseen(Unseen),
+}
+
+/// How far the unseen past may still reach.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Unseen {
+    /// No act has come, so the clock has no time: an adjustment made before the fold may still be
+    /// in effect.
+    BeforeFirstAct,
+    /// Until the instant, the first act's time and the bound: an adjustment made before the fold
+    /// ends by its claim's time and the bound at the latest, so none is in effect at or after it.
+    Through(At),
+}
+
 /// The state a judgment reads. Made by folding events from [`super::catalog::Catalog::start`]
 /// with [`super::catalog::Catalog::apply`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct State {
-    /// What the fold knew of the past when it started. Kept for the whole fold.
-    origin: Origin,
+    /// What the fold knows of the past before it: `Origin` as the fold started, advanced once, at
+    /// the first act.
+    past: Past,
     /// The time as the acts tell it.
     clock: Clock,
     mode: Known<Option<Mode>>,
@@ -763,12 +807,16 @@ impl State {
     /// (`Slot::lost`); neither `adjustments_lost` nor the mark of a lost spawn is set (see
     /// [`Origin::Unknown`] and [`State::may_hold_unseen`]).
     pub(super) fn start(table: &SlotTable, origin: Origin) -> Self {
-        let (mode, slot): (_, fn(&Temporal) -> Slot) = match origin {
-            Origin::Genesis => (Known::Known(None), Slot::start),
-            Origin::Unknown => (Known::Unknown, |temporal| Slot::start(temporal).lost()),
+        let (mode, slot, past): (_, fn(&Temporal) -> Slot, _) = match origin {
+            Origin::Genesis => (Known::Known(None), Slot::start, Past::Whole),
+            Origin::Unknown => (
+                Known::Unknown,
+                |temporal| Slot::start(temporal).lost(),
+                Past::Unseen(Unseen::BeforeFirstAct),
+            ),
         };
         Self {
-            origin,
+            past,
             clock: Clock(None),
             mode,
             slots: table.0.iter().map(slot).collect(),
@@ -779,9 +827,13 @@ impl State {
         }
     }
 
-    /// What the fold knew of the past when it started.
+    /// What the fold knew of the past when it started, read from what it knows of it now
+    /// (`Past`): the first act advances that, and not this.
     pub fn origin(&self) -> Origin {
-        self.origin
+        match self.past {
+            Past::Whole => Origin::Genesis,
+            Past::Unseen(_) => Origin::Unknown,
+        }
     }
 
     /// The mode in effect.
@@ -806,8 +858,10 @@ impl State {
     /// Whether the adjustments in effect may be more than the state holds, so that a rule may be
     /// weaker than it takes effect: a record that may have been an adjustment or a cancel was
     /// lost in the fold ([`State::adjustments_lost`]), or the fold started in the middle of the
-    /// history ([`Origin::Unknown`]) and an adjustment made before it may still be in effect.
-    /// The one predicate the effect of the rules reads for this
+    /// history ([`Origin::Unknown`]) and an adjustment made before it may still be in effect:
+    /// until the first act, and then until the bound has passed since it, as an adjustment made
+    /// before the fold ends by then at the latest. The one predicate the effect of the rules
+    /// reads for this
     /// ([`super::catalog::Catalog::effective_in`] and the bindings it is computed from), so that
     /// the two causes are never read apart. While it holds, no suspension is taken to hold, and
     /// every rule takes effect at least as strongly as a temporary binding could make it: what an
@@ -815,11 +869,18 @@ impl State {
     /// down. A suspension, a cancel or a binding made within the fold is held as [`Holding`] says
     /// all the same, and is seen in [`State::adjustments`].
     ///
-    /// It holds for the whole fold: the state has no bound on how long an adjustment lasts, which
-    /// is what would say that one made before the fold has ended. Such a bound is read here and
-    /// nowhere else.
+    /// The bound on how long an adjustment lasts is what says that one made before the fold has
+    /// ended; the state reads it only at the first act, which advances `Past` once, and here
+    /// nowhere else. A lost record has no such end, so `adjustments_lost` holds for the whole fold.
     pub fn may_hold_unseen(&self) -> bool {
-        self.adjustments_lost || self.origin == Origin::Unknown
+        self.adjustments_lost
+            || match self.past {
+                Past::Whole => false,
+                Past::Unseen(Unseen::BeforeFirstAct) => true,
+                Past::Unseen(Unseen::Through(until)) => {
+                    self.clock.at().is_none_or(|now| now < until)
+                }
+            }
     }
 
     /// Whether an adjustment in effect has the id: the one answer, read by the fold, by whether
@@ -854,11 +915,12 @@ impl State {
         &self.actors
     }
 
-    /// The state carried to `event`: steps 1, 1b and 2 of the module doc. It reads of the event
-    /// only whether it is an act and its time, never its actor, so it is the same whoever the
-    /// event comes from, and it is always kept. The one place that advances the clock: to the
-    /// later of the clock and the event's time, for an act alone.
-    pub(super) fn carry(mut self, table: &SlotTable, event: &Event) -> Self {
+    /// The state carried to `event`: steps 1, 1b, 1c and 2 of the module doc. It reads of the
+    /// event only whether it is an act and its time, never its actor, so it is the same whoever
+    /// the event comes from, and it is always kept. The one place that advances the clock: to the
+    /// later of the clock and the event's time, for an act alone. `index` is the catalog's: the
+    /// bound is read from it at the first act, and only there.
+    pub(super) fn carry(mut self, table: &SlotTable, event: &Event, index: &AdjustIndex) -> Self {
         // 1. The scopes the previous event closed.
         for (scope, truth) in std::mem::take(&mut self.closing) {
             self.settle(table, &scope, truth);
@@ -889,10 +951,21 @@ impl State {
                 self.settle(table, &scope, truth);
             }
         }
-        // 2. The lifetimes that ran out by the clock.
+        // 1c. The clock's first time: what was admitted without it is checked against the bound at
+        // this act, and the unseen past is unseen through the bound from it.
+        if let (None, Some(first)) = (before.at(), self.clock.at()) {
+            // One that exceeds the bound ends here, as one that runs out by the clock does.
+            // Every adjustment held now was admitted with no clock: only a claim admits one, and a
+            // claim does not move the clock.
+            self.adjustments
+                .retain(|held| index.bounds(&held.adjustment, Some(first)).is_ok());
+            if let Past::Unseen(Unseen::BeforeFirstAct) = self.past {
+                self.past = Past::Unseen(Unseen::Through(index.bound().after(first)));
+            }
+        }
+        // 2. The adjustments that ran out by the clock.
         let clock = self.clock;
-        self.adjustments
-            .retain(|held| held.adjustment.lifetime.lasts_at(&clock));
+        self.adjustments.retain(|held| held.lasts_at(&clock));
         self
     }
 
@@ -1073,7 +1146,7 @@ impl State {
             .iter()
             .filter_map(|h| match &h.adjustment.lifetime {
                 Lifetime::Within(scope) => Some(scope),
-                Lifetime::Next | Lifetime::Until(_) => None,
+                Lifetime::Next | Lifetime::Timed => None,
             });
         table.scopes().chain(within)
     }
@@ -1121,7 +1194,7 @@ impl State {
     /// reads an exemption's cover on an event. A cover that reads as unknown does not cover it.
     /// Its lifetime is read at the later of the clock and the event's time
     /// ([`Clock::no_earlier_than`]): an exemption that ends sooner only tightens, so a claim
-    /// judged after an exemption's `Until`, or past the boundary of the window of `Every` it lasts
+    /// judged after the time an exemption ends by, or past the boundary of the window of `Every` it lasts
     /// within, is not covered, with no act in between.
     pub(super) fn exempts(&self, guard: PolicyId, event: &Event) -> bool {
         let now = self.clock.no_earlier_than(event.at);
@@ -1134,7 +1207,7 @@ impl State {
             // has left is one it no longer lasts within.
             let window_left = matches!(&h.adjustment.lifetime,
                 Lifetime::Within(scope) if scope.rolls(&self.clock, &now) != Truth::False);
-            let in_time = h.adjustment.lifetime.lasts_at(&now) && !window_left;
+            let in_time = h.lasts_at(&now) && !window_left;
             let covers = cover.is_none_or(|cover| event.body.holds(cover) == Truth::True);
             of == guard && in_time && covers
         })

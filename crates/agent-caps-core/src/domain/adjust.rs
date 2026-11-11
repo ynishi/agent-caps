@@ -1,7 +1,7 @@
 //! A temporary adjustment: what it changes, for how long, and whether it may take effect.
 //!
 //! ```text
-//! Adjustment { id, change: Temporary, lifetime, reason }
+//! Adjustment { id, change: Temporary, lifetime, ends_by, reason }
 //!   Temporary::Exempt { guard, cover }   the guard does not judge the events the cover covers
 //!   Temporary::Rebind { add, suspend }   bindings added (under every mode) and bindings of the
 //!                                        catalog suspended, on every event
@@ -10,13 +10,16 @@
 //! ```
 //!
 //! An adjustment has two axes and no list of grains: what it changes and how long it lasts
-//! ([`Lifetime`]). Every adjustment has a lifetime that ends it: the next judgment, a time, or a
-//! scope starting again. A session's start is not such an end: it ends only an adjustment that
-//! lasts within a span its starter chooses, so an adjustment within a mode, a `since` scope, or a
-//! task only the user starts can outlast a session. Nothing yet bounds how far ahead its end may
-//! lie (a bound set by the root is to come); one meant to last is a permanent binding in the
-//! catalog, so a lasting exception is a visible change to the rules. A raise for a while is a Force binding added; a lowering for a while is a Force
-//! binding suspended with an Advise binding added, in one adjustment.
+//! ([`Lifetime`], and the time it ends by). Every adjustment has an end: the claim states the
+//! time it ends by ([`Adjustment::ends_by`]), the one end by time, and a lifetime may end it
+//! sooner, by the next judgment or a scope starting again. A session's start is not such an end:
+//! it ends only an adjustment that lasts within a span its starter chooses, so an adjustment
+//! within a mode, a `since` scope, or a task only the user starts can outlast a session, up to
+//! the time it ends by. How far ahead that time may lie is the catalog's [`TemporaryBound`]
+//! (below); one meant to last longer is a permanent binding in the catalog, so a lasting
+//! exception is a visible change to the rules. A raise for a while is a Force binding added; a
+//! lowering for a while is a Force binding suspended with an Advise binding added, in one
+//! adjustment.
 //!
 //! An adjustment that lasts within a scope ends when the scope starts again or closes. When that
 //! cannot be told (an actor of unknown place, a condition not known yet), it is kept as possibly
@@ -26,12 +29,25 @@
 //!
 //! # Time
 //!
-//! A lifetime that ends by time (`Until`, and `Within` a window of `Every`) is read with the
+//! The time an adjustment ends by, and a lifetime within a window of `Every`, are read with the
 //! state's clock ([`super::state`]), which only acts advance. A claim's time never ends what
 //! loosens when it ends; it may end an exemption's cover. So a raise or a suspension ends, and
 //! an adjustment is refused as [`Inadmissible::Expired`], only by the time of an act, while
 //! whether an exemption covers the judged event is read with the later of the clock and that
-//! event's time: an exemption that ends sooner only tightens.
+//! event's time: an exemption that ends sooner only tightens. `Adjustment::lasts_at` is the one
+//! place that reads the time an adjustment ends by.
+//!
+//! # The bound
+//!
+//! The longest period a temporary adjustment may have is the catalog's [`TemporaryBound`]. A root
+//! declares it in a set it owns, and the catalog decides it once, when it is accepted
+//! ([`super::catalog::AcceptError::NoTemporaryBound`]), so a period nobody chose is never
+//! assumed. It refuses and never rounds: an adjustment that ends further ahead of the clock than
+//! the bound, or that lasts within a window of `Every` longer than the bound, is refused
+//! ([`Inadmissible::EndsTooLate`], [`Inadmissible::WindowTooLong`]). Before the first act there is
+//! no clock, and nothing has ended by time ([`super::state`]), so the adjustment is held, and
+//! every adjustment held then is checked against the time of the first act, where it ends if it
+//! lies too far ahead. Both checks are `AdjustIndex::bounds`.
 //!
 //! An adjustment and a cancel are claims, judged by their result alone ([`super::tx`]): what
 //! lowers a policy asks the authors of the bindings that carried what it lost (a temporary binding
@@ -54,8 +70,9 @@
 //! - that names a meta policy or a binding of one: a meta policy is the target of no adjustment;
 //! - an exemption of a policy that is not a guard, or whose cover does not read as a predicate on
 //!   the guard's event would;
-//! - whose lifetime has run out by the clock, the latest time an act has carried (the time of
-//!   the claim itself is not read);
+//! - that ends by the clock, the latest time an act has carried (the time of the claim itself is
+//!   not read), or ends further ahead of it than the bound allows, or lasts within a window
+//!   longer than the bound (see above);
 //! - with a temporary binding stronger than one can be (see below), by the rule a binding of the
 //!   catalog keeps too (`may_bind_at`);
 //! - with a temporary binding whose maker is not within the work of the policy's author: one of
@@ -83,11 +100,13 @@ use std::fmt;
 
 use super::authority::{Authority, NotWithin, Principal};
 use super::name::{AdjustmentId, BindingId, PolicyId, Reason};
-use super::predicate::{By, Cond, PredError, Reading, Scope, by_reading};
+use super::predicate::{By, Cond, PredError, Reading, Scope, Window, by_reading};
 use super::schema::{At, EventKind, Level};
 use super::state::Clock;
 
-/// How long an adjustment lasts.
+/// What ends an adjustment by an event, if anything does. The time it ends by is the
+/// adjustment's own ([`Adjustment::ends_by`]), the only end by time, so every lifetime ends by it
+/// at the latest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lifetime {
     /// The next judgment it covers, and no more: the record of the
@@ -97,12 +116,11 @@ pub enum Lifetime {
     /// selector chose: that event is judged with the adjustment still in effect. A scope that
     /// chooses by actor ([`super::predicate::By::Under`]) ends the adjustment only at the acts of
     /// the actors it chooses, so a spawn that places a child under its principal changes who
-    /// ends it, and is asked of the one who made the adjustment ([`super::tx`]).
+    /// ends it, and is asked of the one who made the adjustment ([`super::tx`]). A window of
+    /// [`Scope::Every`] is no longer than the catalog's bound ([`Inadmissible::WindowTooLong`]).
     Within(Scope),
-    /// Until the instant, compared with the state's clock, which only acts advance: it ends at
-    /// the first act at or after the instant. The cover of an exemption is read with the later of
-    /// the clock and the time of the judged event, so it covers no event at or after the instant.
-    Until(At),
+    /// No event ends it: it lasts until the time it ends by, or a cancel.
+    Timed,
 }
 
 impl Lifetime {
@@ -112,22 +130,57 @@ impl Lifetime {
     pub(super) fn reading(&self) -> Option<(&Principal, Reading)> {
         match self {
             Self::Within(scope) => scope.by().and_then(by_reading),
-            Self::Next | Self::Until(_) => None,
-        }
-    }
-
-    /// Whether the lifetime has not run out by `clock`. Only `Until` ends by time; `Next` ends
-    /// when it is used and `Within` when its scope starts again (a window of `Every` included),
-    /// both in the fold of the state. Before the first act there is no time yet, and nothing has
-    /// run out. It takes a [`Clock`], never the time of an event, so a claim's time cannot end
-    /// what loosens when it ends.
-    pub(super) fn lasts_at(&self, clock: &Clock) -> bool {
-        match self {
-            Self::Until(until) => clock.at().is_none_or(|now| now < *until),
-            Self::Next | Self::Within(_) => true,
+            Self::Next | Self::Timed => None,
         }
     }
 }
+
+/// The longest period a temporary adjustment may have, in milliseconds, more than zero: how far
+/// ahead of the clock the time it ends by may lie, and the longest window of [`Scope::Every`] it
+/// may last within. A root declares it in a set it owns
+/// ([`super::policy::PolicyGraph::parse_with`]), and the catalog decides it once
+/// ([`super::catalog::Catalog::temporary_bound`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TemporaryBound(i64);
+
+impl TemporaryBound {
+    /// The bound of `millis` milliseconds; zero and negative lengths are refused.
+    pub const fn from_millis(millis: i64) -> Result<Self, BoundError> {
+        if millis > 0 {
+            Ok(Self(millis))
+        } else {
+            Err(BoundError::NotPositive(millis))
+        }
+    }
+
+    /// The length in milliseconds.
+    pub const fn millis(self) -> i64 {
+        self.0
+    }
+
+    /// The instant the bound after `at`: the latest time an adjustment made at `at` may end by.
+    /// It stops at the latest instant and does not wrap.
+    pub(super) const fn after(self, at: At) -> At {
+        At::from_millis(at.millis().saturating_add(self.0))
+    }
+}
+
+/// Why a length is not a bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundError {
+    /// The length, in milliseconds, is zero or negative.
+    NotPositive(i64),
+}
+
+impl fmt::Display for BoundError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotPositive(millis) => write!(f, "a bound of {millis} ms is not positive"),
+        }
+    }
+}
+
+impl std::error::Error for BoundError {}
 
 /// A binding added for a while: the policy takes effect at least at the level, under every mode,
 /// by the one who made the adjustment.
@@ -167,13 +220,29 @@ pub struct Adjustment {
     pub id: AdjustmentId,
     /// What it changes.
     pub change: Temporary,
-    /// How long it lasts.
+    /// What ends it by an event, if anything does.
     pub lifetime: Lifetime,
+    /// The time it ends by, compared with the state's clock, which only acts advance: it ends at
+    /// the first act at or after the instant, whatever its lifetime. The cover of an exemption is
+    /// read with the later of the clock and the time of the judged event, so it covers no event at
+    /// or after the instant. No further ahead of the clock than the catalog's bound
+    /// ([`Inadmissible::EndsTooLate`]).
+    pub ends_by: At,
     /// Why it was made.
     pub reason: Reason,
 }
 
 impl Adjustment {
+    /// Whether the adjustment has not run out by time as of `clock`: the one place that reads the
+    /// time it ends by, read by the fold, by the cover of an exemption and by whether an
+    /// adjustment may take effect. Before the first act there is no time yet, and nothing has run
+    /// out. That an event has ended it (`Next` used, a scope started again) is the fold's, which
+    /// drops it. It takes a [`Clock`], never the time of an event, so a claim's time cannot end
+    /// what loosens when it ends.
+    pub(super) fn lasts_at(&self, clock: &Clock) -> bool {
+        clock.at().is_none_or(|now| now < self.ends_by)
+    }
+
     /// The guard it exempts from, when it is an exemption.
     pub(super) fn exempted(&self) -> Option<PolicyId> {
         match &self.change {
@@ -272,9 +341,27 @@ impl Reach {
 pub enum Inadmissible {
     /// An adjustment in effect has the id.
     DuplicateId(AdjustmentId),
-    /// Its lifetime has run out by the clock: an `Until` at or before the latest time an act has
+    /// The time it ends by has passed by the clock: it is at or before the latest time an act has
     /// carried. The time of the claim itself is not read.
     Expired,
+    /// The time it ends by lies further ahead of the clock than the catalog's bound allows. To fix
+    /// it, end it by `latest` or sooner, or ask the root for a longer bound.
+    EndsTooLate {
+        /// The time it ends by.
+        ends_by: At,
+        /// The latest time it may end by: the clock and the bound.
+        latest: At,
+        /// The bound.
+        bound: TemporaryBound,
+    },
+    /// The window of `Every` that the lifetime lasts within is longer than the catalog's bound
+    /// allows. To fix it, use a window no longer than the bound.
+    WindowTooLong {
+        /// The window.
+        window: Window,
+        /// The bound.
+        bound: TemporaryBound,
+    },
     /// The catalog has no policy with the id.
     UnknownPolicy(PolicyId),
     /// The catalog has no binding with the id.
@@ -320,7 +407,26 @@ impl fmt::Display for Inadmissible {
         };
         match self {
             Self::DuplicateId(id) => write!(f, "an adjustment in effect has the id {id}"),
-            Self::Expired => f.write_str("its lifetime ran out by the time of the last act"),
+            Self::Expired => {
+                f.write_str("the time it ends by has passed by the time of the last act")
+            }
+            Self::EndsTooLate {
+                ends_by,
+                latest,
+                bound,
+            } => write!(
+                f,
+                "it ends by {} ms, later than {} ms, the latest the bound of {} ms allows",
+                ends_by.millis(),
+                latest.millis(),
+                bound.millis()
+            ),
+            Self::WindowTooLong { window, bound } => write!(
+                f,
+                "its window of {} ms is longer than the bound of {} ms",
+                window.millis(),
+                bound.millis()
+            ),
             Self::UnknownPolicy(id) => write!(f, "no policy {id}"),
             Self::UnknownBinding(id) => write!(f, "no binding {id}"),
             Self::Meta(id) => write!(f, "{id} is a meta policy"),
@@ -358,25 +464,64 @@ impl std::error::Error for Inadmissible {}
 /// What the catalog tells about its policies and bindings for adjustments: the one place that
 /// decides whether an adjustment may take effect, and the strongest a temporary binding can make
 /// each policy. Built by the catalog when it is accepted.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct AdjustIndex {
     /// Each policy with its reach and its author.
     policies: Vec<(PolicyId, Reach, Principal)>,
     /// Each binding of the catalog, with its policy.
     bindings: Vec<(BindingId, PolicyId)>,
+    /// The longest period of an adjustment, as the catalog decided it when it was accepted.
+    bound: TemporaryBound,
 }
 
 impl AdjustIndex {
     /// The index of the policies, each with its reach and author, and of the bindings, each with
-    /// its policy.
+    /// its policy, under the bound the catalog decided.
     pub(super) fn new(
         policies: impl IntoIterator<Item = (PolicyId, Reach, Principal)>,
         bindings: impl IntoIterator<Item = (BindingId, PolicyId)>,
+        bound: TemporaryBound,
     ) -> Self {
         Self {
             policies: policies.into_iter().collect(),
             bindings: bindings.into_iter().collect(),
+            bound,
         }
+    }
+
+    /// The catalog's bound.
+    pub(super) fn bound(&self) -> TemporaryBound {
+        self.bound
+    }
+
+    /// Whether `adjustment` exceeds the bound: the one check of it, read when an adjustment is
+    /// admitted (`at` is the clock) and when the carry reaches the first act with an adjustment
+    /// admitted before it (`at` is that act). A window of `Every` longer than the bound is refused
+    /// whatever `at` is; with a time, so is a time it ends by further ahead than the bound.
+    pub(super) fn bounds(
+        &self,
+        adjustment: &Adjustment,
+        at: Option<At>,
+    ) -> Result<(), Inadmissible> {
+        if let Lifetime::Within(Scope::Every(window)) = &adjustment.lifetime
+            && window.millis() > self.bound.millis()
+        {
+            return Err(Inadmissible::WindowTooLong {
+                window: *window,
+                bound: self.bound,
+            });
+        }
+        if let Some(at) = at {
+            let latest = self.bound.after(at);
+            if adjustment.ends_by > latest {
+                return Err(Inadmissible::EndsTooLate {
+                    ends_by: adjustment.ends_by,
+                    latest,
+                    bound: self.bound,
+                });
+            }
+        }
+        Ok(())
     }
 
     fn policy(&self, policy: PolicyId) -> Option<(Reach, &Principal)> {
@@ -404,6 +549,9 @@ impl AdjustIndex {
     /// bindings it adds, which must be within the policy's author's work by `authority`
     /// ([`Authority::within`], the answer a binding of the catalog is held to); who may loosen
     /// what is the transaction's floor, not this.
+    ///
+    /// With no clock the time it ends by cannot be checked against the bound; every adjustment
+    /// held before the first act is checked by the carry to it ([`AdjustIndex::bounds`]).
     pub(super) fn admits(
         &self,
         adjustment: &Adjustment,
@@ -417,9 +565,10 @@ impl AdjustIndex {
         }
         // One that has run out by the clock would be dropped in the same step. The claim's own
         // time is not read: it does not move the clock.
-        if !adjustment.lifetime.lasts_at(clock) {
+        if !adjustment.lasts_at(clock) {
             return Err(Inadmissible::Expired);
         }
+        self.bounds(adjustment, clock.at())?;
         // A rule's `By` is held to the hierarchy when the catalog is accepted; a lifetime's here.
         if let Lifetime::Within(scope) = &adjustment.lifetime
             && let Some(principal) = scope.by().and_then(By::principal)

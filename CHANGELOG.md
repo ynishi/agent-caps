@@ -154,9 +154,44 @@ and this project adheres to
 - `Catalog::change` judges a classifier declaration as it judges a policy
   (`change::classify_classifier`): a declaration removed, or changed in its
   bound or its record, is a loosening that needs one who covers its author.
+- A bound on how long a temporary adjustment may last (#56). The root declares
+  it, in a set it owns, with `PolicyGraph::parse_with(.., Some(TemporaryBound))`
+  (`TemporaryBound::from_millis`, more than zero), and `Catalog::accept` decides
+  it once; `Catalog::temporary_bound()` reads it. An adjustment states the time
+  it ends by (`Adjustment::ends_by`), and one that ends further ahead of the
+  clock than the bound, or lasts within a window of `Every` longer than the
+  bound, is refused (`Inadmissible::EndsTooLate`, `WindowTooLong`), never
+  rounded. One made before the first act has no clock to be checked against, so
+  it is held and checked at the first act, where it ends if it lies too far
+  ahead. Every adjustment ends at the time it ends by, or sooner by its
+  lifetime's event, which closes the gap that a `Within` a mode, a `since`
+  scope or a span, and an exemption for `Next`, had no end. The unseen past of a
+  fold from `Origin::Unknown` is held unseen until the bound has passed since
+  its first act (FR20), not for the whole fold. Changing the bound is a change
+  of the root's set, judged as any (FR49), so one who does not cover the root
+  cannot change it in either direction.
+  New accept errors: `AcceptError::NoTemporaryBound`, `BoundNotRoot { set }`
+  and `BoundConflict`. FR46 is withdrawn for FR55, which adds the bound; the
+  tests and use cases that cite FR46 cite FR55.
 
 ### Changed
 
+- Breaking, before 1.0: a temporary adjustment states the time it ends by, and
+  a catalog declares a bound (#56). `Lifetime` is `Next`, `Within(Scope)` and
+  `Timed`: `Lifetime::Until(At)` is removed, and `Adjustment` has a required
+  `ends_by: At`, the only end by time, so `Until(t)` is written `Timed` with
+  `ends_by: t`. A catalog must declare the bound in a set a root owns, and every
+  root that owns a set declares the same value: `Catalog::accept` refuses one
+  with none (`NoTemporaryBound`, which includes a catalog with no set a root
+  owns, that is, one whose sets all have owners below the roots), a declaration
+  in a set whose owner is not a root (`BoundNotRoot`), and roots that declare
+  different values or a root that owns a set and declares none (`BoundConflict`).
+  `PolicyGraph::parse_with` takes the bound as a fourth argument (`None`
+  declares none; `parse` declares none), and `PolicyGraph::into_parts` returns
+  it as a fourth element. `Inadmissible::Expired` now means the time it ends by
+  is at or before the clock. To migrate, add a set owned by a root that declares
+  the bound, write `ends_by` on every adjustment, and replace `Until` with
+  `Timed`.
 - A temporary adjustment no longer ends at every session start (#54): one
   that lasts within a mode, a `since` scope, or a span whose starter does not
   choose the session's starter outlasts the session, as a count does. Until a

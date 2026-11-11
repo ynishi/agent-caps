@@ -87,6 +87,16 @@
 //! - The owner of every set is a principal of the hierarchy ([`AcceptError::UnknownOwner`]), and
 //!   every item of a set is by its owner or one below it ([`AcceptError::NotWithinOwner`]), so a
 //!   set holds only what its owner may loosen ([`super::set`]).
+//! - The longest period of a temporary adjustment ([`TemporaryBound`], stated at
+//!   [`super::adjust`]) is declared by the root: in the graph of a set a root owns, never of
+//!   another ([`AcceptError::BoundNotRoot`]), by every root that owns a set, in one of its sets,
+//!   and with one value
+//!   ([`AcceptError::BoundConflict`]), and at least once, which a catalog with no set a root owns
+//!   cannot ([`AcceptError::NoTemporaryBound`]). It is decided once, here, and the catalog's index
+//!   keeps it ([`Catalog::temporary_bound`]). Changing it is a change of those sets, so a change
+//!   by one who does not cover the root is a loosening ([`super::change`]); with several roots
+//!   all of their declarations must change together, which [`Catalog::change`] cannot do (no one
+//!   covers two roots), so the sources are accepted again.
 //! - Every author of a policy and of a binding is a principal of the catalog's [`Authority`]
 //!   ([`AcceptError::UnknownAuthor`]), so [`Authority::covers`] is total on the authors.
 //! - The author of a meta policy is a root of the hierarchy ([`AcceptError::MetaAuthorNotRoot`]):
@@ -179,7 +189,8 @@
 //! policy graph can be fixed in one pass. A graph with a duplicate id or name is refused before,
 //! when it is made ([`PolicyGraph::parse`]), with every clash at once. What each set says of its
 //! own items needs no composition, and is checked of every set before the sets are composed: an
-//! owner or an author outside the hierarchy, and an item not within its set's owner. So sets
+//! owner or an author outside the hierarchy, an item not within its set's owner, and the
+//! declarations of the longest period of a temporary adjustment. So sets
 //! that do not compose are reported in one pass with those errors; the rest is checked on the
 //! composed graph, which then does not exist.
 
@@ -187,7 +198,7 @@ use std::collections::HashMap;
 use std::collections::btree_map;
 use std::fmt;
 
-use super::adjust::{AdjustIndex, BoundKind, Reach, TooStrong, may_bind_at};
+use super::adjust::{AdjustIndex, BoundKind, Reach, TemporaryBound, TooStrong, may_bind_at};
 use super::authority::{Authority, NotWithin, Principal};
 use super::event::Event;
 use super::name::{BindingId, ClassifierName, Mode, PolicyId};
@@ -387,6 +398,21 @@ pub enum AcceptError {
     /// The meta policy does not have exactly one binding, by its own author, under every mode
     /// ([`ModeScope::Any`]): it has none, more than one, or one by another or under a mode scope.
     MetaBinding(PolicyId),
+    /// No set a root owns declares the longest period of a temporary adjustment
+    /// ([`TemporaryBound`]): none declares one, or no set has a root for its owner. To fix it,
+    /// declare it in a set a root owns.
+    NoTemporaryBound,
+    /// A set declares the longest period of a temporary adjustment, and its owner is not a root.
+    /// Only a root decides it, so a set below cannot add a limit that cuts off a raise. To fix it,
+    /// declare it in a set a root owns.
+    BoundNotRoot {
+        /// The set.
+        set: SetId,
+    },
+    /// The roots that own a set do not all declare the same period: one declares none, or two
+    /// declare different values. To fix it, have each root that owns a set declare the same value
+    /// in one of its sets (a root's other sets need not repeat it, but may, with the same value).
+    BoundConflict,
 }
 
 impl fmt::Display for AcceptError {
@@ -472,6 +498,16 @@ impl fmt::Display for AcceptError {
             Self::MetaBinding(id) => write!(
                 f,
                 "meta policy {id} needs exactly one binding, by its author, under every mode"
+            ),
+            Self::NoTemporaryBound => f.write_str(
+                "no set a root owns declares the longest period of a temporary adjustment",
+            ),
+            Self::BoundNotRoot { set } => write!(
+                f,
+                "set {set} declares the longest period of a temporary adjustment, and its owner is not a root"
+            ),
+            Self::BoundConflict => f.write_str(
+                "the roots that own a set do not all declare the same longest period of a temporary adjustment",
             ),
         }
     }
@@ -1107,6 +1143,7 @@ impl Catalog {
     ) -> Result<Self, Rejected> {
         let mut errors = Vec::new();
         check_owners(&sources, &authority, &mut errors);
+        let bound = decide_bound(&sources, &authority, &mut errors);
         let graph = match sources.compose() {
             Ok(graph) => graph,
             Err(conflicts) => {
@@ -1122,21 +1159,23 @@ impl Catalog {
         let reads: Vec<Reads> = policies.iter().map(|p| Reads::of(p, &slots)).collect();
         check_reads(&graph, &policies, &reads, &authority, &mut errors);
         check_actors(&policies, &authority, &mut errors);
-        let index = AdjustIndex::new(
-            policies.iter().map(|p| {
-                let reach = match p.polarity() {
-                    _ if p.layer() == DefLayer::Meta => Reach::Meta,
-                    Polarity::Guard => Reach::Guard {
-                        subject: p.subject(),
-                        stops: has_stopping_fixtures(p.def()),
-                    },
-                    Polarity::Reward { .. } => Reach::Reward,
-                };
-                (p.id(), reach, p.author().clone())
-            }),
-            graph.bindings().map(|b| (b.id, b.policy)),
-        );
-        if errors.is_empty() {
+        // A bound is decided whenever no error says otherwise (`decide_bound`).
+        if let (true, Some(bound)) = (errors.is_empty(), bound) {
+            let index = AdjustIndex::new(
+                policies.iter().map(|p| {
+                    let reach = match p.polarity() {
+                        _ if p.layer() == DefLayer::Meta => Reach::Meta,
+                        Polarity::Guard => Reach::Guard {
+                            subject: p.subject(),
+                            stops: has_stopping_fixtures(p.def()),
+                        },
+                        Polarity::Reward { .. } => Reach::Reward,
+                    };
+                    (p.id(), reach, p.author().clone())
+                }),
+                graph.bindings().map(|b| (b.id, b.policy)),
+                bound,
+            );
             Ok(Self {
                 sources,
                 graph,
@@ -1154,6 +1193,13 @@ impl Catalog {
     /// The hierarchy the catalog was accepted with.
     pub fn authority(&self) -> &Authority {
         &self.authority
+    }
+
+    /// The longest period of a temporary adjustment, as the roots declared it and the catalog
+    /// decided it when it was accepted ([`AcceptError::NoTemporaryBound`]). A change of it is a
+    /// change of the sets a root owns, judged as any change of a set ([`super::change`]).
+    pub fn temporary_bound(&self) -> TemporaryBound {
+        self.index.bound()
     }
 
     /// The sets the catalog was accepted from, as given: what a change starts from
@@ -1592,6 +1638,64 @@ fn check_owners(sources: &Sources, authority: &Authority, errors: &mut Vec<Accep
             if !errors.contains(&error) {
                 errors.push(error);
             }
+        }
+    }
+}
+
+/// The longest period of a temporary adjustment, decided once from what the sets declare
+/// ([`PolicyGraph::temporary_bound`]), or `None` with the reasons in `errors`: the one place that
+/// decides it, and who may. Checked in this order, each of the sets alone, so it needs no
+/// composition. A declaration in a set whose owner is not a root is [`AcceptError::BoundNotRoot`]
+/// (a limit from below would cut off a raise the root permits). Of the sets a root owns, none
+/// declaring is [`AcceptError::NoTemporaryBound`] (which a catalog with no such set meets too, as
+/// a period nobody chose is never assumed), and a root that owns a set and declares none, or two
+/// that declare different values, is [`AcceptError::BoundConflict`]. Changing the value is a
+/// change of the roots' sets ([`super::change`]).
+fn decide_bound(
+    sources: &Sources,
+    authority: &Authority,
+    errors: &mut Vec<AcceptError>,
+) -> Option<TemporaryBound> {
+    // One entry for each root that owns a set: what its sets declare. A root declares the bound
+    // once, in any one of its sets; the others need not repeat it.
+    let mut roots: Vec<(&Principal, Vec<TemporaryBound>)> = Vec::new();
+    for source in sources.iter() {
+        let declared = source.graph.temporary_bound();
+        if !authority.is_root(&source.owner) {
+            if declared.is_some() {
+                errors.push(AcceptError::BoundNotRoot { set: source.id });
+            }
+            continue;
+        }
+        let at = match roots.iter().position(|(root, _)| *root == &source.owner) {
+            Some(at) => at,
+            None => {
+                roots.push((&source.owner, Vec::new()));
+                roots.len() - 1
+            }
+        };
+        roots[at].1.extend(declared);
+    }
+    let first = roots
+        .iter()
+        .flat_map(|(_, declared)| declared)
+        .next()
+        .copied();
+    match first {
+        None => {
+            errors.push(AcceptError::NoTemporaryBound);
+            None
+        }
+        Some(bound)
+            if roots.iter().all(|(_, declared)| {
+                !declared.is_empty() && declared.iter().all(|value| *value == bound)
+            }) =>
+        {
+            Some(bound)
+        }
+        Some(_) => {
+            errors.push(AcceptError::BoundConflict);
+            None
         }
     }
 }

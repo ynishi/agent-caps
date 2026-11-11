@@ -30,8 +30,9 @@ use agent_caps_core::domain::state::{Known, Origin};
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, Written, anyone, at, authority, base_of, bash, commit_filter, fixture, id, listed,
-    outcome, set, set_pair, the_agent, the_user, verdict, violated, words, written,
+    GUARD, Written, anyone, at, authority, base_of, bash, commit_filter, declaring, default_bound,
+    fixture, id, listed, outcome, set, set_pair, the_agent, the_user, verdict, violated, words,
+    written,
 };
 
 /// The classifier of the commit message, by name and version.
@@ -137,12 +138,16 @@ fn why_guard(level: Level) -> Written {
 fn graph(policies: Vec<Written>, classifiers: Vec<Classifier>) -> PolicyGraph {
     let bindings = policies.iter().filter_map(base_of).collect();
     let defs = policies.into_iter().map(|w| w.def).collect();
-    PolicyGraph::parse_with(defs, bindings, classifiers).unwrap()
+    PolicyGraph::parse_with(defs, bindings, classifiers, None).unwrap()
 }
 
-/// The user's set named `name`.
+/// The user's set named `name`, which declares the scenarios' bound, as the root's set does.
 fn users(name: &str, policies: Vec<Written>, classifiers: Vec<Classifier>) -> Source {
-    set(name, the_user(), graph(policies, classifiers))
+    set(
+        name,
+        the_user(),
+        declaring(graph(policies, classifiers), Some(default_bound())),
+    )
 }
 
 fn accept(sets: Vec<Source>) -> Result<Catalog, Rejected> {
@@ -301,10 +306,10 @@ fn a_graph_made_again_from_its_parts_keeps_its_classifiers() {
         vec![why_guard(Level::Force)],
         vec![declared(the_user(), Some(enough()))],
     );
-    let (policies, bindings, classifiers) = graph.clone().into_parts();
+    let (policies, bindings, classifiers, bound) = graph.clone().into_parts();
     assert_eq!(classifiers.len(), 1);
     assert_eq!(
-        PolicyGraph::parse_with(policies, bindings, classifiers).unwrap(),
+        PolicyGraph::parse_with(policies, bindings, classifiers, bound).unwrap(),
         graph
     );
 }
