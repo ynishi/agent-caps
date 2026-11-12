@@ -17,9 +17,9 @@ use std::fmt;
 use std::num::{NonZeroU8, NonZeroU16};
 
 use crate::domain::catalog::{Capabilities, Catalog, StaleState};
-use crate::domain::event::{Body, Event};
+use crate::domain::event::{Body, Event, Seen};
 use crate::domain::judge::{Cause, Outcome, Verdict, judge};
-use crate::domain::schema::{EventKind, KindSet, Nature};
+use crate::domain::schema::{EventKind, Nature};
 use crate::domain::state::State;
 use crate::domain::tx::{TxDecision, TxPolicy, TxReport};
 
@@ -92,10 +92,12 @@ pub struct Observed {
 impl Observed {
     /// The observation. Refused when the event is of a kind not taken from the platform
     /// ([`accepts_from_platform`]), whatever the watch, and when a claim is to be judged ahead
-    /// (only an act is). A tool use whose path is not in the one form
-    /// ([`Observed::replaced_path`]) is taken as a record that could not be read, which may have
-    /// been a tool use: a path in another form would let a rule over paths miss it.
-    pub fn new(id: BaseId, event: Event, watch: Watch) -> Result<Self, ObservedError> {
+    /// (only an act is), and when a record whose kind could not be read is to be judged ahead
+    /// ([`ObservedError::UnreadableAhead`]). A tool use whose path is not in the one form
+    /// ([`Observed::replaced_path`]) is taken as a tool use whose path could not be read
+    /// ([`Seen::Unreadable`]), with its tool and command kept: a path in another form would let a
+    /// rule over paths miss it (FR70).
+    pub fn new(id: BaseId, mut event: Event, watch: Watch) -> Result<Self, ObservedError> {
         let kind = event.body.kind();
         if !accepts_from_platform(kind) {
             return Err(ObservedError::NotFromPlatform(kind));
@@ -103,28 +105,17 @@ impl Observed {
         if watch.bounded() && kind.nature() == Nature::Claim {
             return Err(ObservedError::ClaimBefore(kind));
         }
-        let (event, replaced_path) = match event.body {
-            Body::ToolUse {
-                path: Some(path), ..
-            } if !in_form(&path) => (
-                Event {
-                    at: event.at,
-                    by: event.by,
-                    body: Body::Unreadable {
-                        may_have_been: KindSet::new([EventKind::ToolUse]),
-                    },
-                },
-                Some(path),
-            ),
-            body => (
-                Event {
-                    at: event.at,
-                    by: event.by,
-                    body,
-                },
-                None,
-            ),
-        };
+        if watch.bounded() && kind == EventKind::Unreadable {
+            return Err(ObservedError::UnreadableAhead);
+        }
+        let mut replaced_path = None;
+        if let Body::ToolUse { path, .. } = &mut event.body
+            && let Seen::Value(written) = path
+            && !in_form(written)
+        {
+            replaced_path = Some(std::mem::take(written));
+            *path = Seen::Unreadable;
+        }
         Ok(Self {
             id,
             event,
@@ -148,7 +139,7 @@ impl Observed {
         self.watch
     }
 
-    /// The path of a tool use that was not in the one form, when the event was replaced for it.
+    /// The path of a tool use that was not in the one form, when it was made unreadable for it.
     pub fn replaced_path(&self) -> Option<&str> {
         self.replaced_path.as_deref()
     }
@@ -172,6 +163,12 @@ pub enum ObservedError {
     NotFromPlatform(EventKind),
     /// A claim cannot be judged ahead.
     ClaimBefore(EventKind),
+    /// A record whose kind could not be read ([`Body::Unreadable`]) cannot be judged ahead: no
+    /// policy judges it, so it would pass whatever it was. An event judged ahead has its kind,
+    /// as the hook that reports it says what it is, so this is an error of the adapter that
+    /// made the observation. The adapter is the one that calls [`Observed::new`]; the answer for
+    /// its hook, when it is refused, is [`Watch::fallback`].
+    UnreadableAhead,
 }
 
 impl fmt::Display for ObservedError {
@@ -187,6 +184,12 @@ impl fmt::Display for ObservedError {
                 write!(
                     f,
                     "an event of kind {kind:?} is a claim and is not judged ahead"
+                )
+            }
+            Self::UnreadableAhead => {
+                write!(
+                    f,
+                    "a record whose kind could not be read is not judged ahead"
                 )
             }
         }
@@ -593,8 +596,8 @@ mod tests {
     fn edit(path: &str) -> Event {
         event(Body::ToolUse {
             tool: "Edit".to_owned(),
-            command: None,
-            path: Some(path.to_owned()),
+            command: Seen::Absent,
+            path: Seen::Value(path.to_owned()),
             ok: None,
         })
     }
@@ -745,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_not_in_the_one_form_is_read_as_unreadable() {
+    fn a_path_not_in_the_one_form_is_an_unreadable_path_of_the_same_tool_use() {
         for path in ["src/a.rs", "a", "/abs/b", ".hidden/x"] {
             assert!(in_form(path), "{path}");
             let observed = Observed::new(id(), edit(path), Watch::After).unwrap();
@@ -758,8 +761,11 @@ mod tests {
             assert_eq!(observed.replaced_path(), Some(path));
             assert_eq!(
                 observed.event().body,
-                Body::Unreadable {
-                    may_have_been: KindSet::new([EventKind::ToolUse])
+                Body::ToolUse {
+                    tool: "Edit".to_owned(),
+                    command: Seen::Absent,
+                    path: Seen::Unreadable,
+                    ok: None,
                 }
             );
         }

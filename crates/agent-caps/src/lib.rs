@@ -16,7 +16,7 @@
 //! use agent_caps::domain::adjust::TemporaryBound;
 //! use agent_caps::domain::authority::{Authority, Principal};
 //! use agent_caps::domain::catalog::{Capabilities, Catalog};
-//! use agent_caps::domain::event::{Body, Event};
+//! use agent_caps::domain::event::{Body, Event, Seen};
 //! use agent_caps::domain::judge::{judge, Verdict};
 //! use agent_caps::domain::name::CommandWords;
 //! use agent_caps::domain::policy::{
@@ -34,8 +34,8 @@
 //! let words = |text: &str| CommandWords::new(text.split(' ').map(str::to_owned).collect()).unwrap();
 //! let test_run = |ok| event(Body::ToolUse {
 //!     tool: "Bash".to_owned(),
-//!     command: Some(words("cargo test")),
-//!     path: None,
+//!     command: Seen::Value(words("cargo test")),
+//!     path: Seen::Absent,
 //!     ok: Some(ok),
 //! });
 //!

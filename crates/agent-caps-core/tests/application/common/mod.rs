@@ -22,7 +22,7 @@ use agent_caps_core::application::{
 use agent_caps_core::domain::adjust::TemporaryBound;
 use agent_caps_core::domain::authority::{Authority, Principal};
 use agent_caps_core::domain::catalog::Capabilities;
-use agent_caps_core::domain::event::{Body, Event};
+use agent_caps_core::domain::event::{Body, Event, Seen};
 use agent_caps_core::domain::name::{BindingId, CommandWords, GlobPattern, PolicyId};
 use agent_caps_core::domain::policy::{
     Binding, DefLayer, Expect, Fixture, Level, ModeScope, Polarity, PolicyDef, PolicyGraph, Rule,
@@ -128,8 +128,8 @@ pub fn bash(command: &str, ok: Option<bool>) -> Event {
         agent(),
         Body::ToolUse {
             tool: "Bash".to_owned(),
-            command: Some(words(command)),
-            path: None,
+            command: Seen::Value(words(command)),
+            path: Seen::Absent,
             ok,
         },
     )
@@ -140,8 +140,8 @@ pub fn edit(path: &str) -> Event {
         agent(),
         Body::ToolUse {
             tool: "Edit".to_owned(),
-            command: None,
-            path: Some(path.to_owned()),
+            command: Seen::Absent,
+            path: Seen::Value(path.to_owned()),
             ok: None,
         },
     )

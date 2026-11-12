@@ -14,7 +14,7 @@
 
 use agent_caps_core::domain::authority::Principal;
 use agent_caps_core::domain::catalog::Catalog;
-use agent_caps_core::domain::event::{Body, Event};
+use agent_caps_core::domain::event::{Body, Event, Seen};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::Meter;
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
@@ -62,8 +62,8 @@ fn tool_at(millis: i64) -> Event {
         millis,
         Body::ToolUse {
             tool: "Read".to_owned(),
-            command: None,
-            path: Some("a.rs".to_owned()),
+            command: Seen::Absent,
+            path: Seen::Value("a.rs".to_owned()),
             ok: None,
         },
     )

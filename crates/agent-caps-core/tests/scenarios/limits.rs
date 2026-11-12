@@ -21,7 +21,7 @@
 use agent_caps_core::domain::adjust::{Inadmissible, Lifetime, Temporary, TemporaryBinding};
 use agent_caps_core::domain::authority::{NotCovered, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Catalog, Effect};
-use agent_caps_core::domain::event::{Body, Event};
+use agent_caps_core::domain::event::{Body, Event, Seen};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
 use agent_caps_core::domain::predicate::{By, Cmp, Cond, EventFilter, Pred, Scope, Selector, Span};
@@ -188,8 +188,8 @@ fn bash_by(actor: &Principal, command: &str) -> Event {
         actor,
         Body::ToolUse {
             tool: "Bash".to_owned(),
-            command: Some(words(command)),
-            path: None,
+            command: Seen::Value(words(command)),
+            path: Seen::Absent,
             ok: Some(true),
         },
     )

@@ -25,7 +25,7 @@ and this project adheres to
   reject, task) is taken from a tool call, a prompt or an attested prompt by
   one table, a prompt the platform cannot show the user typed judged as the
   platform's agent (FR64). A tool use whose path is not in the one form is
-  judged as a record that could not be read (FR65). The answers for a hook
+  judged as a tool use whose path could not be read (FR70). The answers for a hook
   (`Response`) keep why, and decide whether a failure stops. `arch-lint.toml`
   keeps the application free of I/O, a clock, randomness, a runtime and shared
   mutable state, and the domain free of the application. No dependency is
@@ -245,6 +245,14 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a field of an event that could not be read is a value
+  of the event (#80). `Body::ToolUse` holds `command` and `path` as the new
+  `event::Seen` (`Absent`, `Value` or `Unreadable`) in place of an `Option`;
+  `tool` and `ok` do not change, and `Used::amount` stays an `Option`. In the
+  `serde` encoding they are written as `"Absent"`, `{"Value":…}` and
+  `"Unreadable"`, where an absent one was `null`. `Body::Unreadable` is the
+  record whose kind could not be read. The ledger's FR65 is withdrawn for
+  FR70, and FR69 is new.
 - Breaking, before 1.0: the core's `serde` encoding is a tool for mapping the
   core's values, not a stored form (#84). A store keeps its own DTOs, its own
   version and its own golden forms, and maps between them and the core's
@@ -747,6 +755,17 @@ and this project adheres to
 
 ### Fixed
 
+- A tool use whose path could not be read is judged by the guards of tool
+  uses (#80, FR69, FR70). Before, a tool use whose path was not in the one
+  form was replaced by a record of no known kind, so no guard on a tool use
+  judged it, and a path in a form no rule expected passed every guard. Now it
+  stays a tool use with its tool and command, and only its path is unreadable:
+  a guard whose condition reads the path cannot tell and stops (a stopping
+  guard denies, an advising one warns), and a guard that does not read it
+  judges the tool use as it is. The same holds for the cap of a platform, an
+  exemption's cover, a reward and the selectors over the history. A record
+  whose kind could not be read is only folded, and is refused when it is to be
+  judged ahead (`ObservedError::UnreadableAhead`).
 - An aborted claim leaves the state as it was given (#64, FR60). Before, it
   gave back the state carried to it, with the intervals the previous event
   closed already settled, so a history folded without its aborted claims could

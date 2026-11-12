@@ -13,7 +13,7 @@
 use agent_caps_core::domain::adjust::Lifetime;
 use agent_caps_core::domain::authority::Principal;
 use agent_caps_core::domain::catalog::Catalog;
-use agent_caps_core::domain::event::{Body, Event};
+use agent_caps_core::domain::event::{Body, Event, Seen};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::GlobPattern;
 use agent_caps_core::domain::policy::{DefLayer, Expect, Level, Polarity, PolicyDef, Rule};
@@ -36,8 +36,8 @@ fn write(actor: &Principal, tool: &str, path: &str) -> Event {
         actor,
         Body::ToolUse {
             tool: tool.to_owned(),
-            command: None,
-            path: Some(path.to_owned()),
+            command: Seen::Absent,
+            path: Seen::Value(path.to_owned()),
             ok: None,
         },
     )
