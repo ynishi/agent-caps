@@ -67,7 +67,7 @@ use super::adjust::TemporaryBound;
 use super::authority::{Authority, Principal};
 #[cfg(feature = "serde")]
 use super::encoding::Errors;
-use super::event::Event;
+use super::event::{Event, Judgeable};
 use super::name::{BindingId, ClassifierName, Mode, PolicyId, PolicyName};
 use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Selector, Truth, reads_unnarrowed};
 use super::schema::{EventKind, Field};
@@ -971,8 +971,9 @@ impl Policy {
         slots: &SlotTable,
         authority: &Authority,
         state: &State,
-        event: &Event,
+        event: &Judgeable,
     ) -> Finding {
+        let event = event.event();
         if event.body.kind() != self.def.subject {
             return Finding::NotApplicable;
         }

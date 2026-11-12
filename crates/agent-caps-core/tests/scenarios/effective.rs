@@ -9,8 +9,8 @@ use agent_caps_core::domain::policy::Level;
 use agent_caps_core::domain::state::{Known, Origin};
 
 use super::common::{
-    GUARD, REWARD, Written, agent, bind, catalog, clippy_reward, id, inside, listed, mode, outside,
-    test_guard, the_user,
+    GUARD, REWARD, Written, agent, bind, catalog, clippy_reward, id, inside, judgeable, listed,
+    mode, outside, test_guard, the_user,
 };
 
 /// The guard with no binding of its author's under every mode: its bindings are the scenario's.
@@ -88,7 +88,7 @@ fn the_effective_policies_are_listed_per_mode() {
     let outcome = judge(
         &catalog,
         &state,
-        events.last().unwrap(),
+        &judgeable(events.last().unwrap()),
         &Capabilities::full(),
     )
     .unwrap();

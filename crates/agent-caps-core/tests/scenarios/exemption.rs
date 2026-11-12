@@ -13,8 +13,8 @@ use agent_caps_core::domain::state::Origin;
 use agent_caps_core::domain::tx::{TxDecision, TxPolicy};
 
 use super::common::{
-    GUARD, OTHER, agent, at, catalog, edit, exempt_n, exempt_n_by, id, src_edit_guard, test_guard,
-    the_agent, the_helper, the_user, unreadable, user, verdict,
+    GUARD, OTHER, agent, at, catalog, edit, exempt_n, exempt_n_by, id, judgeable, src_edit_guard,
+    test_guard, the_agent, the_helper, the_user, unreadable, user, verdict,
 };
 
 /// An exemption of `guard` with no cover, for the task; its id is the `n`th.
@@ -79,7 +79,13 @@ fn a_users_exemption_covers_its_target_for_its_lifetime() {
 
     // `Next` is used up by the judgment it covered.
     let state = catalog.fold(Origin::Genesis, &next);
-    let outcome = judge(&catalog, &state, &next[2], &Capabilities::full()).unwrap();
+    let outcome = judge(
+        &catalog,
+        &state,
+        &judgeable(&next[2]),
+        &Capabilities::full(),
+    )
+    .unwrap();
     let mut events = next.to_vec();
     events.extend(outcome.evidence(At::from_millis(1)));
     events.push(edit("src/a.rs"));

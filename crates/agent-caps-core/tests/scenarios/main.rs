@@ -58,3 +58,4 @@ mod timing;
 mod typecheck;
 mod unreadable;
 mod unreadable_field;
+mod unreadable_kind;

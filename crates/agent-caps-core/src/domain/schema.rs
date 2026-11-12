@@ -194,6 +194,30 @@ impl EventKind {
             | Self::Judged => Nature::Claim,
         }
     }
+
+    /// Whether a rule may name this kind: the kind an event has when it could be read.
+    /// [`Unreadable`](Self::Unreadable) is the kind of a record that could not be read, and a
+    /// rule can say nothing of such a record (the fold only makes what it may have changed
+    /// unknown). So it is no subject of a policy, no kind of a filter or of a platform's
+    /// capabilities, and no event is judged with it. This is the one place that says so (FR71).
+    pub fn is_nameable(self) -> bool {
+        match self {
+            Self::Unreadable => false,
+            Self::SessionStart
+            | Self::Spawn
+            | Self::TaskStart
+            | Self::PromptSubmit
+            | Self::ToolUse
+            | Self::Stop
+            | Self::Used
+            | Self::ModeSwitch
+            | Self::Measured
+            | Self::Classified
+            | Self::Adjust
+            | Self::Cancel
+            | Self::Judged => true,
+        }
+    }
 }
 
 /// A set of kinds of event, each at most once: for a record that could not be read, the kinds

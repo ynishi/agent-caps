@@ -25,8 +25,8 @@ use agent_caps_core::domain::tx::checks::AllOk;
 use agent_caps_core::domain::tx::{AdjustmentCheck, CheckFinding, TxDecision, TxInput, TxPolicy};
 
 use super::common::{
-    GUARD, adjustment, agent, anyone, at, authority, by_author, catalog, graph_of, id, lineage,
-    test_guard, the_user, user, violated,
+    GUARD, adjustment, agent, anyone, at, authority, by_author, catalog, graph_of, id, judgeable,
+    lineage, test_guard, the_user, user, violated,
 };
 
 /// The catalog of the test guard at Force, and the same sources changed by the root: the next
@@ -85,7 +85,13 @@ fn a_state_from_before_a_change_is_behind_and_folded_again_it_is_accepted() {
 
     let again = second.fold(Origin::Genesis, &history());
     assert_eq!(second.owns(&again), Ok(()));
-    let outcome = judge(&second, &again, &history()[1], &Capabilities::full()).unwrap();
+    let outcome = judge(
+        &second,
+        &again,
+        &judgeable(&history()[1]),
+        &Capabilities::full(),
+    )
+    .unwrap();
     assert_eq!(outcome.verdict, violated());
 }
 
@@ -162,7 +168,10 @@ fn every_entry_that_takes_a_state_refuses_a_stale_one() {
 
     assert_eq!(second.effective_in(&old).unwrap_err(), expected);
     assert_eq!(second.enforced_in(&old, &caps).unwrap_err(), expected);
-    assert_eq!(judge(&second, &old, event, &caps).unwrap_err(), expected);
+    assert_eq!(
+        judge(&second, &old, &judgeable(event), &caps).unwrap_err(),
+        expected
+    );
     assert_eq!(
         second
             .admit(&old, event, &TxPolicy::standard())
@@ -198,7 +207,7 @@ fn a_state_of_the_same_catalog_passes() {
         assert_eq!(state.generation(), second.generation());
         assert!(second.effective_in(&state).is_ok());
         assert!(second.enforced_in(&state, &caps).is_ok());
-        assert!(judge(&second, &state, event, &caps).is_ok());
+        assert!(judge(&second, &state, &judgeable(event), &caps).is_ok());
         assert!(second.admit(&state, event, &TxPolicy::standard()).is_ok());
     }
 }

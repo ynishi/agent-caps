@@ -16,7 +16,8 @@ use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment};
 use agent_caps_core::domain::state::Origin;
 
 use super::common::{
-    GUARD, Written, agent, anyone, bash, catalog, id, test_guard, the_user, verdict, violated,
+    GUARD, Written, agent, anyone, bash, catalog, id, judgeable, test_guard, the_user, verdict,
+    violated,
 };
 
 /// The test guard, applying only while it has not yet denied within the session: the count of
@@ -96,7 +97,7 @@ fn a_guard_can_let_the_second_stop_through_by_counting_its_own_denials() {
     let mut events = vec![agent(Body::SessionStart), agent(Body::TaskStart)];
     let stop = agent(Body::Stop);
     let state = catalog.fold(Origin::Genesis, events.iter().chain([&stop]));
-    let first = judge(&catalog, &state, &stop, &Capabilities::full()).unwrap();
+    let first = judge(&catalog, &state, &judgeable(&stop), &Capabilities::full()).unwrap();
     assert!(matches!(first.verdict, Verdict::Deny(_)));
     let evidence = first.evidence(At::from_millis(1));
     assert!(evidence.iter().all(|e| e.by == the_user()));

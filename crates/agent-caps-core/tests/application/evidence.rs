@@ -224,7 +224,7 @@ fn a_path_not_in_the_one_form_is_written_as_a_tool_use_with_an_unreadable_path()
     assert_eq!(observe(&log, "s", stop(), GATE), Ok(denied(STOP_GUARD)));
 }
 
-/// FR70, FR69: a tool use whose path is not in the one form is judged ahead, as the tool use it is:
+/// FR70, FR71: a tool use whose path is not in the one form is judged ahead, as the tool use it is:
 /// the guard over edits under `src/` reads the path, so it cannot tell and stops the edit; the
 /// same edit in the form outside `src/` is let through.
 #[test]

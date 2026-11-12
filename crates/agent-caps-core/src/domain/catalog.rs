@@ -216,7 +216,7 @@ use std::fmt;
 
 use super::adjust::{AdjustIndex, BoundKind, Reach, TemporaryBound, TooStrong, may_bind_at};
 use super::authority::{Authority, NotWithin, Principal};
-use super::event::Event;
+use super::event::Judgeable;
 use super::name::{BindingId, ClassifierName, Mode, PolicyId};
 use super::policy::{
     Binding, DefLayer, Expect, Level, ModeScope, Polarity, Policy, PolicyDef, PolicyGraph, Rule,
@@ -359,6 +359,12 @@ pub enum AcceptError {
         /// What is wrong.
         error: PredError,
     },
+    /// The subject of the policy is a kind no rule may name ([`EventKind::is_nameable`]). To fix
+    /// it, give the policy the kind of event it judges.
+    SubjectNotNameable {
+        /// The policy.
+        policy: PolicyId,
+    },
     /// The reward is bound by a policy that does not exist.
     UnknownBound {
         /// The reward.
@@ -383,6 +389,14 @@ pub enum AcceptError {
     },
     /// The fixture has no event to judge.
     EmptyFixture {
+        /// The policy.
+        policy: PolicyId,
+        /// The fixture.
+        fixture: String,
+    },
+    /// The fixture's last event is a record whose kind could not be read, which no policy judges
+    /// ([`Judgeable`]). To fix it, end the fixture with the event the policy judges.
+    FixtureNoKind {
         /// The policy.
         policy: PolicyId,
         /// The fixture.
@@ -478,6 +492,9 @@ impl fmt::Display for AcceptError {
                 "meta policy {policy} reads judgments without naming the policies"
             ),
             Self::Predicate { policy, error } => write!(f, "policy {policy}: {error}"),
+            Self::SubjectNotNameable { policy } => {
+                write!(f, "policy {policy} has a subject no rule may name")
+            }
             Self::UnknownBound { reward, bound_by } => {
                 write!(
                     f,
@@ -498,6 +515,10 @@ impl fmt::Display for AcceptError {
             Self::EmptyFixture { policy, fixture } => {
                 write!(f, "fixture `{fixture}` of {policy} has no event")
             }
+            Self::FixtureNoKind { policy, fixture } => write!(
+                f,
+                "fixture `{fixture}` of {policy} ends with a record whose kind could not be read"
+            ),
             Self::FixtureFailed {
                 policy,
                 fixture,
@@ -775,7 +796,8 @@ impl Capabilities {
 
     /// The highest level the platform enforces on `event`: the lowest among the possible worlds.
     /// Whether a filter matches is decided by the one matcher the state uses.
-    pub fn cap(&self, event: &Event) -> Level {
+    pub fn cap(&self, event: &Judgeable) -> Level {
+        let event = event.event();
         let kind = event.body.kind();
         let mut lowest: Option<Level> = None;
         let mut surely = false;
@@ -2044,9 +2066,13 @@ fn check_actors(policies: &[Policy], authority: &Authority, errors: &mut Vec<Acc
     }
 }
 
-/// Every predicate type-checks, and every reward is bound by a guard of the graph.
+/// Every subject is a kind a rule may name, every predicate type-checks, and every reward is
+/// bound by a guard of the graph.
 fn check_policies(graph: &PolicyGraph, errors: &mut Vec<AcceptError>) {
     for def in graph.policies() {
+        if !def.subject.is_nameable() {
+            errors.push(AcceptError::SubjectNotNameable { policy: def.id });
+        }
         let Rule::Structural(rule) = &def.rule;
         for pred in def.when.iter().chain(std::iter::once(rule)) {
             for error in pred.check(def.subject) {

@@ -854,6 +854,8 @@ pub enum PredError {
         /// Its type.
         ty: FieldType,
     },
+    /// A filter names a kind a rule may not name ([`EventKind::is_nameable`]).
+    NotNameable(EventKind),
 }
 
 impl std::fmt::Display for PredError {
@@ -866,6 +868,9 @@ impl std::fmt::Display for PredError {
             ),
             Self::Mismatch { field, ty } => {
                 write!(f, "{field:?} is {ty:?} and is compared with another type")
+            }
+            Self::NotNameable(kind) => {
+                write!(f, "{kind:?} is a kind no rule may name")
             }
         }
     }
@@ -930,7 +935,8 @@ impl Cond {
 }
 
 impl EventFilter {
-    /// What is wrong with the filter: its condition is read from an event of its own kind.
+    /// What is wrong with the filter: its kind is one a rule may name
+    /// ([`EventKind::is_nameable`]), and its condition is read from an event of that kind.
     pub fn check(&self) -> Vec<PredError> {
         let mut errors = Vec::new();
         self.check_into(&mut errors);
@@ -938,6 +944,9 @@ impl EventFilter {
     }
 
     fn check_into(&self, errors: &mut Vec<PredError>) {
+        if !self.kind.is_nameable() {
+            errors.push(PredError::NotNameable(self.kind));
+        }
         if let Some(cond) = &self.cond {
             cond.check_into(self.kind, errors);
         }

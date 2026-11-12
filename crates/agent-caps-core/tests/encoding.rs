@@ -1797,7 +1797,7 @@ fn a_missing_field_that_may_hold_nothing_is_refused() {
 /// is refused: the `null` that a field which may be absent was once written as is no state of a
 /// `Seen`, and a field that is missing is not read as absent.
 ///
-/// FR68, FR69.
+/// FR68, FR71.
 #[test]
 fn a_field_that_could_not_be_read_is_told_from_one_that_is_absent_in_the_encoding() {
     let tool_use = |command: &str, path: &str| {

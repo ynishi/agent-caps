@@ -20,8 +20,8 @@ use agent_caps_core::domain::state::{Known, Origin};
 
 use super::common::{
     GUARD, OTHER, REWARD, Written, agent, at, bash, bind, by_author, catalog, clippy_reward,
-    commit_after_test_guard, edit, graph_of, id, inside, mode, outside, src_edit_guard, test_guard,
-    the_agent, the_user, violated,
+    commit_after_test_guard, edit, graph_of, id, inside, judgeable, mode, outside, src_edit_guard,
+    test_guard, the_agent, the_user, violated,
 };
 
 /// Every tool call, whatever the tool.
@@ -63,7 +63,7 @@ fn cannot_stop_ahead() -> Capabilities {
 /// The outcome on the last event, with the state folded over all of them, on a platform.
 fn judged_on(catalog: &Catalog, events: &[Event], caps: &Capabilities) -> Outcome {
     let state = catalog.fold(Origin::Genesis, events);
-    judge(catalog, &state, events.last().unwrap(), caps).unwrap()
+    judge(catalog, &state, &judgeable(events.last().unwrap()), caps).unwrap()
 }
 
 fn commit() -> [Event; 2] {
@@ -162,6 +162,7 @@ fn a_filter_that_cannot_tell_is_the_lowest_of_the_worlds_it_may_be() {
     let failed = bash("git commit -m x", Some(false));
 
     // Force where the call succeeded, Advise elsewhere: not knowing is Advise.
+    let (passed, failed, running) = (judgeable(&passed), judgeable(&failed), judgeable(&running));
     let caps = capabilities(vec![(succeeded(), Level::Force)], Level::Advise);
     assert_eq!(caps.cap(&passed), Level::Force);
     assert_eq!(caps.cap(&failed), Level::Advise);
@@ -177,7 +178,7 @@ fn a_filter_that_cannot_tell_is_the_lowest_of_the_worlds_it_may_be() {
     // A filter by tool is known on every call, so it never needs this.
     let caps = capabilities(vec![(tool_is("Bash"), Level::Force)], Level::Advise);
     assert_eq!(caps.cap(&running), Level::Force);
-    assert_eq!(caps.cap(&edit("src/a.rs")), Level::Advise);
+    assert_eq!(caps.cap(&judgeable(&edit("src/a.rs"))), Level::Advise);
 
     // The platform's cap is not looser than the world it cannot see: a guard judged ahead of its
     // result is enforced at the lowest.
@@ -422,11 +423,11 @@ fn the_list_shows_a_cap_that_differs_by_event_and_never_says_more_than_a_judgmen
     for caps in [&caps, &both] {
         for event in &events {
             let kind = event.body.kind();
-            assert!(caps.cap_kind(kind).at_least() <= caps.cap(event));
+            assert!(caps.cap_kind(kind).at_least() <= caps.cap(&judgeable(event)));
         }
     }
-    assert_eq!(both.cap(&events[0]), Level::Inform);
-    assert_eq!(both.cap(&events[2]), Level::Advise);
+    assert_eq!(both.cap(&judgeable(&events[0])), Level::Inform);
+    assert_eq!(both.cap(&judgeable(&events[2])), Level::Advise);
 }
 
 /// FR40, UC11: a catalog can be checked against the capabilities before use. The check lists what

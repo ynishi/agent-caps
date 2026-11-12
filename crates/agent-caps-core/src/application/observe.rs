@@ -17,7 +17,7 @@ use std::fmt;
 use std::num::{NonZeroU8, NonZeroU16};
 
 use crate::domain::catalog::{Capabilities, Catalog, StaleState};
-use crate::domain::event::{Body, Event, Seen};
+use crate::domain::event::{Body, Event, Judgeable, Seen};
 use crate::domain::judge::{Cause, Outcome, Verdict, judge};
 use crate::domain::schema::{EventKind, Nature};
 use crate::domain::state::State;
@@ -80,12 +80,22 @@ pub enum Fallback {
     Pass,
 }
 
+/// The event of an observation, held as the watch needs it: one that is judged ahead is a
+/// [`Judgeable`], so [`decide`] gives it to [`judge`] without checking its kind again; one that is
+/// read back is the [`Event`] it is. Each variant is one [`Watch`], so no watch is held with an
+/// event it cannot be judged with.
+#[derive(Debug, Clone, PartialEq)]
+enum Observation {
+    Before(Judgeable),
+    Gate(Judgeable, Fallback),
+    After(Event),
+}
+
 /// One observation: its id on the platform, the event, and how it is taken.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Observed {
     id: BaseId,
-    event: Event,
-    watch: Watch,
+    observation: Observation,
     replaced_path: Option<String>,
 }
 
@@ -105,9 +115,6 @@ impl Observed {
         if watch.bounded() && kind.nature() == Nature::Claim {
             return Err(ObservedError::ClaimBefore(kind));
         }
-        if watch.bounded() && kind == EventKind::Unreadable {
-            return Err(ObservedError::UnreadableAhead);
-        }
         let mut replaced_path = None;
         if let Body::ToolUse { path, .. } = &mut event.body
             && let Seen::Value(written) = path
@@ -116,10 +123,16 @@ impl Observed {
             replaced_path = Some(std::mem::take(written));
             *path = Seen::Unreadable;
         }
+        let ahead =
+            |event: Event| Judgeable::try_from(event).map_err(|_| ObservedError::UnreadableAhead);
+        let observation = match watch {
+            Watch::Before => Observation::Before(ahead(event)?),
+            Watch::Gate { fallback } => Observation::Gate(ahead(event)?, fallback),
+            Watch::After => Observation::After(event),
+        };
         Ok(Self {
             id,
-            event,
-            watch,
+            observation,
             replaced_path,
         })
     }
@@ -131,12 +144,21 @@ impl Observed {
 
     /// The event as it is judged and written.
     pub fn event(&self) -> &Event {
-        &self.event
+        match &self.observation {
+            Observation::Before(ahead) | Observation::Gate(ahead, _) => ahead.event(),
+            Observation::After(event) => event,
+        }
     }
 
     /// How it is taken.
     pub fn watch(&self) -> Watch {
-        self.watch
+        match &self.observation {
+            Observation::Before(_) => Watch::Before,
+            Observation::Gate(_, fallback) => Watch::Gate {
+                fallback: *fallback,
+            },
+            Observation::After(_) => Watch::After,
+        }
     }
 
     /// The path of a tool use that was not in the one form, when it was made unreadable for it.
@@ -163,11 +185,11 @@ pub enum ObservedError {
     NotFromPlatform(EventKind),
     /// A claim cannot be judged ahead.
     ClaimBefore(EventKind),
-    /// A record whose kind could not be read ([`Body::Unreadable`]) cannot be judged ahead: no
-    /// policy judges it, so it would pass whatever it was. An event judged ahead has its kind,
-    /// as the hook that reports it says what it is, so this is an error of the adapter that
-    /// made the observation. The adapter is the one that calls [`Observed::new`]; the answer for
-    /// its hook, when it is refused, is [`Watch::fallback`].
+    /// A record whose kind could not be read ([`Body::Unreadable`]) cannot be judged ahead: it is
+    /// no [`Judgeable`], and nothing can be said of it but that it is unknown. An event judged
+    /// ahead has its kind, as the hook that reports it says what it is, so this is an error of
+    /// the adapter that made the observation. The adapter is the one that calls
+    /// [`Observed::new`]; the answer for its hook, when it is refused, is [`Watch::fallback`].
     UnreadableAhead,
 }
 
@@ -505,15 +527,14 @@ pub(super) fn decide(
     caps: &Capabilities,
     under: &GenerationMark,
 ) -> Result<(Response, Vec<(EntryId, WorkRecord)>), ServiceError> {
-    let event = observed.event();
     let id = observed.id();
-    let judged = |state: &State| -> Result<(Outcome, Vec<Item>), StaleState> {
+    let judged = |state: &State, ahead: &Judgeable| -> Result<(Outcome, Vec<Item>), StaleState> {
         let copy = catalog
-            .apply(state.clone(), event)
+            .apply(state.clone(), ahead.event())
             .map_err(|stale| stale.stale)?;
-        let outcome = judge(catalog, &copy, event, caps)?;
+        let outcome = judge(catalog, &copy, ahead, caps)?;
         let claims = outcome
-            .evidence(event.at)
+            .evidence(ahead.event().at)
             .into_iter()
             .zip(1u16..)
             .filter_map(|(judgment, k)| {
@@ -526,21 +547,21 @@ pub(super) fn decide(
             .collect();
         Ok((outcome, claims))
     };
-    match observed.watch() {
-        Watch::Before => {
-            let (outcome, claims) = judged(&state)?;
+    match &observed.observation {
+        Observation::Before(ahead) => {
+            let (outcome, claims) = judged(&state, ahead)?;
             let recorded = record(catalog, state, under, claims)?;
             Ok((Response::of_outcome(&outcome), recorded.records))
         }
-        Watch::Gate { .. } => {
-            let (outcome, claims) = judged(&state)?;
+        Observation::Gate(ahead, _) => {
+            let (outcome, claims) = judged(&state, ahead)?;
             let response = Response::of_outcome(&outcome);
             let items = match response {
                 Response::Block(_) => claims,
                 Response::Pass | Response::Context(_) => {
                     let act = Item::Act {
                         id: id.entry(),
-                        event: event.clone(),
+                        event: ahead.event().clone(),
                         source: ActSource::Platform,
                     };
                     std::iter::once(act).chain(claims).collect()
@@ -549,7 +570,7 @@ pub(super) fn decide(
             let recorded = record(catalog, state, under, items)?;
             Ok((response, recorded.records))
         }
-        Watch::After => {
+        Observation::After(event) => {
             let item = match event.body.kind().nature() {
                 Nature::Act => Item::Act {
                     id: id.entry(),
