@@ -177,6 +177,12 @@ impl Outcome {
 /// the enforced level. A claim's transaction does not take the capabilities: they are the
 /// platform's fact, and what a claim loosens is judged by the written strength.
 ///
+/// A record whose kind could not be read ([`Body::Unreadable`])
+/// is judged by no policy: a policy judges the events of its subject's kind, and that kind is
+/// none. An event judged before it runs has its kind, which the application makes sure of
+/// (FR70); a field of it that could not be read is a [`Seen::Unreadable`](super::event::Seen)
+/// of an event that is judged (FR69).
+///
 /// A state of another generation is refused ([`Catalog::owns`]).
 pub fn judge(
     catalog: &Catalog,

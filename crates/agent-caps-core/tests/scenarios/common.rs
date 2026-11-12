@@ -17,7 +17,7 @@ use std::ops::{Deref, DerefMut};
 use agent_caps_core::domain::adjust::{Adjustment, Lifetime, Temporary, TemporaryBound};
 use agent_caps_core::domain::authority::{Authority, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Catalog, Effect, Rejected};
-use agent_caps_core::domain::event::{Body, Event};
+use agent_caps_core::domain::event::{Body, Event, Seen};
 use agent_caps_core::domain::judge::{Cause, Outcome, Verdict, judge};
 use agent_caps_core::domain::name::{
     AdjustmentId, BindingId, CommandWords, GlobPattern, Mode, PolicyId,
@@ -65,8 +65,8 @@ pub fn user(body: Body) -> Event {
 pub fn bash(command: &str, ok: Option<bool>) -> Event {
     agent(Body::ToolUse {
         tool: "Bash".to_owned(),
-        command: Some(words(command)),
-        path: None,
+        command: Seen::Value(words(command)),
+        path: Seen::Absent,
         ok,
     })
 }
@@ -74,8 +74,8 @@ pub fn bash(command: &str, ok: Option<bool>) -> Event {
 pub fn edit(path: &str) -> Event {
     agent(Body::ToolUse {
         tool: "Edit".to_owned(),
-        command: None,
-        path: Some(path.to_owned()),
+        command: Seen::Absent,
+        path: Seen::Value(path.to_owned()),
         ok: None,
     })
 }
@@ -83,8 +83,29 @@ pub fn edit(path: &str) -> Event {
 pub fn read(path: &str) -> Event {
     agent(Body::ToolUse {
         tool: "Read".to_owned(),
-        command: None,
-        path: Some(path.to_owned()),
+        command: Seen::Absent,
+        path: Seen::Value(path.to_owned()),
+        ok: None,
+    })
+}
+
+/// A tool use of `command` whose path could not be read: the tool touches one, and it was not
+/// read.
+pub fn bash_path_unreadable(command: &str, ok: Option<bool>) -> Event {
+    agent(Body::ToolUse {
+        tool: "Bash".to_owned(),
+        command: Seen::Value(words(command)),
+        path: Seen::Unreadable,
+        ok,
+    })
+}
+
+/// An edit whose path could not be read.
+pub fn edit_path_unreadable() -> Event {
+    agent(Body::ToolUse {
+        tool: "Edit".to_owned(),
+        command: Seen::Absent,
+        path: Seen::Unreadable,
         ok: None,
     })
 }

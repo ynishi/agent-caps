@@ -6,9 +6,10 @@
 //! that principal sits is the caller's arrangement ([`super::authority`]), plus the leaves that
 //! spawns add to it ([`super::state`]); a rule reads it with
 //! [`Pred::ActorUnder`](super::predicate::Pred::ActorUnder). Whether an event is an
-//! act or a claim is its kind's [`Nature`](super::schema::Nature). A record the adapter cannot
-//! read is not dropped but becomes [`Body::Unreadable`], with the kinds it may have been, so the
-//! state knows what it has not seen.
+//! act or a claim is its kind's [`Nature`](super::schema::Nature). A record whose kind the
+//! adapter cannot read is not dropped but becomes [`Body::Unreadable`], with the kinds it may have
+//! been, so the state knows what it has not seen. A field of an event that cannot be read is
+//! another case: the event keeps its kind, and the field is [`Seen::Unreadable`].
 //!
 //! The fold history holds only events that happened. An act judged before it runs (a
 //! [`Body::ToolUse`] whose `ok` is not known yet) is judged on a copy of the state with the act
@@ -20,6 +21,30 @@ use super::authority::Principal;
 use super::name::{AdjustmentId, ClassifierName, CommandWords, Meter, Mode, PolicyId};
 use super::predicate::{Amount, Cond, Lit, Truth};
 use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
+
+/// A field of an event that can be missing: the value that was read, nothing there, or something
+/// there that could not be read.
+///
+/// A field that could not be read does not change the kind of its event: the event is judged as
+/// the event it is, and only the conditions that read the field cannot tell (FR69). What a
+/// condition that cannot tell comes to is the rule of each place that holds one (FR20): the
+/// judge, the cap of a platform, an exemption's cover, a selector. "Nothing there" is a fact
+/// about the event, and a comparison with it is false; "could not be read" is a fact about the
+/// reader, and a comparison with it is unknown.
+///
+/// Only a field that can be missing is a `Seen`. An amount that was measured has no "nothing
+/// there", so [`Body::Used`] keeps an `Option`; the success of a tool call is not yet known, which
+/// is neither (`ok`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Seen<T> {
+    /// There is nothing: the event has no place for the value (a comparison with it is false).
+    Absent,
+    /// The value that was read.
+    Value(T),
+    /// There is something, and it could not be read (a comparison with it is unknown).
+    Unreadable,
+}
 
 /// One event: when, from whom, and what.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,12 +94,10 @@ pub enum Body {
     ToolUse {
         /// The tool, as the platform names it.
         tool: String,
-        /// The command; `None` when the tool runs none (absent: a comparison with it is false).
-        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
-        command: Option<CommandWords>,
-        /// The path; `None` when the tool touches none (absent: a comparison with it is false).
-        #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
-        path: Option<String>,
+        /// The command; absent when the tool runs none.
+        command: Seen<CommandWords>,
+        /// The path; absent when the tool touches none.
+        path: Seen<String>,
         /// Whether the call succeeded; `None` until that is known (unknown).
         #[cfg_attr(feature = "serde", serde(deserialize_with = "Option::deserialize"))]
         ok: Option<bool>,
@@ -151,7 +174,9 @@ pub enum Body {
         /// platform's capabilities ([`super::catalog::Capabilities`]).
         enforced: Level,
     },
-    /// A record that could not be read.
+    /// A record whose kind could not be read. It is only folded, and [`super::judge::judge`] says
+    /// why no policy judges it. A field that could not be read is not this but a
+    /// [`Seen::Unreadable`] of an event of its kind.
     Unreadable {
         /// The kinds of event it may have been, as the adapter tells from where the record was.
         /// The state makes unknown what an event of each of them may have changed.
@@ -256,10 +281,23 @@ pub(super) enum Read {
     OtherKind,
     /// The event has no place for the value.
     Absent,
-    /// The event has the value, but it was not known when the event was read.
+    /// The event has the value, but it was not known when the event was read, or it could not be
+    /// read ([`Seen::Unreadable`]).
     Unknown,
     /// The value.
     Found(Value),
+}
+
+impl<T> Seen<T> {
+    /// What reading the field finds: nothing there, the value (made a [`Value`] by `to_value`),
+    /// or a value that is not known.
+    fn read(&self, to_value: impl FnOnce(&T) -> Value) -> Read {
+        match self {
+            Self::Absent => Read::Absent,
+            Self::Value(value) => Read::Found(to_value(value)),
+            Self::Unreadable => Read::Unknown,
+        }
+    }
 }
 
 impl Body {
@@ -285,14 +323,15 @@ impl Body {
 
     /// The value of `field` in this event.
     pub(super) fn read(&self, field: Field) -> Read {
-        let absent = |value: Option<Value>| value.map_or(Read::Absent, Read::Found);
         let unknown = |value: Option<Value>| value.map_or(Read::Unknown, Read::Found);
         match (self, field) {
             (Self::ToolUse { tool, .. }, Field::Tool) => Read::Found(Value::Text(tool.clone())),
             (Self::ToolUse { command, .. }, Field::Command) => {
-                absent(command.clone().map(Value::Words))
+                command.read(|words| Value::Words(words.clone()))
             }
-            (Self::ToolUse { path, .. }, Field::Path) => absent(path.clone().map(Value::Text)),
+            (Self::ToolUse { path, .. }, Field::Path) => {
+                path.read(|text| Value::Text(text.clone()))
+            }
             (Self::ToolUse { ok, .. }, Field::Ok) => unknown(ok.map(Value::Bool)),
             (Self::ModeSwitch { to }, Field::ModeTo) => Read::Found(Value::Text(to.to_string())),
             (Self::Measured { oracle, .. }, Field::Oracle) => {
@@ -359,10 +398,10 @@ mod tests {
     fn bash(command: &str, ok: Option<bool>) -> Body {
         Body::ToolUse {
             tool: "Bash".to_owned(),
-            command: Some(
+            command: Seen::Value(
                 CommandWords::new(command.split_whitespace().map(str::to_owned).collect()).unwrap(),
             ),
-            path: None,
+            path: Seen::Absent,
             ok,
         }
     }
@@ -396,6 +435,29 @@ mod tests {
         let ok = Cond::Eq(Field::Ok, Lit::Bool(true));
         assert_eq!(event.holds(&ok), Truth::Unknown);
         assert_eq!(event.holds(&Cond::Not(Box::new(ok))), Truth::Unknown);
+    }
+
+    /// FR69: a field that could not be read is unknown, under `not` as well, and the fields that
+    /// were read are read as they are.
+    #[test]
+    fn a_field_that_could_not_be_read_is_unknown() {
+        let Body::ToolUse { tool, command, .. } = bash("cargo test", Some(true)) else {
+            unreachable!()
+        };
+        let event = Body::ToolUse {
+            tool,
+            command,
+            path: Seen::Unreadable,
+            ok: Some(true),
+        };
+        assert_eq!(event.read(Field::Path), Read::Unknown);
+        let path = Cond::Glob(Field::Path, GlobPattern::new("*").unwrap());
+        assert_eq!(event.holds(&path), Truth::Unknown);
+        assert_eq!(event.holds(&Cond::Not(Box::new(path))), Truth::Unknown);
+        assert_eq!(
+            event.read(Field::Tool),
+            Read::Found(Value::Text("Bash".to_owned()))
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ use agent_caps_core::domain::adjust::{
 use agent_caps_core::domain::authority::{Authority, Principal};
 use agent_caps_core::domain::catalog::{Catalog, Target};
 use agent_caps_core::domain::change::Loosening;
-use agent_caps_core::domain::event::{Body, Event};
+use agent_caps_core::domain::event::{Body, Event, Seen as FieldState};
 use agent_caps_core::domain::name::{
     AdjustmentId, BindingId, ClassifierName, CommandWords, GlobPattern, Meter, Mode, PolicyId,
     PolicyName, Reason,
@@ -142,11 +142,14 @@ fn event(by: &Principal, millis: i64, body: Body) -> Event {
     }
 }
 
+/// A tool use whose command and path are each there or absent (`None`).
 fn tool_use(command: Option<&str>, path: Option<&str>, ok: Option<bool>) -> Body {
     Body::ToolUse {
         tool: "Bash".to_owned(),
-        command: command.map(words),
-        path: path.map(str::to_owned),
+        command: command.map_or(FieldState::Absent, |text| FieldState::Value(words(text))),
+        path: path.map_or(FieldState::Absent, |text| {
+            FieldState::Value(text.to_owned())
+        }),
         ok,
     }
 }
@@ -533,6 +536,17 @@ fn events() -> Vec<Event> {
         ),
         event(&agent, 5, tool_use(None, Some("src/a b.rs"), Some(false))),
         event(&agent, 6, tool_use(None, None, None)),
+        // A command and a path that were there and could not be read.
+        event(
+            &agent,
+            6,
+            Body::ToolUse {
+                tool: "Bash".to_owned(),
+                command: FieldState::Unreadable,
+                path: FieldState::Unreadable,
+                ok: None,
+            },
+        ),
         event(&agent, 7, Body::Stop),
         event(
             &agent,
@@ -824,9 +838,13 @@ seen! {
     ReaderSeen { policy, adjustment }
     OptionSeen {
         when_some, when_none, filter_cond_some, filter_cond_none, cover_some, cover_none,
-        command_some, command_none, path_some, path_none, ok_some, ok_none, amount_some,
+        ok_some, ok_none, amount_some,
         amount_none, record_some, record_none, bound_some, bound_none, known_gap_true,
         known_gap_false, moves_mode_some, moves_mode_none,
+    }
+    FieldStateSeen {
+        command_absent, command_value, command_unreadable, path_absent, path_value,
+        path_unreadable,
     }
 }
 
@@ -859,6 +877,7 @@ struct Seen {
     rule_move: RuleMoveSeen,
     reader: ReaderSeen,
     option: OptionSeen,
+    field_state: FieldStateSeen,
 }
 
 impl Seen {
@@ -891,6 +910,7 @@ impl Seen {
             rule_move,
             reader,
             option,
+            field_state,
         } = self;
         body.assert_all();
         pred.assert_all();
@@ -919,6 +939,7 @@ impl Seen {
         rule_move.assert_all();
         reader.assert_all();
         option.assert_all();
+        field_state.assert_all();
     }
 }
 
@@ -1219,12 +1240,14 @@ fn walk_body(seen: &mut Seen, body: &Body) {
         } => {
             seen.body.tool_use = true;
             match command {
-                Some(_) => seen.option.command_some = true,
-                None => seen.option.command_none = true,
+                FieldState::Absent => seen.field_state.command_absent = true,
+                FieldState::Value(_) => seen.field_state.command_value = true,
+                FieldState::Unreadable => seen.field_state.command_unreadable = true,
             }
             match path {
-                Some(_) => seen.option.path_some = true,
-                None => seen.option.path_none = true,
+                FieldState::Absent => seen.field_state.path_absent = true,
+                FieldState::Value(_) => seen.field_state.path_value = true,
+                FieldState::Unreadable => seen.field_state.path_unreadable = true,
             }
             match ok {
                 Some(_) => seen.option.ok_some = true,
@@ -1729,7 +1752,7 @@ fn a_field_no_type_has_is_refused() {
         "unknown field `extra`",
     );
     refused::<Body>(
-        r#"{"ToolUse":{"tool":"Bash","command":null,"path":null,"ok":null,"extra":true}}"#,
+        r#"{"ToolUse":{"tool":"Bash","command":"Absent","path":"Absent","ok":null,"extra":true}}"#,
         "unknown field `extra`",
     );
     refused::<Event>(
@@ -1759,13 +1782,57 @@ fn a_missing_field_that_may_hold_nothing_is_refused() {
     refused::<EventFilter>(r#"{"kind":"Stop"}"#, "missing field `cond`");
     assert!(serde_json::from_str::<EventFilter>(r#"{"kind":"Stop","cond":null}"#).is_ok());
     refused::<Body>(
-        r#"{"ToolUse":{"tool":"Bash","command":null,"path":null}}"#,
+        r#"{"ToolUse":{"tool":"Bash","command":"Absent","path":"Absent"}}"#,
         "missing field `ok`",
     );
     refused::<Body>(r#"{"Used":{"meter":"tokens"}}"#, "missing field `amount`");
     refused::<PolicyGraph>(
         r#"{"policies":[],"bindings":[],"classifiers":[]}"#,
         "missing field `bound`",
+    );
+}
+
+/// A field of an event that is absent, that has a value and that could not be read are written
+/// as three different forms and read back as the three states, and a form that is none of them
+/// is refused: the `null` that a field which may be absent was once written as is no state of a
+/// `Seen`, and a field that is missing is not read as absent.
+///
+/// FR68, FR69.
+#[test]
+fn a_field_that_could_not_be_read_is_told_from_one_that_is_absent_in_the_encoding() {
+    let tool_use = |command: &str, path: &str| {
+        format!(r#"{{"ToolUse":{{"tool":"Bash","command":{command},"path":{path},"ok":null}}}}"#)
+    };
+    let cases = [
+        (r#""Absent""#, FieldState::Absent),
+        (
+            r#"{"Value":"src/a.rs"}"#,
+            FieldState::Value("src/a.rs".to_owned()),
+        ),
+        (r#""Unreadable""#, FieldState::Unreadable),
+    ];
+    for (path_json, path) in cases {
+        let json = tool_use(r#"{"Value":["cargo","test"]}"#, path_json);
+        let decoded: Body = serde_json::from_str(&json).unwrap();
+        let expected = Body::ToolUse {
+            tool: "Bash".to_owned(),
+            command: FieldState::Value(words("cargo test")),
+            path,
+            ok: None,
+        };
+        assert_eq!(decoded, expected, "{json}");
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), json);
+    }
+    for json in [
+        tool_use("null", r#""Absent""#),
+        tool_use(r#""Absent""#, "null"),
+    ] {
+        assert!(serde_json::from_str::<Body>(&json).is_err(), "{json}");
+    }
+    refused::<Body>(&tool_use(r#""Missing""#, r#""Absent""#), "unknown variant");
+    refused::<Body>(
+        r#"{"ToolUse":{"tool":"Bash","command":"Absent","ok":null}}"#,
+        "missing field `path`",
     );
 }
 

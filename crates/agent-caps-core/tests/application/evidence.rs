@@ -7,7 +7,7 @@ use agent_caps_core::application::{
     ObservedError, Record, RecordError, RequestEntry, Response, ServiceError, SetEdit, Verb,
     VerbName, Via, Watch, Why, WorkRecord,
 };
-use agent_caps_core::domain::event::Body;
+use agent_caps_core::domain::event::{Body, Seen};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::name::ClassifierName;
 use agent_caps_core::domain::policy::Level;
@@ -194,11 +194,12 @@ fn tries_run_out_ahead_and_not_after() {
     assert_eq!(work_records(&log).len(), 22);
 }
 
-/// FR65: a tool use whose path is not in the one form is judged as a record that could not be
-/// read, which may have been a tool use: here, the test run a guard needs, so it cannot tell and
-/// stops.
+/// FR70: a tool use whose path is not in the one form is written as the tool use it is, with its
+/// tool and command kept and only its path one that could not be read, so the guard over the end
+/// of a turn, which does not read a path, knows the edit was no test run and stops with a deny,
+/// not with an unknown.
 #[test]
-fn a_path_not_in_the_one_form_is_judged_as_unreadable() {
+fn a_path_not_in_the_one_form_is_written_as_a_tool_use_with_an_unreadable_path() {
     let log = initialized();
     start_task(&log, "t");
     let odd = observed("e", edit("../x"), Watch::After);
@@ -213,16 +214,54 @@ fn a_path_not_in_the_one_form_is_judged_as_unreadable() {
     };
     assert_eq!(
         act.event().body,
-        Body::Unreadable {
-            may_have_been: KindSet::new([EventKind::ToolUse])
+        Body::ToolUse {
+            tool: "Edit".to_owned(),
+            command: Seen::Absent,
+            path: Seen::Unreadable,
+            ok: None,
         }
     );
-    assert_eq!(observe(&log, "s", stop(), GATE), Ok(unknown(STOP_GUARD)));
-    // The same edit in the form is read as it is, and the guard knows the test did not run.
+    assert_eq!(observe(&log, "s", stop(), GATE), Ok(denied(STOP_GUARD)));
+}
+
+/// FR70, FR69: a tool use whose path is not in the one form is judged ahead, as the tool use it is:
+/// the guard over edits under `src/` reads the path, so it cannot tell and stops the edit; the
+/// same edit in the form outside `src/` is let through.
+#[test]
+fn a_path_not_in_the_one_form_is_stopped_ahead_by_a_guard_over_paths() {
     let log = initialized();
     start_task(&log, "t");
-    after(&log, "e", edit("x"));
-    assert_eq!(observe(&log, "s", stop(), GATE), Ok(denied(STOP_GUARD)));
+    assert_eq!(
+        observe(&log, "pre", edit("../x"), Watch::Before),
+        Ok(unknown(SRC_GUARD))
+    );
+    assert_eq!(
+        observe(&log, "pre2", edit("../x"), GATE),
+        Ok(unknown(SRC_GUARD))
+    );
+    assert_eq!(
+        observe(&log, "pre3", edit("docs/x"), Watch::Before),
+        Ok(Response::Pass)
+    );
+}
+
+/// FR70: a record whose kind could not be read is not judged ahead, whatever the watch that
+/// judges ahead; one read back after the act is taken as it always was.
+#[test]
+fn a_record_of_no_kind_is_refused_when_it_is_judged_ahead() {
+    let lost = event(
+        agent(),
+        Body::Unreadable {
+            may_have_been: KindSet::any(),
+        },
+    );
+    for watch in [Watch::Before, GATE] {
+        assert_eq!(
+            Observed::new(id("lost"), lost.clone(), watch),
+            Err(ObservedError::UnreadableAhead)
+        );
+    }
+    assert!(Observed::new(id("lost"), lost, Watch::After).is_ok());
 }
 
 /// FR63: a record the store cannot read back is folded as one that could not be read, and falls

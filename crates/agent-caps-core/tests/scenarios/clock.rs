@@ -14,7 +14,7 @@
 
 use agent_caps_core::domain::adjust::{Lifetime, Temporary, TemporaryBinding};
 use agent_caps_core::domain::catalog::{Catalog, Effect};
-use agent_caps_core::domain::event::{Body, Event};
+use agent_caps_core::domain::event::{Body, Event, Seen};
 use agent_caps_core::domain::judge::{Cause, Verdict};
 use agent_caps_core::domain::policy::{Expect, Level, Rule};
 use agent_caps_core::domain::predicate::{
@@ -190,8 +190,8 @@ fn switch_guard() -> Written {
                     0,
                     Body::ToolUse {
                         tool: "Bash".to_owned(),
-                        command: Some(words("cargo test")),
-                        path: None,
+                        command: Seen::Value(words("cargo test")),
+                        path: Seen::Absent,
                         ok: Some(true),
                     },
                 ),
@@ -292,8 +292,8 @@ fn push_at(millis: i64) -> Event {
         millis,
         Body::ToolUse {
             tool: "Bash".to_owned(),
-            command: Some(words("git push")),
-            path: None,
+            command: Seen::Value(words("git push")),
+            path: Seen::Absent,
             ok: Some(true),
         },
     )

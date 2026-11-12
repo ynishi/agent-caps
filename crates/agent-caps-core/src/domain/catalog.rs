@@ -730,6 +730,13 @@ impl Cap {
 /// level counts as well. This is the direction of not knowing the mode ([`Catalog::effective`]),
 /// turned round: there the strictest of the candidates is taken, here the weakest.
 ///
+/// A filter whose condition reads a field that could not be read
+/// ([`Seen::Unreadable`](super::event::Seen)) cannot tell either. So when the only filter on a
+/// platform's tool uses is one on the path, at Force, and `otherwise` is Advise, a tool use whose
+/// path could not be read is held at Advise: a Force guard warns on it, and the judgment reports
+/// it as lowered, as it does any event the platform may not hold (FR40). The platform is not
+/// said to stop what it cannot be known to stop.
+///
 /// Filters that overlap, and match one event, give the lowest of their levels. So to make only
 /// some events stoppable, list those with the higher level and set `otherwise` to the lower:
 /// `[(tool == Bash, Force)]` with `otherwise` Advise stops a Bash call and warns on any other
