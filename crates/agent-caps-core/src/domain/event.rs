@@ -26,7 +26,7 @@ use super::schema::{At, EventKind, Field, Judgment, KindSet, Level};
 /// there that could not be read.
 ///
 /// A field that could not be read does not change the kind of its event: the event is judged as
-/// the event it is, and only the conditions that read the field cannot tell (FR69). What a
+/// the event it is, and only the conditions that read the field cannot tell (FR71). What a
 /// condition that cannot tell comes to is the rule of each place that holds one (FR20): the
 /// judge, the cap of a platform, an exemption's cover, a selector. "Nothing there" is a fact
 /// about the event, and a comparison with it is false; "could not be read" is a fact about the
@@ -59,6 +59,48 @@ pub struct Event {
     /// What happened.
     pub body: Body,
 }
+
+/// An event that can be judged: one whose kind a rule may name
+/// ([`EventKind::is_nameable`]). A record whose kind could not be read ([`Body::Unreadable`]) is
+/// only folded, and is never a `Judgeable`, so [`judge`](super::judge::judge) and the policies
+/// are given only events that have a kind (FR71).
+///
+/// It is made by [`TryFrom<Event>`](TryFrom), which refuses an event of no kind with the event
+/// given back, and read as the [`Event`] it holds ([`Judgeable::event`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Judgeable(Event);
+
+impl Judgeable {
+    /// The event.
+    pub fn event(&self) -> &Event {
+        &self.0
+    }
+}
+
+impl TryFrom<Event> for Judgeable {
+    type Error = NoKind;
+
+    fn try_from(event: Event) -> Result<Self, NoKind> {
+        if event.body.kind().is_nameable() {
+            Ok(Self(event))
+        } else {
+            Err(NoKind(event))
+        }
+    }
+}
+
+/// An event that is no [`Judgeable`] because its kind could not be read, given back as it was
+/// given, as [`StaleApply`](super::tx::StaleApply) gives back its state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoKind(pub Event);
+
+impl std::fmt::Display for NoKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a record whose kind could not be read is not judged")
+    }
+}
+
+impl std::error::Error for NoKind {}
 
 /// What happened. New kinds are added as the model grows; a match on it outside this crate lists
 /// every kind, so a new one stops it compiling until it is handled.
@@ -437,7 +479,7 @@ mod tests {
         assert_eq!(event.holds(&Cond::Not(Box::new(ok))), Truth::Unknown);
     }
 
-    /// FR69: a field that could not be read is unknown, under `not` as well, and the fields that
+    /// FR71: a field that could not be read is unknown, under `not` as well, and the fields that
     /// were read are read as they are.
     #[test]
     fn a_field_that_could_not_be_read_is_unknown() {

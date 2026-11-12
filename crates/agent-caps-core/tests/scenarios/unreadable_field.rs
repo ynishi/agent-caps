@@ -17,7 +17,7 @@ use agent_caps_core::domain::state::Origin;
 use super::common::{
     GUARD, OTHER, REWARD, Written, agent, anyone, bash, bash_path_unreadable, catalog,
     clippy_reward, commit_after_test_guard, edit, edit_path_unreadable, exemption, fixture, id,
-    outcome, src_edit_guard, test_guard, verdict, words,
+    judgeable, outcome, src_edit_guard, test_guard, verdict, words,
 };
 
 fn start() -> Event {
@@ -28,7 +28,7 @@ fn under_src() -> Cond {
     Cond::Glob(Field::Path, GlobPattern::new("src/*").unwrap())
 }
 
-/// FR69, FR20: a guard whose condition reads the path cannot tell when the path could not be read,
+/// FR71, FR20: a guard whose condition reads the path cannot tell when the path could not be read,
 /// and a stopping guard denies with the reason unknown, whether or not the tests ran; the same
 /// edit with its path read is judged as it always was. An advising guard warns.
 #[test]
@@ -72,7 +72,7 @@ fn a_guard_over_the_path_cannot_tell_when_the_path_could_not_be_read() {
     );
 }
 
-/// FR69: a guard that does not read the path judges a tool use whose path could not be read by
+/// FR71: a guard that does not read the path judges a tool use whose path could not be read by
 /// what was read of it: the command of a commit is known, so the guard on a commit stops it before
 /// any test and lets it through after one, and a command that is no commit is not its concern.
 #[test]
@@ -96,7 +96,7 @@ fn a_guard_that_does_not_read_the_path_judges_the_tool_use_as_it_is() {
     );
 }
 
-/// FR69: the kind of the tool use is kept, so a guard over the end of a turn does not judge it:
+/// FR71: the kind of the tool use is kept, so a guard over the end of a turn does not judge it:
 /// the unreadable path is not mistaken for a record of any kind.
 #[test]
 fn a_guard_over_the_end_of_a_turn_does_not_judge_a_tool_use_whose_path_could_not_be_read() {
@@ -108,10 +108,10 @@ fn a_guard_over_the_end_of_a_turn_does_not_judge_a_tool_use_whose_path_could_not
 
 fn judged_on(catalog: &Catalog, events: &[Event], caps: &Capabilities) -> Outcome {
     let state = catalog.fold(Origin::Genesis, events);
-    judge(catalog, &state, events.last().unwrap(), caps).unwrap()
+    judge(catalog, &state, &judgeable(events.last().unwrap()), caps).unwrap()
 }
 
-/// FR69, FR40: on a platform that stops a tool use only by a condition on its path, a tool use
+/// FR71, FR40: on a platform that stops a tool use only by a condition on its path, a tool use
 /// whose path could not be read may or may not be one it stops, so it is held at the lower level:
 /// a Force guard warns, with the reason unknown, and the judgment reports it as lowered. The
 /// same platform stops the edit whose path was read.
@@ -164,7 +164,7 @@ fn edit_reward(policy: &str, cond: Cond) -> Written {
     reward
 }
 
-/// FR69, FR13: a reward that reads the path is not met by a tool use whose path could not be
+/// FR71, FR13: a reward that reads the path is not met by a tool use whose path could not be
 /// read, as it cannot tell; one that does not read it is met by the tool use that was read.
 #[test]
 fn a_reward_over_the_path_is_not_met_when_the_path_could_not_be_read() {
@@ -190,7 +190,7 @@ fn a_reward_over_the_path_is_not_met_when_the_path_could_not_be_read() {
     assert_eq!(recognition(&read, OTHER), Some(Recognition::Hit));
 }
 
-/// FR69, FR34: an exemption with a cover that does not read the path covers a tool use whose path
+/// FR71, FR34: an exemption with a cover that does not read the path covers a tool use whose path
 /// could not be read, and one with a cover that reads the path does not, as the cover cannot
 /// tell: the guard judges the event. An exemption with no cover does not cover a guard that reads
 /// the path either, as the guard's own condition cannot tell before the exemption is reached.
@@ -226,7 +226,7 @@ fn an_exemption_covers_by_what_was_read_of_the_tool_use() {
     );
 }
 
-/// FR69, FR20: in the history, a tool use whose path could not be read is counted by a selector that
+/// FR71, FR20: in the history, a tool use whose path could not be read is counted by a selector that
 /// does not read the path, and is unknown to one that does: the test run it was counts for the
 /// guard on the end of a turn, and the stop guard whose rule asks for an edit under `src/` cannot
 /// tell whether it was one.

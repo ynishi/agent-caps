@@ -1,8 +1,9 @@
 //! The judgment of one event: every policy in effect, combined into one verdict.
 //!
 //! ```text
-//! state  = catalog.apply(state, &event)        the event is part of its own past
-//! outcome = judge(&catalog, &state, &event, &capabilities)   Err(StaleState) for a state of
+//! judgeable = Judgeable::try_from(event)       Err(NoKind(event)) for a record of no kind
+//! state  = catalog.apply(state, judgeable.event())   the event is part of its own past
+//! outcome = judge(&catalog, &state, &judgeable, &capabilities)   Err(StaleState) for a state of
 //!                                                            another generation (Catalog::owns)
 //!   guards  ─▶ Finding ─▶ combined: Deny > Warn > Allow, in no particular order
 //!   rewards ─▶ Recognition, each returned, never combined
@@ -32,7 +33,7 @@
 
 use super::authority::Principal;
 use super::catalog::{Cap, Capabilities, Catalog, Degraded, Lowering, StaleState, enforce_in};
-use super::event::{Body, Event};
+use super::event::{Body, Event, Judgeable};
 use super::name::PolicyId;
 use super::policy::{Finding, Level};
 use super::schema::{At, Judgment};
@@ -177,22 +178,21 @@ impl Outcome {
 /// the enforced level. A claim's transaction does not take the capabilities: they are the
 /// platform's fact, and what a claim loosens is judged by the written strength.
 ///
-/// A record whose kind could not be read ([`Body::Unreadable`])
-/// is judged by no policy: a policy judges the events of its subject's kind, and that kind is
-/// none. An event judged before it runs has its kind, which the application makes sure of
-/// (FR70); a field of it that could not be read is a [`Seen::Unreadable`](super::event::Seen)
-/// of an event that is judged (FR69).
+/// Only an event that has a kind is judged ([`Judgeable`]): a record whose kind could not be read
+/// ([`Body::Unreadable`]) is only folded, so no judgment can allow it. A field of an event that
+/// could not be read is a [`Seen::Unreadable`](super::event::Seen) of an event that is judged
+/// (FR71).
 ///
 /// A state of another generation is refused ([`Catalog::owns`]).
 pub fn judge(
     catalog: &Catalog,
     state: &State,
-    event: &Event,
+    event: &Judgeable,
     caps: &Capabilities,
 ) -> Result<Outcome, StaleState> {
     catalog.owns(state)?;
     let effective = catalog.effective_in_owned(state);
-    let kind = event.body.kind();
+    let kind = event.event().body.kind();
     let cap = Cap::Fixed(caps.cap(event));
     let enforced = enforce_in(&effective, caps, |policy| {
         (policy.subject() == kind).then_some(cap)

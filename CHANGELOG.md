@@ -245,6 +245,21 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: only an event whose kind is known is judged (#88). The
+  new `event::Judgeable` is an event of a kind a rule may name
+  (`EventKind::is_nameable`), made by `TryFrom<Event>`, which refuses a record
+  whose kind could not be read with `event::NoKind` and gives the event back.
+  `judge`, `Capabilities::cap` and the policies' evaluation take a
+  `&Judgeable` in place of an `&Event`, so no judgment can allow a record of
+  no kind. The kind of such a record (`EventKind::Unreadable`) is no longer
+  a word of a rule: `Catalog::accept` refuses a policy with it as its subject
+  (`AcceptError::SubjectNotNameable`), a fixture whose last event is such a
+  record (`AcceptError::FixtureNoKind`), and a filter with it as its kind, in
+  a selector, a `Since` scope or the capabilities (`PredError::NotNameable`).
+  A temporary adjustment that lasts within such a `Since` is aborted
+  (`Inadmissible::SinceFilterError`); before, it was taken, and ended at the
+  next record whose kind could not be read. A record of no kind is still folded, and makes
+  unknown what it may have been. The ledger's FR69 is withdrawn for FR71.
 - Breaking, before 1.0: a field of an event that could not be read is a value
   of the event (#80). `Body::ToolUse` holds `command` and `path` as the new
   `event::Seen` (`Absent`, `Value` or `Unreadable`) in place of an `Option`;

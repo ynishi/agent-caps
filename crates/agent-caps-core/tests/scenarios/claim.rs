@@ -17,8 +17,8 @@ use agent_caps_core::domain::tx::{
 };
 
 use super::common::{
-    GUARD, OTHER, agent, at, bind, catalog, edit, exempt_n, id, inside, mode, src_edit_guard,
-    test_guard, the_user,
+    GUARD, OTHER, agent, at, bind, catalog, edit, exempt_n, id, inside, judgeable, mode,
+    src_edit_guard, test_guard, the_user,
 };
 
 /// One outside the scenarios' hierarchy.
@@ -93,7 +93,7 @@ fn verdict_with(catalog: &Catalog, events: &[Event], policy: &TxPolicy) -> Verdi
     judge(
         catalog,
         &state,
-        events.last().unwrap(),
+        &judgeable(events.last().unwrap()),
         &Capabilities::full(),
     )
     .unwrap()

@@ -16,7 +16,7 @@
 //! use agent_caps::domain::adjust::TemporaryBound;
 //! use agent_caps::domain::authority::{Authority, Principal};
 //! use agent_caps::domain::catalog::{Capabilities, Catalog};
-//! use agent_caps::domain::event::{Body, Event, Seen};
+//! use agent_caps::domain::event::{Body, Event, Judgeable, Seen};
 //! use agent_caps::domain::judge::{judge, Verdict};
 //! use agent_caps::domain::name::CommandWords;
 //! use agent_caps::domain::policy::{
@@ -105,7 +105,10 @@
 //! let state = catalog.fold(Origin::Genesis, &history);
 //! // A platform that can enforce everything. One that cannot is described to `judge` the same way,
 //! // as data (see below).
-//! let outcome = judge(&catalog, &state, &history[2], &Capabilities::full()).unwrap();
+//! // An event is judged only when its kind is known: a record whose kind could not be read is
+//! // only folded.
+//! let judged = Judgeable::try_from(history[2].clone()).unwrap();
+//! let outcome = judge(&catalog, &state, &judged, &Capabilities::full()).unwrap();
 //! assert!(matches!(outcome.verdict, Verdict::Deny(_)));
 //! ```
 //!

@@ -25,7 +25,7 @@
 //!                                               bindings added and suspended for a while)
 //! Catalog::enforced(mode, &Capabilities) ─▶ Enforced
 //!                                              (as the platform holds it: levels capped, Lowering)
-//! judge(&Catalog, &State, &Event, &Capabilities) ─▶ Result<Outcome, StaleState>
+//! judge(&Catalog, &State, &Judgeable, &Capabilities) ─▶ Result<Outcome, StaleState>
 //!                                              (Verdict, Recognitions, Degraded, Lowering)
 //! Outcome::evidence ─▶ Judged events           (by each judged policy's author, folded as claims;
 //!                                               with the written and the enforced level)

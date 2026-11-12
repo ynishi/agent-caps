@@ -15,7 +15,8 @@ use agent_caps_core::domain::schema::EventKind;
 use agent_caps_core::domain::state::{Holding, Known, Origin};
 
 use super::common::{
-    GUARD, agent, bash, catalog, id, test_guard, the_reviewer, the_user, unreadable, violated,
+    GUARD, agent, bash, catalog, id, judgeable, test_guard, the_reviewer, the_user, unreadable,
+    violated,
 };
 use super::limits::{by, leaf, push, pushes_since_review, rebind_guard, review_by, spawn, unknown};
 
@@ -25,7 +26,7 @@ fn verdict_from(catalog: &Catalog, origin: Origin, events: &[Event]) -> Verdict 
     judge(
         catalog,
         &state,
-        events.last().unwrap(),
+        &judgeable(events.last().unwrap()),
         &Capabilities::full(),
     )
     .unwrap()

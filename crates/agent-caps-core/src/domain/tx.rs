@@ -97,7 +97,7 @@ use checks::RuleMove;
 use super::adjust::Inadmissible;
 use super::authority::{Authority, NotCovered, Principal};
 use super::catalog::{AcceptError, Catalog, Effective, Rejected, StaleState};
-use super::event::Event;
+use super::event::{Event, Judgeable};
 use super::name::{AdjustmentId, PolicyId};
 use super::policy::{Expect, Finding};
 use super::schema::Nature;
@@ -567,7 +567,8 @@ fn transact(
 }
 
 /// Every fixture of the catalog that does not give the finding it expects (a known gap aside),
-/// and every one with no event. Each is folded by [`Catalog::fold`].
+/// every one with no event, and every one whose last event is a record of no kind, which is not
+/// judged ([`Judgeable`]), known gap or not. Each is folded by [`Catalog::fold`].
 fn fixture_errors(catalog: &Catalog) -> Vec<AcceptError> {
     let mut errors = Vec::new();
     for policy in catalog.policies() {
@@ -579,9 +580,17 @@ fn fixture_errors(catalog: &Catalog) -> Vec<AcceptError> {
                 });
                 continue;
             };
+            // The event a fixture judges has its kind, as any event that is judged has.
+            let Ok(judged) = Judgeable::try_from(judged.clone()) else {
+                errors.push(AcceptError::FixtureNoKind {
+                    policy: policy.id(),
+                    fixture: fixture.name.clone(),
+                });
+                continue;
+            };
             // A fixture holds the whole history it judges, from nothing.
             let state = catalog.fold(Origin::Genesis, &fixture.events);
-            let found = match policy.evaluate(catalog.slots(), catalog.authority(), &state, judged)
+            let found = match policy.evaluate(catalog.slots(), catalog.authority(), &state, &judged)
             {
                 Finding::Violated => Expect::Violated,
                 Finding::Satisfied => Expect::Satisfied,

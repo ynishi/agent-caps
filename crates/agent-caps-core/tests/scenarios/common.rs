@@ -17,7 +17,7 @@ use std::ops::{Deref, DerefMut};
 use agent_caps_core::domain::adjust::{Adjustment, Lifetime, Temporary, TemporaryBound};
 use agent_caps_core::domain::authority::{Authority, Principal};
 use agent_caps_core::domain::catalog::{AcceptError, Capabilities, Catalog, Effect, Rejected};
-use agent_caps_core::domain::event::{Body, Event, Seen};
+use agent_caps_core::domain::event::{Body, Event, Judgeable, Seen};
 use agent_caps_core::domain::judge::{Cause, Outcome, Verdict, judge};
 use agent_caps_core::domain::name::{
     AdjustmentId, BindingId, CommandWords, GlobPattern, Mode, PolicyId,
@@ -662,13 +662,18 @@ pub fn verdict(catalog: &Catalog, events: &[Event]) -> Verdict {
     outcome(catalog, events).verdict
 }
 
+/// The event as one that is judged. A scenario that judges an event gives one that has its kind.
+pub fn judgeable(event: &Event) -> Judgeable {
+    Judgeable::try_from(event.clone()).unwrap()
+}
+
 /// The whole outcome on the last event, with the state folded over all of them.
 pub fn outcome(catalog: &Catalog, events: &[Event]) -> Outcome {
     let state = catalog.fold(Origin::Genesis, events);
     judge(
         catalog,
         &state,
-        events.last().unwrap(),
+        &judgeable(events.last().unwrap()),
         &Capabilities::full(),
     )
     .unwrap()
@@ -678,7 +683,7 @@ pub fn outcome(catalog: &Catalog, events: &[Event]) -> Outcome {
 /// log, as a caller does between turns.
 pub fn step(catalog: &Catalog, log: &mut Vec<Event>, event: Event) -> Outcome {
     let state = catalog.fold(Origin::Genesis, log.iter().chain([&event]));
-    let outcome = judge(catalog, &state, &event, &Capabilities::full()).unwrap();
+    let outcome = judge(catalog, &state, &judgeable(&event), &Capabilities::full()).unwrap();
     log.push(event);
     log.extend(outcome.evidence(At::from_millis(0)));
     outcome

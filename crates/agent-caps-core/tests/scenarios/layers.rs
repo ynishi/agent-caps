@@ -30,9 +30,9 @@ use agent_caps_core::domain::schema::{EventKind, Field};
 use agent_caps_core::domain::state::{Known, Origin};
 
 use super::common::{
-    GUARD, OTHER, Written, agent, at, bash, bind, catalog, id, inside, listed, mode, mode_switch,
-    outcome, outside, rejected, test_guard, the_agent, the_user, unreadable, verdict, violated,
-    written,
+    GUARD, OTHER, Written, agent, at, bash, bind, catalog, id, inside, judgeable, listed, mode,
+    mode_switch, outcome, outside, rejected, test_guard, the_agent, the_user, unreadable, verdict,
+    violated, written,
 };
 
 /// The level the guard had on the last event.
@@ -108,7 +108,7 @@ fn a_mode_changes_the_level_and_a_lowering_switch_needs_the_guards_author() {
     );
     assert_eq!(state.mode(), &Known::Unknown);
     assert!(matches!(
-        judge(&catalog, &state, &stop, &Capabilities::full())
+        judge(&catalog, &state, &judgeable(&stop), &Capabilities::full())
             .unwrap()
             .verdict,
         Verdict::Deny(_)
