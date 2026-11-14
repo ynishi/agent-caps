@@ -245,6 +245,26 @@ and this project adheres to
 
 ### Changed
 
+- Breaking, before 1.0: a guard whose condition (`when`) cannot be told is
+  judged as if it applied, and no longer stops an event it would let through
+  either way (#87). Before, such a guard was `Unknown` at once, without its
+  exemption or its rule, so it stopped an act that an exemption covered or
+  that its rule allowed. Now `Policy::evaluate` finds what the guard would find
+  if it applied: what it would stop stays `Finding::Unknown`; what it would let
+  through is the new `Finding::Uncertain(Pass)` (`Pass::Satisfied` by the rule,
+  `Pass::Exempted` by an exemption), which does not stop. Its judgment is the
+  new `Judgment::Uncertain(Pass)`, and it is recorded as such, whichever the
+  pass: `Pass` moves to `domain::schema` (`domain::policy::Pass` still names
+  it). A rule that reads the judgment of such a record cannot tell (the
+  `Judgment` field reads as unknown), so it stops, as it does for any record
+  it cannot read; one of `Uncertain(Exempted)` also uses up a one-time
+  exemption, as an `Exempted` does. Breaking: `Judgment::as_str` returns
+  `Option<&'static str>`, and is `None` for `Uncertain`, which no rule's
+  condition can name. A reward whose condition cannot be told is no hit. A fixture that ends at such an
+  event expects the new `Expect::Uncertain`; one that expected `Unknown` or
+  `NotApplicable` there fails. A role the actor of an event is not known in
+  now stops only what the role's rule would stop. The ledger's UC14 is
+  withdrawn for UC29 and FR38 for FR73, and FR72 is new.
 - Breaking, before 1.0: only an event whose kind is known is judged (#88). The
   new `event::Judgeable` is an event of a kind a rule may name
   (`EventKind::is_nameable`), made by `TryFrom<Event>`, which refuses a record

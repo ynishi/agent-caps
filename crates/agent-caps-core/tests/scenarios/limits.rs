@@ -734,7 +734,7 @@ fn an_adjustment_ends_with_a_scope_no_rule_counts_in() {
     assert_eq!(held(&[task, by(&the_reviewer(), Body::TaskStart)]), 0);
 }
 
-/// FR54, FR38: a principal a selector or a scope chooses events by must be one of the hierarchy,
+/// FR54, FR73: a principal a selector or a scope chooses events by must be one of the hierarchy,
 /// as one that `ActorUnder` names: a spawned actor's name is new at every start.
 #[test]
 fn choosing_by_a_principal_outside_the_hierarchy_is_not_accepted() {

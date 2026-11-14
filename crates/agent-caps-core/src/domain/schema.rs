@@ -58,6 +58,24 @@ pub enum Judgment {
     Exempted,
     /// A reward's recommendation was followed.
     Hit,
+    /// A guard could not tell whether it applied to the event, and would have let it through if
+    /// it did, as the pass says ([`super::policy::Finding::Uncertain`]). Its result cannot be
+    /// read: a rule that reads the judgment of such a record cannot tell (FR20), since the record
+    /// of either case, applying or not, would loosen some rule that reads it. One whose pass is
+    /// an exemption uses up an exemption for the next judgment, as an exempted judgment does.
+    Uncertain(Pass),
+}
+
+/// How a guard that cannot tell whether it applies would let the event through
+/// ([`super::policy::Finding::Uncertain`], [`Judgment::Uncertain`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
+pub enum Pass {
+    /// Its rule holds.
+    Satisfied,
+    /// An exemption in effect covers the event.
+    Exempted,
 }
 
 /// How much the one who acts is trusted with a rule, least first. The level says what a failure
@@ -86,14 +104,16 @@ impl Level {
 }
 
 impl Judgment {
-    /// The word a predicate compares with (`judgment == "denied"`).
-    pub fn as_str(self) -> &'static str {
+    /// The word a predicate compares with (`judgment == "denied"`), or none for a judgment whose
+    /// result cannot be read ([`Judgment::Uncertain`]): a predicate reads that as unknown.
+    pub fn as_str(self) -> Option<&'static str> {
         match self {
-            Self::Allowed => "allowed",
-            Self::Warned => "warned",
-            Self::Denied => "denied",
-            Self::Exempted => "exempted",
-            Self::Hit => "hit",
+            Self::Allowed => Some("allowed"),
+            Self::Warned => Some("warned"),
+            Self::Denied => Some("denied"),
+            Self::Exempted => Some("exempted"),
+            Self::Hit => Some("hit"),
+            Self::Uncertain(_) => None,
         }
     }
 }

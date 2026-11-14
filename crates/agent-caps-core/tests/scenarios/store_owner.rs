@@ -143,7 +143,7 @@ fn no_exemption_or_mode_lets_the_write_through() {
 
 /// FR57: a child spawned below the keeper is below it too. Placed under its spawner, it is under the
 /// agent and its write is a violation. Placed by its spawner beside the keeper's own place, the
-/// spawn loosens the keeper's rule and is aborted (FR38): the child has no place in the hierarchy,
+/// spawn loosens the keeper's rule and is aborted (FR73): the child has no place in the hierarchy,
 /// the guard cannot tell, and a stopping guard that cannot tell stops it.
 #[test]
 fn a_spawned_child_is_below_the_keeper() {

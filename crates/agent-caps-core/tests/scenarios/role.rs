@@ -11,7 +11,8 @@
 //! placed in it, which anyone may do; a rule that applies outside it, or whose reading of the
 //! actor cannot be told, is loosened by it, which only one who covers that rule's author may do.
 //! An actor the hierarchy does not know, or one placed after a record that may have been a spawn
-//! was lost, is unknown to the hierarchy, and a stopping rule stops it.
+//! was lost, is unknown to the hierarchy, and a rule stops there what it would stop in the role
+//! (FR72).
 //!
 //! What cannot be written: a rule that counts the events of one actor since it was spawned. The
 //! scope of an agent was removed with the event that started it, and a spawned actor has no name
@@ -207,7 +208,7 @@ fn agent_guard() -> Written {
     no_edit_under(GUARD, "the-agent-does-not-edit", the_agent())
 }
 
-/// UC14, FR38: an edit is stopped inside a reviewer and only there, and nothing has to end the
+/// UC29, FR73: an edit is stopped inside a reviewer and only there, and nothing has to end the
 /// reviewer: the parent's next edit is not stopped, and a child of the reviewer's child is under
 /// the reviewer too.
 #[test]
@@ -254,7 +255,7 @@ fn an_edit_is_stopped_under_a_reviewer_and_only_there() {
     assert_eq!(verdict(&catalog, &[edit_by(&agent)]), Verdict::Allow);
 }
 
-/// UC14, FR38, UC25: a rule that applies inside the reviewer is tightened when a child is placed
+/// UC29, FR73, UC25: a rule that applies inside the reviewer is tightened when a child is placed
 /// under it, so the lowest principal of the hierarchy may place one, and the child is stopped.
 #[test]
 fn placing_a_child_under_a_role_tightens_a_rule_that_applies_inside_it() {
@@ -269,7 +270,7 @@ fn placing_a_child_under_a_role_tightens_a_rule_that_applies_inside_it() {
     assert_eq!(verdict(&catalog, &[placing, edit_by(&r2)]), violated());
 }
 
-/// UC14, FR38, UC25: a rule that applies outside the reviewer reads the actor in a direction that
+/// UC29, FR73, UC25: a rule that applies outside the reviewer reads the actor in a direction that
 /// cannot be told as tightening, so a child placed under the reviewer loosens it. The agent does
 /// not cover the user's rule, so its spawn does not take effect; the user's does.
 #[test]
@@ -307,7 +308,7 @@ fn placing_a_child_under_a_role_loosens_a_rule_that_applies_outside_it() {
     );
 }
 
-/// UC14, FR38, UC25, FR41: a child placed under the reviewer makes the reviewer's guard apply to
+/// UC29, FR73, UC25, FR41: a child placed under the reviewer makes the reviewer's guard apply to
 /// it, and so writes more judgments of that guard. A root rule that reads the guard's judgments is
 /// moved by that, so the placement from below, which would otherwise only tighten, does not take
 /// effect; the root's does.
@@ -359,7 +360,7 @@ fn placing_a_child_where_a_guard_applies_loosens_a_rule_that_reads_that_guards_j
     assert_eq!(admit(&catalog, &[], &by_user).decision, TxDecision::Commit);
 }
 
-/// UC14, FR38, UC25: a child placed above its spawner leaves the principals between, and a rule
+/// UC29, FR73, UC25: a child placed above its spawner leaves the principals between, and a rule
 /// that applies inside one of them is loosened by it, so the agent, which does not cover the
 /// user's rule, cannot place one. A child placed under another principal that is still below the
 /// agent stays in the agent's work, and so does one a lower principal places under the agent.
@@ -395,7 +396,7 @@ fn placing_a_child_above_its_spawner_loosens_a_rule_that_applies_inside_the_spaw
     assert_eq!(verdict(&catalog, &[lifted, edit_by(&h3)]), violated());
 }
 
-/// UC14, FR38: the shape of a spawn is kept without asking who made it. A child that is already
+/// UC29, FR73: the shape of a spawn is kept without asking who made it. A child that is already
 /// in the hierarchy of actors, a principal of the authority or a leaf, is not added again or moved,
 /// and a spawn under a place that is not in it adds nothing.
 #[test]
@@ -438,7 +439,7 @@ fn a_spawn_adds_a_new_child_under_a_known_place_once() {
     );
 }
 
-/// UC14, FR38, FR20: an actor the hierarchy does not know is unknown, not "not under", so a
+/// UC29, FR73, FR20: an actor the hierarchy does not know is unknown, not "not under", so a
 /// stopping rule stops it. So is a sub agent placed after a record that may have been a spawn was
 /// lost; one placed before it is as it was.
 #[test]
@@ -478,7 +479,7 @@ fn an_unknown_actor_and_a_leaf_after_a_lost_spawn_are_stopped_as_unknown() {
     );
 }
 
-/// UC14, FR38: a rule is checked against the hierarchy when it is accepted: it can name only a
+/// UC29, FR73: a rule is checked against the hierarchy when it is accepted: it can name only a
 /// principal of the hierarchy, since the name of a spawned leaf is new at every start.
 #[test]
 fn a_rule_that_names_an_actor_outside_the_hierarchy_is_rejected() {
@@ -497,7 +498,7 @@ fn a_rule_that_names_an_actor_outside_the_hierarchy_is_rejected() {
     );
 }
 
-/// UC14, FR38, UC25: a sub agent is a leaf of the hierarchy of actors, not an author, so what it
+/// UC29, FR73, UC25: a sub agent is a leaf of the hierarchy of actors, not an author, so what it
 /// claims loosens nothing: its exemption of the guard does not take effect, and the guard goes on
 /// stopping it.
 #[test]
@@ -519,7 +520,7 @@ fn a_spawned_leaf_cannot_loosen_by_a_claim() {
     );
 }
 
-/// UC14, FR38, FR20, UC25: a leaf of unknown place that places a child under itself puts it where
+/// UC29, FR73, FR20, UC25: a leaf of unknown place that places a child under itself puts it where
 /// the child of its work already is, so the spawn changes how no rule reads the actor, and it
 /// takes effect although the leaf covers no author. Above itself, it does not.
 #[test]
@@ -545,7 +546,7 @@ fn a_leaf_of_unknown_place_may_place_a_child_under_itself_only() {
     assert_eq!(report.decision, TxDecision::Abort);
 }
 
-/// UC14, FR38, FR20, UC25: the child of a spawn that was lost is an unknown actor. When it places
+/// UC29, FR73, FR20, UC25: the child of a spawn that was lost is an unknown actor. When it places
 /// a sub agent above the agent, where a rule of the user's applies inside the agent, what it
 /// leaves is not read as "nothing": the claim is not from the hierarchy, so it does not take
 /// effect, and the sub agent stays unknown and stopped.
@@ -566,7 +567,7 @@ fn an_unknown_actor_cannot_place_a_child_above_the_agent() {
     );
 }
 
-/// UC14, FR38, UC25: a policy that reads the actor in a reward is not neutral: a reward's hit is
+/// UC29, FR73, UC25: a policy that reads the actor in a reward is not neutral: a reward's hit is
 /// recorded as a judgment that guards read, so its direction is not read, and a placement into the
 /// role loosens it. The agent may not place a child there; the user may.
 #[test]
@@ -597,24 +598,26 @@ fn placing_a_child_loosens_a_reward_that_reads_the_actor() {
     assert_eq!(report.decision, TxDecision::Commit);
 }
 
-/// UC14, FR38, FR20: the fact of a spawn that did not take effect. The platform has started the
-/// sub agent all the same and it acts, but the hierarchy never learned its place: every event of
-/// it is by an unknown actor, and a stopping rule that reads the actor stops them all, a harmless
-/// read included.
+/// UC29, FR73, FR72, FR20: the fact of a spawn that did not take effect. The platform has started
+/// the sub agent all the same and it acts, but the hierarchy never learned its place: every event
+/// of it is by an unknown actor, and a rule that reads the actor stops what it would stop and
+/// nothing else: the read of a secret is stopped as unknown, and a harmless read and an edit,
+/// which the rule lets through whether the actor is under the role or not, are not.
 #[test]
-fn the_child_of_a_spawn_that_did_not_take_effect_goes_on_acting_and_is_stopped() {
+fn the_child_of_a_spawn_that_did_not_take_effect_goes_on_acting_and_is_stopped_for_what_the_rule_stops()
+ {
     let catalog = catalog(vec![secret_guard()], vec![]);
     let r3 = leaf("r3");
     let placing = spawn(&the_agent(), &r3, &the_reviewer());
     assert_eq!(admit(&catalog, &[], &placing).decision, TxDecision::Abort);
 
     let mut events = vec![placing];
-    for event in [
-        read_by(&r3, "src/a.rs"),
-        read_by(&r3, "secrets/key"),
-        edit_by(&r3),
+    for (event, expected) in [
+        (read_by(&r3, "src/a.rs"), Verdict::Allow),
+        (read_by(&r3, "secrets/key"), unknown(OTHER)),
+        (edit_by(&r3), Verdict::Allow),
     ] {
         events.push(event);
-        assert_eq!(verdict(&catalog, &events), unknown(OTHER));
+        assert_eq!(verdict(&catalog, &events), expected);
     }
 }

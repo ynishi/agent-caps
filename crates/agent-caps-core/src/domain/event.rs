@@ -389,7 +389,9 @@ impl Body {
                 Read::Found(Value::Text(policy.to_string()))
             }
             (Self::Judged { judgment, .. }, Field::Judgment) => {
-                Read::Found(Value::Text(judgment.as_str().to_owned()))
+                judgment.as_str().map_or(Read::Unknown, |word| {
+                    Read::Found(Value::Text(word.to_owned()))
+                })
             }
             // The text the meter holds, so `meter == "tokens"` is the meter's own equality.
             (Self::Used { meter, .. }, Field::Meter) => {

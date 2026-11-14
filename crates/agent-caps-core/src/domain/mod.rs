@@ -99,7 +99,8 @@
 //!   events.
 //! - Meter and amount: what a platform measures as used, such as tokens, carried by an act
 //!   ([`event::Body::Used`]) and summed within a scope by [`predicate::Pred::Spent`].
-//! - Unknown: what could not be seen. A stopping guard that cannot tell denies.
+//! - Unknown: what could not be seen. A stopping guard that cannot tell denies, unless it would
+//!   let the event through whether it applies or not ([`policy::Finding::Uncertain`]).
 
 pub mod adjust;
 pub mod authority;

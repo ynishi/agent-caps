@@ -70,6 +70,7 @@ use super::encoding::Errors;
 use super::event::{Event, Judgeable};
 use super::name::{BindingId, ClassifierName, Mode, PolicyId, PolicyName};
 use super::predicate::{Cond, EventFilter, Lit, Pred, Scope, Selector, Truth, reads_unnarrowed};
+pub use super::schema::Pass;
 use super::schema::{EventKind, Field};
 use super::state::{Known, SlotTable, State};
 
@@ -478,6 +479,9 @@ pub enum Expect {
     NotApplicable,
     /// The policy cannot tell, because something it reads was not seen.
     Unknown,
+    /// The policy cannot tell whether it applies, and passes either way
+    /// ([`Finding::Uncertain`]).
+    Uncertain,
 }
 
 /// One example of a policy at work: events, and what the policy should find on the last one.
@@ -854,8 +858,17 @@ pub enum Finding {
     NotApplicable,
     /// The guard does not judge the event because an exemption in effect covers it.
     Exempted,
-    /// Something the policy reads was not seen.
+    /// Something the policy reads was not seen, and the policy could stop the event: a guard
+    /// that cannot tell whether it applies is judged as if it did, and finds what it would stop
+    /// here (FR72).
     Unknown,
+    /// The policy cannot tell whether it applies, because its `when` reads something that was not
+    /// seen, and as if it applied it would let the event through, in the way `Pass` says. It
+    /// passes the event whether it applies or not, so it does not stop it. A reward can find this
+    /// too: its `Uncertain(Pass::Satisfied)` is no hit, as a reward whose condition cannot be
+    /// told recognizes nothing (FR72). When what it would find is a stop, the finding is
+    /// [`Finding::Unknown`] instead.
+    Uncertain(Pass),
 }
 
 /// A policy of an accepted catalog. Only [`super::catalog::Catalog::accept`] makes one.
@@ -977,22 +990,38 @@ impl Policy {
         if event.body.kind() != self.def.subject {
             return Finding::NotApplicable;
         }
-        if let Some(when) = &self.compiled.when {
-            match state.holds(slots, authority, when, event) {
-                Truth::False => return Finding::NotApplicable,
-                Truth::Unknown => return Finding::Unknown,
-                Truth::True => {}
-            }
+        let applies = match &self.compiled.when {
+            Some(when) => state.holds(slots, authority, when, event),
+            None => Truth::True,
+        };
+        if applies == Truth::False {
+            return Finding::NotApplicable;
         }
-        if self.is_guard() && self.def.layer != DefLayer::Meta && state.exempts(self.def.id, event)
+        // What it finds as if it applied: an exemption, then the rule.
+        let found = if self.is_guard()
+            && self.def.layer != DefLayer::Meta
+            && state.exempts(self.def.id, event)
         {
-            return Finding::Exempted;
+            Finding::Exempted
+        } else {
+            let Rule::Structural(rule) = &self.compiled.rule;
+            match state.holds(slots, authority, rule, event) {
+                Truth::True => Finding::Satisfied,
+                Truth::False => Finding::Violated,
+                Truth::Unknown => Finding::Unknown,
+            }
+        };
+        // Whether it applies cannot be told (FR72): what it would stop is a stop that is not
+        // known, and what it would let through is let through whether it applies or not.
+        if applies == Truth::True {
+            return found;
         }
-        let Rule::Structural(rule) = &self.compiled.rule;
-        match state.holds(slots, authority, rule, event) {
-            Truth::True => Finding::Satisfied,
-            Truth::False => Finding::Violated,
-            Truth::Unknown => Finding::Unknown,
+        match found {
+            Finding::Satisfied => Finding::Uncertain(Pass::Satisfied),
+            Finding::Exempted => Finding::Uncertain(Pass::Exempted),
+            Finding::Violated | Finding::Unknown => Finding::Unknown,
+            // Not found as if it applied: neither answer above lets an event through unknown.
+            Finding::NotApplicable | Finding::Uncertain(_) => Finding::Unknown,
         }
     }
 }
