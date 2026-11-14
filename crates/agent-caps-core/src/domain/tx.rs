@@ -596,6 +596,7 @@ fn fixture_errors(catalog: &Catalog) -> Vec<AcceptError> {
                 Finding::Satisfied => Expect::Satisfied,
                 Finding::NotApplicable | Finding::Exempted => Expect::NotApplicable,
                 Finding::Unknown => Expect::Unknown,
+                Finding::Uncertain(_) => Expect::Uncertain,
             };
             if found != fixture.expect && !fixture.known_gap {
                 errors.push(AcceptError::FixtureFailed {

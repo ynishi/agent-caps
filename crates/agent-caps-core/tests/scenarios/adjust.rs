@@ -387,7 +387,7 @@ fn an_adjustment_that_cannot_take_effect_takes_none() {
     );
 }
 
-/// FR55, UC25, FR38: a temporary binding is held to the rule of a binding of the catalog: its
+/// FR55, UC25, FR73: a temporary binding is held to the rule of a binding of the catalog: its
 /// maker is of the hierarchy and is the policy's author or below it. The user cannot bind the
 /// agent's guard, nor can one outside the hierarchy or a leaf a spawn added; the helper below the
 /// agent can, and the agent, who covers the helper, may still exempt its own guard.

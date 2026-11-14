@@ -112,7 +112,8 @@ use super::state::Clock;
 #[cfg_attr(feature = "serde", serde(deny_unknown_fields))]
 pub enum Lifetime {
     /// The next judgment it covers, and no more: the record of the
-    /// [`super::schema::Judgment::Exempted`] judgment uses it up. An exemption only.
+    /// [`super::schema::Judgment::Exempted`] judgment, or of the
+    /// [`super::schema::Judgment::Uncertain`] one it let through, uses it up. An exemption only.
     Next,
     /// Until the scope starts again. Within [`Scope::Since`], until the event after the one the
     /// selector chose: that event is judged with the adjustment still in effect. A scope that

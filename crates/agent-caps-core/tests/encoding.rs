@@ -36,7 +36,7 @@ use agent_caps_core::domain::predicate::{
     Amount, By, Cmp, Cond, EventFilter, Lit, Number, Order, Pred, Scope, Selector, Span, Whose,
     Window,
 };
-use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment, KindSet};
+use agent_caps_core::domain::schema::{At, EventKind, Field, Judgment, KindSet, Pass};
 use agent_caps_core::domain::set::{SetId, SetName, Source, Sources};
 use agent_caps_core::domain::state::{Lineage, SlotId};
 use agent_caps_core::domain::tx::checks::RuleMove;
@@ -237,6 +237,15 @@ fn test_guard() -> PolicyDef {
                 ],
                 Expect::Unknown,
                 false,
+            ),
+            fixture(
+                "a gap kept to show the uncertain",
+                vec![
+                    event(&agent(), 1, Body::TaskStart),
+                    event(&agent(), 2, Body::Stop),
+                ],
+                Expect::Uncertain,
+                true,
             ),
             fixture(
                 "a gap kept to show",
@@ -618,6 +627,8 @@ fn events() -> Vec<Event> {
         Judgment::Denied,
         Judgment::Exempted,
         Judgment::Hit,
+        Judgment::Uncertain(Pass::Satisfied),
+        Judgment::Uncertain(Pass::Exempted),
     ]
     .into_iter()
     .enumerate()
@@ -827,10 +838,10 @@ seen! {
     ModeScopeSeen { any, in_, outside }
     RuleSeen { structural }
     LevelSeen { inform, advise, force }
-    JudgmentSeen { allowed, warned, denied, exempted, hit }
+    JudgmentSeen { allowed, warned, denied, exempted, hit, uncertain_satisfied, uncertain_exempted }
     PolaritySeen { guard, reward }
     DefLayerSeen { meta, base }
-    ExpectSeen { violated, satisfied, not_applicable, unknown }
+    ExpectSeen { violated, satisfied, not_applicable, unknown, uncertain }
     LooseningSeen { uncovered, moves }
     TargetSeen { policy, binding, classifier, set }
     FindingDetailSeen { rules, mode, slot, spawn, described }
@@ -958,6 +969,8 @@ fn walk_judgment(seen: &mut Seen, judgment: Judgment) {
         Judgment::Denied => seen.judgment.denied = true,
         Judgment::Exempted => seen.judgment.exempted = true,
         Judgment::Hit => seen.judgment.hit = true,
+        Judgment::Uncertain(Pass::Satisfied) => seen.judgment.uncertain_satisfied = true,
+        Judgment::Uncertain(Pass::Exempted) => seen.judgment.uncertain_exempted = true,
     }
 }
 
@@ -1323,6 +1336,7 @@ fn walk_policy(seen: &mut Seen, def: &PolicyDef) {
             Expect::Satisfied => seen.expect.satisfied = true,
             Expect::NotApplicable => seen.expect.not_applicable = true,
             Expect::Unknown => seen.expect.unknown = true,
+            Expect::Uncertain => seen.expect.uncertain = true,
         }
         if fixture.known_gap {
             seen.option.known_gap_true = true;

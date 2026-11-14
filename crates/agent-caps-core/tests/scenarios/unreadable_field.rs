@@ -1,6 +1,7 @@
 //! Scenario S5b: a field of an event that could not be read. The event keeps its kind, its tool
 //! and the fields that were read; only a condition that reads the field cannot tell. A guard that
-//! reads the field stops (a stopping guard denies, an advising one warns); one that does not
+//! reads the field stops what it would stop (a stopping guard denies, an advising one warns; FR72
+//! says what it lets through); one that does not
 //! judges the event as it is. This is the case apart from a record whose kind could not be read
 //! (S5, `unreadable.rs`), which only the fold sees.
 
@@ -28,9 +29,11 @@ fn under_src() -> Cond {
     Cond::Glob(Field::Path, GlobPattern::new("src/*").unwrap())
 }
 
-/// FR71, FR20: a guard whose condition reads the path cannot tell when the path could not be read,
-/// and a stopping guard denies with the reason unknown, whether or not the tests ran; the same
-/// edit with its path read is judged as it always was. An advising guard warns.
+/// FR71, FR72, FR20: a guard whose condition reads the path cannot tell whether it applies when
+/// the path could not be read, and stops what it would stop: a stopping guard denies with the
+/// reason unknown when the tests have not run, and lets the edit through once they have, as its
+/// rule holds whether it applies or not; the same edit with its path read is judged as it always
+/// was. An advising guard warns.
 #[test]
 fn a_guard_over_the_path_cannot_tell_when_the_path_could_not_be_read() {
     let stopping = catalog(vec![src_edit_guard()], vec![]);
@@ -48,7 +51,7 @@ fn a_guard_over_the_path_cannot_tell_when_the_path_could_not_be_read() {
                 edit_path_unreadable()
             ]
         ),
-        unknown
+        Verdict::Allow
     );
     // With the path read, the same events are judged by the rule.
     assert_eq!(
@@ -190,10 +193,11 @@ fn a_reward_over_the_path_is_not_met_when_the_path_could_not_be_read() {
     assert_eq!(recognition(&read, OTHER), Some(Recognition::Hit));
 }
 
-/// FR71, FR34: an exemption with a cover that does not read the path covers a tool use whose path
-/// could not be read, and one with a cover that reads the path does not, as the cover cannot
-/// tell: the guard judges the event. An exemption with no cover does not cover a guard that reads
-/// the path either, as the guard's own condition cannot tell before the exemption is reached.
+/// FR71, FR34, FR72: an exemption with a cover that does not read the path covers a tool use whose
+/// path could not be read, and one with a cover that reads the path does not, as the cover cannot
+/// tell: the guard judges the event. An exemption with no cover covers a guard that reads the
+/// path as well, though the guard's own condition cannot tell: it is judged as if it applied, and
+/// the exemption lets the event through.
 #[test]
 fn an_exemption_covers_by_what_was_read_of_the_tool_use() {
     let commit_guard = catalog(vec![commit_after_test_guard()], vec![]);
@@ -222,7 +226,7 @@ fn an_exemption_covers_by_what_was_read_of_the_tool_use() {
     let src_guard = catalog(vec![src_edit_guard()], vec![]);
     assert_eq!(
         verdict(&src_guard, &[start(), exempt(None), edit_path_unreadable()]),
-        Verdict::Deny(vec![Cause::Unknown(id(GUARD))])
+        Verdict::Allow
     );
 }
 

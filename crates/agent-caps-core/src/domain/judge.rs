@@ -25,6 +25,10 @@
 //!   reported in `Outcome.lowered`.
 //! - An exempted guard is left out of the verdict, and recorded as exempted so a one-time
 //!   exemption is used up.
+//! - A guard that cannot tell whether it applies, and would let the event through either way
+//!   ([`Finding::Uncertain`]), does not stop it. Either pass is recorded as
+//!   [`super::schema::Judgment::Uncertain`], whose result a rule cannot read (FR20); one that an
+//!   exemption let through uses up a one-time exemption, as an exempted judgment does.
 //! - A reward that is not followed is no failure: [`Recognition::None`].
 //! - The record of a judgment is written in the name of the judged policy's author. A record is
 //!   a claim ([`super::tx`]), and a rule reads the judgments only of policies whose authors cover
@@ -90,6 +94,7 @@ impl GuardResult {
         match self.finding {
             Finding::Satisfied | Finding::NotApplicable => Judgment::Allowed,
             Finding::Exempted => Judgment::Exempted,
+            Finding::Uncertain(pass) => Judgment::Uncertain(pass),
             Finding::Violated | Finding::Unknown if self.enforced.stops() => Judgment::Denied,
             Finding::Violated | Finding::Unknown => Judgment::Warned,
         }
@@ -99,7 +104,10 @@ impl GuardResult {
         match self.finding {
             Finding::Violated => Some(Cause::Violated(self.policy)),
             Finding::Unknown => Some(Cause::Unknown(self.policy)),
-            Finding::Satisfied | Finding::NotApplicable | Finding::Exempted => None,
+            Finding::Satisfied
+            | Finding::NotApplicable
+            | Finding::Exempted
+            | Finding::Uncertain(_) => None,
         }
     }
 }
@@ -125,7 +133,8 @@ pub struct RewardResult {
 pub struct Outcome {
     /// The combined verdict of the guards.
     pub verdict: Verdict,
-    /// Each guard that judged the event.
+    /// Each guard that judged the event, a guard that cannot tell whether it applies
+    /// ([`Finding::Uncertain`]) included.
     pub guards: Vec<GuardResult>,
     /// Each reward that judged the event.
     pub rewards: Vec<RewardResult>,
@@ -143,7 +152,8 @@ impl Outcome {
     /// The evidence of this judgment, for the caller to append and fold: one [`Body::Judged`]
     /// per guard that judged the event and per reward that was followed, each by the author of
     /// the judged policy and with both the level it was written at and the level it was
-    /// enforced at.
+    /// enforced at. A guard that cannot tell whether it applies ([`Finding::Uncertain`]) leaves
+    /// a record whose result cannot be read ([`Judgment::Uncertain`]).
     pub fn evidence(&self, at: At) -> Vec<Event> {
         let judged = |policy, author: &Principal, judgment, written, enforced| Event {
             at,

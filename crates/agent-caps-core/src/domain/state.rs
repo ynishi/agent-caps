@@ -100,7 +100,8 @@
 //! An adjustment ([`Body::Adjust`]) is held when the catalog's index admits it
 //! ([`super::adjust`]), with the principal of its event; a cancel ([`Body::Cancel`]) ends the
 //! held adjustment with its id, and one with no such adjustment does nothing; the record of an
-//! [`Judgment::Exempted`] judgment uses up one exemption for the next judgment of that guard.
+//! [`Judgment::Exempted`] judgment, or of a [`Judgment::Uncertain`] one an exemption let through
+//! ([`Pass::Exempted`]), uses up one exemption for the next judgment of that guard.
 //! Whether one may take effect, and why not, is one entry point the transaction reads too
 //! (`State::admits`).
 //!
@@ -208,7 +209,7 @@ use super::policy::ModeScope;
 use super::predicate::{
     Amount, By, Cond, EventFilter, Pred, Scope, Selector, Span, Temporal, Truth,
 };
-use super::schema::{At, EventKind, Judgment, Nature};
+use super::schema::{At, EventKind, Judgment, Nature, Pass};
 
 /// The name of a line of catalogs, given by the caller: opaque text the domain only compares.
 /// The domain has no source of randomness, so it cannot make one; the caller names each catalog
@@ -1191,7 +1192,7 @@ impl State {
             Body::Cancel { id } => self.adjustments.retain(|held| held.adjustment.id != *id),
             Body::Judged {
                 policy,
-                judgment: Judgment::Exempted,
+                judgment: Judgment::Exempted | Judgment::Uncertain(Pass::Exempted),
                 ..
             } => {
                 let used = self.adjustments.iter().position(|held| {
